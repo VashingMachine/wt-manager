@@ -1,0 +1,17 @@
+# Build artifacts
+/wt-manager
+/*.test
+
+# Test and coverage output
+/coverage.out
+/.coverage/
+
+# Local Go cache used during sandboxed test runs
+/.gocache/
+
+# OS and editor files
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
