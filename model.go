@@ -771,19 +771,27 @@ func (m *model) resize() {
 		return
 	}
 
+	usableWidth := max(20, m.width-appStyle.GetHorizontalFrameSize())
+	cardFrameWidth := cardStyle.GetHorizontalFrameSize()
 	availableHeight := max(10, m.height-8)
 	stacked := m.width < 130
 	if stacked {
 		m.table.SetHeight(max(6, availableHeight/2))
-		m.table.SetWidth(max(40, m.width-4))
-		m.detail.Width = max(20, m.width-4)
+		panelWidth := max(20, usableWidth-cardFrameWidth)
+		m.table.SetWidth(panelWidth)
+		m.detail.Width = panelWidth
 		m.detail.Height = max(5, availableHeight-m.table.Height())
 	} else {
-		tableWidth := max(60, int(float64(m.width)*0.56)-2)
-		detailWidth := max(36, m.width-tableWidth-6)
+		panelWidth := max(80, usableWidth-(cardFrameWidth*2))
+		detailWidth := max(36, int(float64(panelWidth)*0.44))
+		tableWidth := panelWidth - detailWidth
+		if tableWidth < 60 {
+			tableWidth = 60
+			detailWidth = panelWidth - tableWidth
+		}
 		m.table.SetHeight(availableHeight)
 		m.table.SetWidth(tableWidth)
-		m.detail.Width = detailWidth - 2
+		m.detail.Width = max(20, detailWidth)
 		m.detail.Height = availableHeight - 2
 	}
 
@@ -921,10 +929,70 @@ func (m model) filterSummary() string {
 
 func buildColumns(totalWidth int) []table.Column {
 	if totalWidth <= 70 {
-		return []table.Column{{Title: "Worktree", Width: 16}, {Title: "Branch", Width: 20}, {Title: "State", Width: 10}, {Title: "PR", Width: 12}}
+		widths := distributeColumnWidths(totalWidth-tableCellStyle.GetHorizontalFrameSize()*4, []int{8, 10, 5, 5}, []int{16, 20, 10, 12}, []int{1, 0, 3, 2})
+		return []table.Column{{Title: "Worktree", Width: widths[0]}, {Title: "Branch", Width: widths[1]}, {Title: "State", Width: widths[2]}, {Title: "PR", Width: widths[3]}}
 	}
-	commitWidth := max(18, totalWidth-84)
-	return []table.Column{{Title: "Worktree", Width: 18}, {Title: "Branch", Width: 26}, {Title: "State", Width: 10}, {Title: "Delta", Width: 10}, {Title: "PR", Width: 12}, {Title: "Last Commit", Width: commitWidth}}
+	widths := distributeColumnWidths(totalWidth-tableCellStyle.GetHorizontalFrameSize()*6, []int{12, 16, 5, 5, 6, 12}, []int{18, 26, 8, 8, 10, 18}, []int{5, 1, 0, 4, 2, 3})
+	return []table.Column{{Title: "Worktree", Width: widths[0]}, {Title: "Branch", Width: widths[1]}, {Title: "State", Width: widths[2]}, {Title: "Delta", Width: widths[3]}, {Title: "PR", Width: widths[4]}, {Title: "Last Commit", Width: widths[5]}}
+}
+
+func distributeColumnWidths(total int, minimums, targets, order []int) []int {
+	widths := append([]int(nil), minimums...)
+	if total <= 0 {
+		for idx := range widths {
+			widths[idx] = 1
+		}
+		return widths
+	}
+
+	minimumTotal := 0
+	for _, width := range widths {
+		minimumTotal += width
+	}
+	if total <= minimumTotal {
+		return shrinkColumnWidths(total, widths)
+	}
+
+	remaining := total - minimumTotal
+	for _, idx := range order {
+		if idx < 0 || idx >= len(widths) || idx >= len(targets) {
+			continue
+		}
+		growth := min(remaining, max(0, targets[idx]-widths[idx]))
+		widths[idx] += growth
+		remaining -= growth
+		if remaining == 0 {
+			return widths
+		}
+	}
+	widths[len(widths)-1] += remaining
+	return widths
+}
+
+func shrinkColumnWidths(total int, widths []int) []int {
+	if len(widths) == 0 {
+		return widths
+	}
+	for idx := range widths {
+		widths[idx] = max(1, widths[idx])
+	}
+	for sum := sumInts(widths); sum > total && sum > len(widths); sum = sumInts(widths) {
+		for idx := len(widths) - 1; idx >= 0 && sum > total; idx-- {
+			if widths[idx] > 1 {
+				widths[idx]--
+				sum--
+			}
+		}
+	}
+	return widths
+}
+
+func sumInts(values []int) int {
+	total := 0
+	for _, value := range values {
+		total += value
+	}
+	return total
 }
 
 func detailViewContent(wt *Worktree, showPRBody bool, width int) string {
@@ -999,7 +1067,7 @@ func detailViewContent(wt *Worktree, showPRBody bool, width int) string {
 		}
 	}
 
-	return strings.Join(lines, "\n")
+	return lipgloss.NewStyle().Width(max(1, width)).Render(strings.Join(lines, "\n"))
 }
 
 func min(a, b int) int {
