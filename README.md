@@ -4,6 +4,8 @@
 
 It gives you a compact dashboard for every worktree in a repository: branch, dirty state, ahead/behind counts, changed files, pull request metadata, and the latest commit. From the same screen you can create, delete, filter, refresh, open, and jump into worktrees without remembering the exact `git worktree` commands.
 
+It also includes PR Radar, a remote pull request view backed by GitHub CLI. PR Radar lets you browse open, closed, and merged PRs for the active repository profile, filter them by user or text, inspect files/checks/comments, create a worktree from a PR branch, and ask a configured AI agent about the selected PR context.
+
 ## Highlights
 
 - Browse managed worktrees in a Bubble Tea terminal interface.
@@ -14,6 +16,9 @@ It gives you a compact dashboard for every worktree in a repository: branch, dir
 - Open the selected worktree in VS Code.
 - Open the selected PR in your browser.
 - Open the selected worktree in a new Ghostty tab with a configured AI coding agent.
+- Browse remote repository PRs without creating local worktrees first.
+- Filter remote PRs by state, text, and involved GitHub users.
+- Ask a configured local AI agent about the selected remote PR using PR metadata, files, comments, and diff context.
 - Configure everything interactively on first run, including repository path, worktree folder, GitHub repo, and agent commands.
 
 ## Requirements
@@ -89,18 +94,26 @@ If `githubRepo` is empty, `wt-manager` tries to infer it from the configured rem
 | Key | Action |
 | --- | --- |
 | `j` / `k`, arrows | Move selection |
+| `h` | Show keybinding help |
 | `tab` | Switch focus between table and details |
 | `r` | Refresh |
+| `P` | Toggle PR Radar mode |
 | `a` | Toggle between managed worktrees and all repository worktrees |
 | `/` | Filter by worktree name or branch |
+| `S` | Cycle PR Radar state filter |
+| `u` | Choose PR Radar user filter |
+| `Y` | Toggle PR Radar author filter for your GitHub user |
+| `b` | Toggle PR Radar final column between title and branch |
+| `f` | Toggle failed GitHub Actions in PR details |
 | `esc` | Clear filter or cancel the current input |
 | `n` | Create a worktree |
 | `s` | Switch repository profile |
 | `I` | Open setup |
 | `p` | Toggle full PR description |
 | `o` | Open selected PR in browser |
-| `v` | Open selected worktree in VS Code |
-| `i` | Open selected worktree in Ghostty with the configured agent |
+| `c` | Ask configured agent about the selected remote PR |
+| `v` | Open selected worktree in VS Code, or create/reuse selected PR worktree in PR Radar first |
+| `i` | Open selected worktree in Ghostty with the configured agent, or create/reuse selected PR worktree in PR Radar first |
 | `m` | Choose the default agent |
 | `d d` | Delete selected worktree |
 | `q`, `ctrl+c` | Quit |
@@ -123,3 +136,22 @@ Missing or prunable worktree entries are surfaced in the UI, and Git's worktree 
 The `i` shortcut opens the selected worktree in Ghostty and runs the configured agent command. Built-in defaults are `codex`, `opencode`, `claude`, and `copilot`, and custom commands can be added during setup.
 
 On macOS, opening a new Ghostty tab uses UI automation. If macOS blocks the tab automation, grant Accessibility permission to your terminal or `wt-manager`.
+
+## PR Radar
+
+Press `P` to toggle PR Radar. The app uses `gh` for GitHub access, so no separate OAuth app registration is required. If `gh` is missing, unauthenticated, or cannot access the configured repository, PR Radar shows a status error with the next action.
+
+In PR Radar:
+
+1. Press `/` to filter by title, branch, label, author, review decision, or PR number.
+2. Press `S` to cycle state filters: open, all, closed, merged.
+3. Press `u` to filter by users discovered from authors, assignees, and review requests.
+4. Press `Y` to quickly show only PRs authored by your authenticated GitHub user.
+5. Press `b` to switch the final table column between PR title and branch name.
+6. Press `o` to open the selected PR in your browser.
+7. Press `n` to create a local worktree from the selected PR branch.
+8. Press `v` to create or reuse a PR worktree and open it in VS Code.
+9. Press `i` to create or reuse a PR worktree and open it with the configured agent.
+10. Press `c` to ask an agent about the selected PR.
+
+The `c` action prefers a configured `copilot` agent when present and otherwise falls back to the default agent. The selected command receives a prompt on stdin containing PR metadata, description, files, recent comments, and a truncated diff. Authentication for the agent remains owned by that local CLI.

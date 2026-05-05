@@ -40,7 +40,7 @@ func (m model) View() string {
 		return appStyle.Render(m.setup.View(m.width))
 	}
 
-	headerMeta := fmt.Sprintf("Profile: %s | Repo: %s | Agent: %s | Filter: %s | Focus: %s", m.cfg.ActiveProfile.Name, m.cfg.ActiveProfile.RepositoryPath, m.cfg.App.DefaultAgent, m.filterLabel(), m.focusLabel())
+	headerMeta := fmt.Sprintf("Profile: %s | Repo: %s | Agent: %s | Mode: %s | Filter: %s | Focus: %s", m.cfg.ActiveProfile.Name, m.cfg.ActiveProfile.RepositoryPath, m.cfg.App.DefaultAgent, m.modeLabel(), m.filterLabel(), m.focusLabel())
 	if m.filterQuery != "" {
 		headerMeta += fmt.Sprintf(" | Query: %q", m.filterQuery)
 	}
@@ -63,6 +63,9 @@ func (m model) View() string {
 	}
 
 	tableTitle := infoStyle.Render("Worktrees")
+	if m.prMode {
+		tableTitle = infoStyle.Render("PR Radar")
+	}
 	detailTitle := infoStyle.Render("Details")
 	tableContent := lipgloss.JoinVertical(lipgloss.Left, tableTitle, m.tableView())
 	detailContent := lipgloss.JoinVertical(lipgloss.Left, detailTitle, m.detail.View())
@@ -107,13 +110,25 @@ func (m model) View() string {
 	if m.selectingProfile {
 		view = overlay(view, renderProfileSelectorModal(m), m.width, m.height)
 	}
+	if m.selectingPRUser {
+		view = overlay(view, renderPRUserSelectorModal(m), m.width, m.height)
+	}
+	if m.askingPR {
+		view = overlay(view, renderPRQuestionModal(m), m.width, m.height)
+	}
+	if m.showingHelp {
+		view = overlay(view, renderHelpModal(m), m.width, m.height)
+	}
 
 	return view
 }
 
 func (m model) tableView() string {
-	columns := buildColumns(m.table.Width())
+	columns := m.activeColumns()
 	rows := make([][]string, 0, len(m.visibleWorktrees))
+	if m.prMode {
+		return m.prTableView(columns)
+	}
 	if len(m.visibleWorktrees) == 0 {
 		rows = append(rows, emptyTableRow(len(columns)))
 	} else {
@@ -149,6 +164,40 @@ func (m model) tableView() string {
 		lines = append(lines, strings.Repeat(" ", m.table.Width()))
 	}
 
+	return strings.Join(lines, "\n")
+}
+
+func (m model) prTableView(columns []table.Column) string {
+	rows := make([][]string, 0, len(m.visiblePRs))
+	if len(m.visiblePRs) == 0 {
+		rows = append(rows, emptyTableRow(len(columns)))
+	} else {
+		compact := m.table.Width() <= 70
+		start, end := visibleRowRange(m.table.Cursor(), len(m.visiblePRs), m.table.Height())
+		for _, pr := range m.visiblePRs[start:end] {
+			if compact {
+				rows = append(rows, []string{fmt.Sprintf("#%d", pr.Number), pr.Author.Login, prStateLabel(pr), m.prHeadline(pr)})
+			} else {
+				rows = append(rows, []string{fmt.Sprintf("#%d", pr.Number), pr.Author.Login, prStateLabel(pr), checksSummary(pr.StatusCheckRollup), reviewReadiness(pr), shortTime(pr.UpdatedAt), m.prHeadline(pr)})
+			}
+		}
+	}
+
+	lines := []string{renderTableHeader(columns)}
+	start, _ := visibleRowRange(m.table.Cursor(), len(m.visiblePRs), m.table.Height())
+	for idx, row := range rows {
+		absoluteIndex := start + idx
+		selected := len(m.visiblePRs) > 0 && absoluteIndex == m.table.Cursor()
+		var pr *RemotePullRequest
+		if len(m.visiblePRs) > 0 && absoluteIndex < len(m.visiblePRs) {
+			pr = &m.visiblePRs[absoluteIndex]
+		}
+		lines = append(lines, renderPRTableRow(columns, row, pr, selected))
+	}
+
+	for len(lines)-1 < m.table.Height() {
+		lines = append(lines, strings.Repeat(" ", m.table.Width()))
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -192,7 +241,7 @@ func renderTableRow(columns []table.Column, row []string, wt *Worktree, selected
 	for idx, column := range columns {
 		value := ""
 		if idx < len(row) {
-			value = row[idx]
+			value = singleLineCell(row[idx])
 		}
 		value = runewidth.Truncate(value, column.Width, "…")
 		cell := padCell(value, column.Width)
@@ -209,6 +258,44 @@ func renderTableRow(columns []table.Column, row []string, wt *Worktree, selected
 		return selectedRowStyle.Render(line)
 	}
 	return line
+}
+
+func renderPRTableRow(columns []table.Column, row []string, pr *RemotePullRequest, selected bool) string {
+	cells := make([]string, 0, len(columns))
+	for idx, column := range columns {
+		value := ""
+		if idx < len(row) {
+			value = singleLineCell(row[idx])
+		}
+		value = runewidth.Truncate(value, column.Width, "…")
+		cell := padCell(value, column.Width)
+		if pr != nil {
+			cell = stylePRTableCell(cell, column.Title, pr)
+		} else {
+			cell = mutedStyle.Render(cell)
+		}
+		cells = append(cells, tableCellStyle.Render(cell))
+	}
+	line := strings.Join(cells, "")
+	if selected {
+		return selectedRowStyle.Render(line)
+	}
+	return line
+}
+
+func stylePRTableCell(cell, title string, pr *RemotePullRequest) string {
+	switch title {
+	case "State":
+		return prStateCellStyle(*pr).Render(cell)
+	case "Checks":
+		return checksCellStyle(pr.StatusCheckRollup).Render(cell)
+	case "Ready":
+		return readinessCellStyle(*pr).Render(cell)
+	case "Updated":
+		return mutedStyle.Render(cell)
+	default:
+		return cell
+	}
 }
 
 func styleTableCell(cell, title string, wt *Worktree) string {
@@ -269,6 +356,49 @@ func prCellStyle(pr *PullRequest) lipgloss.Style {
 	}
 }
 
+func prStateCellStyle(pr RemotePullRequest) lipgloss.Style {
+	if pr.IsDraft {
+		return mutedStyle
+	}
+	switch strings.ToLower(pr.State) {
+	case "open":
+		return successStyle
+	case "merged":
+		return magentaStyle
+	case "closed":
+		return errorStyle
+	default:
+		return infoStyle
+	}
+}
+
+func checksCellStyle(checks []StatusCheck) lipgloss.Style {
+	summary := checksSummary(checks)
+	if strings.Contains(summary, "fail") || strings.Contains(summary, "cancel") {
+		return errorStyle
+	}
+	if strings.Contains(summary, "wait") {
+		return warnStyle
+	}
+	if strings.Contains(summary, "pass") {
+		return successStyle
+	}
+	return mutedStyle
+}
+
+func readinessCellStyle(pr RemotePullRequest) lipgloss.Style {
+	switch reviewReadiness(pr) {
+	case "ready", "approved":
+		return successStyle
+	case "blocked", "changes":
+		return errorStyle
+	case "waiting":
+		return warnStyle
+	default:
+		return mutedStyle
+	}
+}
+
 func padCell(value string, width int) string {
 	padding := width - runewidth.StringWidth(value)
 	if padding <= 0 {
@@ -277,7 +407,33 @@ func padCell(value string, width int) string {
 	return value + strings.Repeat(" ", padding)
 }
 
+func singleLineCell(value string) string {
+	replacer := strings.NewReplacer("\r", " ", "\n", " ", "\t", " ")
+	return strings.Join(strings.Fields(replacer.Replace(value)), " ")
+}
+
 func (m model) filterLabel() string {
+	if m.prMode {
+		parts := []string{}
+		state := m.prStateFilter
+		if state == "" {
+			state = "all"
+		}
+		parts = append(parts, "state="+state)
+		if m.prUserFilter != "" {
+			parts = append(parts, "user=@"+m.prUserFilter)
+		}
+		if m.prAuthorFilter != "" {
+			parts = append(parts, "author=@"+m.prAuthorFilter)
+		}
+		if m.prShowBranch {
+			parts = append(parts, "branch view")
+		}
+		if m.filterQuery != "" {
+			parts = append(parts, "filtered")
+		}
+		return strings.Join(parts, ", ")
+	}
 	mode := "managed sibling worktrees"
 	if m.showAll {
 		mode = "all repo worktrees"
@@ -286,6 +442,13 @@ func (m model) filterLabel() string {
 		return mode
 	}
 	return fmt.Sprintf("%s, filtered", mode)
+}
+
+func (m model) modeLabel() string {
+	if m.prMode {
+		return "PR Radar"
+	}
+	return "Worktrees"
 }
 
 func (m model) focusLabel() string {
@@ -300,6 +463,12 @@ func (m model) focusLabel() string {
 	}
 	if m.selectingProfile {
 		return "profile selector"
+	}
+	if m.selectingPRUser {
+		return "PR user selector"
+	}
+	if m.askingPR {
+		return "PR chat"
 	}
 	if m.setup != nil {
 		return "setup"
@@ -394,6 +563,99 @@ func renderProfileSelectorModal(m model) string {
 	)
 
 	return modalStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+func renderPRUserSelectorModal(m model) string {
+	lines := []string{
+		titleStyle.Render("PR User Filter"),
+		"",
+		"Show PRs authored by, assigned to, or requesting this user.",
+		"",
+	}
+
+	if len(m.prUserOptions) == 0 {
+		lines = append(lines, mutedStyle.Render("No users discovered"))
+	} else {
+		for idx, user := range m.prUserOptions {
+			cursor := "  "
+			style := subtleStyle
+			if idx == m.prUserCursor {
+				cursor = "> "
+				style = infoStyle.Copy().Bold(true)
+			}
+			label := user
+			if idx > 0 {
+				label = "@" + user
+			}
+			current := ""
+			if (idx == 0 && m.prUserFilter == "") || strings.EqualFold(user, m.prUserFilter) {
+				current = " current"
+			}
+			lines = append(lines, style.Render(fmt.Sprintf("%s%s%s", cursor, label, current)))
+		}
+	}
+	lines = append(lines, "", subtleStyle.Render("enter selects, esc cancels"))
+	return modalStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+func renderPRQuestionModal(m model) string {
+	selected := m.selectedRemotePRForDetail()
+	title := "Ask Agent About PR"
+	context := "No PR selected"
+	if selected != nil {
+		context = fmt.Sprintf("PR #%d: %s", selected.Number, selected.Title)
+	}
+	message := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render(title),
+		"",
+		context,
+		fmt.Sprintf("Agent: %s", m.prAgentLabel()),
+		m.prQuestionInput.View(),
+		"",
+		subtleStyle.Render("enter asks, esc cancels"),
+	)
+	return modalStyle.Render(message)
+}
+
+func renderHelpModal(m model) string {
+	lines := []string{
+		titleStyle.Render("Keybindings"),
+		"",
+		infoStyle.Render("Global"),
+		"  h        show or hide this help",
+		"  q/ctrl+c quit",
+		"  tab      switch table/details focus",
+		"  r        refresh current mode",
+		"  /        filter current mode",
+		"  esc      cancel input, clear filter, or close help",
+		"  s        switch repository profile",
+		"  I        setup profiles and agents",
+		"  m        choose default AI agent",
+		"",
+		infoStyle.Render("Worktrees"),
+		"  j/k      move selection",
+		"  a        toggle managed/all worktrees",
+		"  n        create worktree",
+		"  d d      delete selected worktree",
+		"  o        open selected local PR",
+		"  v        open worktree in VS Code",
+		"  i        open worktree with agent in Ghostty",
+		"  p        toggle local PR body in details",
+		"",
+		infoStyle.Render("PR Radar"),
+		"  P        toggle PR Radar mode",
+		"  S        cycle state filter",
+		"  u        choose involved-user filter",
+		"  Y        toggle PRs authored by @me",
+		"  b        switch final column between title/branch",
+		"  f        show failed GitHub Actions in details",
+		"  c        ask configured agent about selected PR",
+		"  n        create worktree from selected PR branch",
+		"  o        open selected PR in browser",
+		"",
+		subtleStyle.Render("press h, enter, or esc to close"),
+	}
+	return modalStyle.Copy().Width(max(72, min(92, m.width-8))).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
 func overlay(base, modal string, width, height int) string {

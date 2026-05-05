@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -506,6 +508,221 @@ func TestCheckGitHubCLI(t *testing.T) {
 	})
 }
 
+func TestFilterRemotePullRequests(t *testing.T) {
+	prs := []RemotePullRequest{
+		remotePRFixture(10, "OPEN", "alice", "Add auth cache", "feature/auth"),
+		remotePRFixture(11, "CLOSED", "bob", "Remove cache", "bug/remove-cache"),
+		remotePRFixture(12, "MERGED", "clara", "Update docs", "docs/readme"),
+	}
+	prs[0].Assignees = []GitHubActor{{Login: "dariusz"}}
+	prs[1].ReviewRequests = []ReviewRequest{{RequestedReviewer: GitHubActor{Login: "dariusz"}}}
+	prs[2].Labels = []PullLabel{{Name: "docs"}}
+
+	got := filterRemotePullRequests(prs, "cache", "open", "")
+	if len(got) != 1 || got[0].Number != 10 {
+		t.Fatalf("filter open cache = %#v, want PR 10", got)
+	}
+
+	got = filterRemotePullRequests(prs, "", "all", "dariusz")
+	if len(got) != 2 || got[0].Number != 10 || got[1].Number != 11 {
+		t.Fatalf("filter user dariusz = %#v, want PRs 10 and 11", got)
+	}
+
+	got = filterRemotePullRequests(prs, "docs", "merged", "")
+	if len(got) != 1 || got[0].Number != 12 {
+		t.Fatalf("filter merged docs = %#v, want PR 12", got)
+	}
+
+	got = filterRemotePullRequestsWithAuthor(prs, "", "all", "", "alice")
+	if len(got) != 1 || got[0].Number != 10 {
+		t.Fatalf("filter author alice = %#v, want PR 10", got)
+	}
+}
+
+func TestRemotePRUsers(t *testing.T) {
+	prs := []RemotePullRequest{
+		remotePRFixture(10, "OPEN", "alice", "Add auth cache", "feature/auth"),
+		remotePRFixture(11, "OPEN", "bob", "Remove cache", "bug/remove-cache"),
+	}
+	prs[0].Assignees = []GitHubActor{{Login: "zoe"}}
+	prs[1].ReviewRequests = []ReviewRequest{{RequestedReviewer: GitHubActor{Login: "alice"}}}
+
+	got := strings.Join(remotePRUsers(prs), ",")
+	for _, want := range []string{"alice", "bob", "zoe"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("remotePRUsers() = %q, missing %s", got, want)
+		}
+	}
+	if strings.Count(got, "alice") != 1 {
+		t.Fatalf("remotePRUsers() = %q, want alice once", got)
+	}
+}
+
+func TestBuildPullRequestChatPrompt(t *testing.T) {
+	pr := remotePRFixture(42, "OPEN", "alice", "Fix token refresh", "feature/token-refresh")
+	pr.URL = "https://github.com/owner/repo/pull/42"
+	pr.Body = "This changes token refresh behavior."
+	pr.Files = []PullFile{{Path: "auth/session.go", Additions: 40, Deletions: 12}}
+	pr.Comments = []PullComment{{Author: GitHubActor{Login: "reviewer"}, Body: "Please check retry behavior."}}
+	pr.Diff = strings.Repeat("diff --git a/auth/session.go b/auth/session.go\n", 500)
+
+	prompt := buildPullRequestChatPrompt(pr, "what is risky?")
+	for _, want := range []string{"Question: what is risky?", "PR #42: Fix token refresh", "auth/session.go", "reviewer", "Diff:"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q in %q", want, prompt)
+		}
+	}
+	if len([]rune(prompt)) > 18000 {
+		t.Fatalf("prompt length = %d, want truncation", len([]rune(prompt)))
+	}
+}
+
+func TestRemotePullRequestFromREST(t *testing.T) {
+	mergedAt := "2026-05-05T12:00:00Z"
+	got := remotePullRequestFromREST(restPullRequest{
+		Number:       42,
+		Title:        "Fix auth refresh",
+		HTMLURL:      "https://github.com/owner/repo/pull/42",
+		State:        "closed",
+		Body:         "body",
+		Draft:        true,
+		User:         restActor{Login: "alice"},
+		Assignees:    []restActor{{Login: "bob"}},
+		Labels:       []restLabel{{Name: "backend"}},
+		Head:         restRef{Ref: "feature/auth", SHA: "abc"},
+		Base:         restRef{Ref: "main"},
+		ChangedFiles: 3,
+		Additions:    100,
+		Deletions:    20,
+		CreatedAt:    "2026-05-04T12:00:00Z",
+		UpdatedAt:    "2026-05-05T12:00:00Z",
+		MergedAt:     &mergedAt,
+	})
+
+	if got.State != "MERGED" || got.Number != 42 || got.HeadRefName != "feature/auth" || got.Author.Login != "alice" {
+		t.Fatalf("remotePullRequestFromREST() = %#v", got)
+	}
+	if got.HeadSHA != "abc" {
+		t.Fatalf("HeadSHA = %q, want abc", got.HeadSHA)
+	}
+	if len(got.Assignees) != 1 || got.Assignees[0].Login != "bob" {
+		t.Fatalf("Assignees = %#v", got.Assignees)
+	}
+	if len(got.Labels) != 1 || got.Labels[0].Name != "backend" {
+		t.Fatalf("Labels = %#v", got.Labels)
+	}
+}
+
+func TestChecksSummaryAndReviewReadiness(t *testing.T) {
+	pr := remotePRFixture(10, "OPEN", "alice", "Ready PR", "feature/ready")
+	pr.StatusCheckRollup = []StatusCheck{{Name: "test", Status: "completed", Conclusion: "success"}}
+	if got := checksSummary(pr.StatusCheckRollup); got != "1 pass" {
+		t.Fatalf("checksSummary(pass) = %q", got)
+	}
+	if got := reviewReadiness(pr); got != "ready" {
+		t.Fatalf("reviewReadiness(pass) = %q", got)
+	}
+
+	pr.StatusCheckRollup = []StatusCheck{{Name: "test", Status: "completed", Conclusion: "failure"}}
+	if got := checksSummary(pr.StatusCheckRollup); got != "1 fail" {
+		t.Fatalf("checksSummary(fail) = %q", got)
+	}
+	if got := reviewReadiness(pr); got != "blocked" {
+		t.Fatalf("reviewReadiness(fail) = %q", got)
+	}
+
+	pr.StatusCheckRollup = []StatusCheck{{Name: "test", Status: "queued", Conclusion: ""}}
+	if got := reviewReadiness(pr); got != "waiting" {
+		t.Fatalf("reviewReadiness(waiting) = %q", got)
+	}
+
+	pr.IsDraft = true
+	if got := reviewReadiness(pr); got != "draft" {
+		t.Fatalf("reviewReadiness(draft) = %q", got)
+	}
+}
+
+func TestFailedStatusChecks(t *testing.T) {
+	checks := []StatusCheck{
+		{Name: "pass", Status: "completed", Conclusion: "success"},
+		{Name: "fail", Status: "completed", Conclusion: "failure"},
+		{Name: "cancel", Status: "completed", Conclusion: "cancelled"},
+		{Name: "wait", Status: "queued"},
+	}
+	failed := failedStatusChecks(checks)
+	if len(failed) != 2 || failed[0].Name != "fail" || failed[1].Name != "cancel" {
+		t.Fatalf("failedStatusChecks() = %#v", failed)
+	}
+}
+
+func TestLiveGitHubBluesteelRemotePullRequests(t *testing.T) {
+	cfg := liveBluesteelConfig(t)
+	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+	defer cancel()
+
+	prs, err := loadRemotePullRequests(ctx, cfg)
+	if err != nil {
+		t.Fatalf("loadRemotePullRequests() live error = %v", err)
+	}
+	if len(prs) == 0 {
+		t.Fatal("loadRemotePullRequests() returned no PRs for bluesteel")
+	}
+	for _, pr := range prs {
+		if pr.Number == 0 || pr.Title == "" || pr.URL == "" || pr.Author.Login == "" {
+			t.Fatalf("live PR has missing core fields: %#v", pr)
+		}
+		if pr.State != "OPEN" && pr.State != "CLOSED" && pr.State != "MERGED" {
+			t.Fatalf("live PR state = %q, want OPEN/CLOSED/MERGED for PR #%d", pr.State, pr.Number)
+		}
+	}
+}
+
+func TestLiveGitHubBluesteelRemotePullRequestDetail(t *testing.T) {
+	cfg := liveBluesteelConfig(t)
+	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+	defer cancel()
+
+	prs, err := loadRemotePullRequests(ctx, cfg)
+	if err != nil {
+		t.Fatalf("loadRemotePullRequests() live error = %v", err)
+	}
+	if len(prs) == 0 {
+		t.Fatal("loadRemotePullRequests() returned no PRs for bluesteel")
+	}
+
+	detail, err := loadRemotePullRequestDetail(ctx, cfg, prs[0].Number)
+	if err != nil {
+		t.Fatalf("loadRemotePullRequestDetail(%d) live error = %v", prs[0].Number, err)
+	}
+	if detail.Number != prs[0].Number || detail.Title == "" || detail.URL == "" {
+		t.Fatalf("live PR detail mismatch: list=%#v detail=%#v", prs[0], detail)
+	}
+	if detail.HeadRefName == "" || detail.BaseRefName == "" {
+		t.Fatalf("live PR detail missing branches: %#v", detail)
+	}
+	if detail.Diff == "" {
+		t.Fatalf("live PR detail has empty diff for PR #%d", detail.Number)
+	}
+	if detail.ChangedFiles > 0 && len(detail.Files) == 0 {
+		t.Fatalf("live PR detail changedFiles=%d but Files is empty", detail.ChangedFiles)
+	}
+}
+
+func TestRunAgentWithPrompt(t *testing.T) {
+	bin := t.TempDir()
+	agentPath := filepath.Join(bin, "fake-agent")
+	writeExecutable(t, agentPath, "#!/bin/sh\ninput=\"\"\nwhile IFS= read -r line; do input=\"$input $line\"; done\ncase \"$input\" in *risk*) echo 'risk found';; *) echo 'no risk';; esac\n")
+	t.Setenv("PATH", bin)
+
+	output, err := runAgentWithPrompt(context.Background(), "", "fake-agent", "tell me risk\n")
+	if err != nil {
+		t.Fatalf("runAgentWithPrompt() error = %v", err)
+	}
+	if strings.TrimSpace(output) != "risk found" {
+		t.Fatalf("output = %q, want risk found", output)
+	}
+}
+
 func TestCreateWorktreeExistingLocalBranch(t *testing.T) {
 	cfg := testGitRepo(t)
 	runGit(t, cfg.ActiveProfile.RepositoryPath, "branch", "local-feature")
@@ -574,6 +791,72 @@ func TestCreateWorktreeKnownPathSelectsExisting(t *testing.T) {
 	}
 	if !existing {
 		t.Fatal("existing = false, want true")
+	}
+}
+
+func TestEnsurePullRequestWorktreeFetchesPRRef(t *testing.T) {
+	cfg := testGitRepo(t)
+	repo := cfg.ActiveProfile.RepositoryPath
+	writeRepoFile(t, repo, "pr.txt", "pr\n")
+	runGit(t, repo, "checkout", "-b", "remote-pr-branch")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "pr branch")
+	runGit(t, repo, "push", "origin", "HEAD:refs/pull/42/head")
+	runGit(t, repo, "checkout", "main")
+
+	pr := remotePRFixture(42, "OPEN", "alice", "PR branch", "fork-branch")
+	wt, existing, err := ensurePullRequestWorktree(context.Background(), cfg, pr)
+	if err != nil {
+		t.Fatalf("ensurePullRequestWorktree() error = %v", err)
+	}
+	if existing {
+		t.Fatal("existing = true, want false")
+	}
+	assertGitBranch(t, wt.Path, "pr-42-fork-branch")
+	if _, err := os.Stat(filepath.Join(wt.Path, "pr.txt")); err != nil {
+		t.Fatalf("PR file missing from worktree: %v", err)
+	}
+}
+
+func TestEnsurePullRequestWorktreeReusesExisting(t *testing.T) {
+	cfg := testGitRepo(t)
+	pr := remotePRFixture(42, "OPEN", "alice", "PR branch", "existing-pr")
+	path := createWorktreePath(cfg, "pr-42-existing-pr")
+	runGit(t, cfg.ActiveProfile.RepositoryPath, "branch", "pr-42-existing-pr")
+	runGit(t, cfg.ActiveProfile.RepositoryPath, "worktree", "add", path, "pr-42-existing-pr")
+
+	wt, existing, err := ensurePullRequestWorktree(context.Background(), cfg, pr)
+	if err != nil {
+		t.Fatalf("ensurePullRequestWorktree() error = %v", err)
+	}
+	if !existing {
+		t.Fatal("existing = false, want true")
+	}
+	if canonicalPath(wt.Path) != canonicalPath(path) {
+		t.Fatalf("path = %q, want %q", wt.Path, path)
+	}
+}
+
+func TestEnsurePullRequestWorktreePrefersExistingHeadBranchWorktree(t *testing.T) {
+	cfg := testGitRepo(t)
+	branch := "feature-existing"
+	runGit(t, cfg.ActiveProfile.RepositoryPath, "branch", branch)
+	existingPath := createWorktreePath(cfg, branch)
+	runGit(t, cfg.ActiveProfile.RepositoryPath, "worktree", "add", existingPath, branch)
+
+	pr := remotePRFixture(42, "OPEN", "alice", "Existing branch PR", branch)
+	wt, existing, err := ensurePullRequestWorktree(context.Background(), cfg, pr)
+	if err != nil {
+		t.Fatalf("ensurePullRequestWorktree() error = %v", err)
+	}
+	if !existing {
+		t.Fatal("existing = false, want true")
+	}
+	if canonicalPath(wt.Path) != canonicalPath(existingPath) {
+		t.Fatalf("path = %q, want existing branch worktree %q", wt.Path, existingPath)
+	}
+	if fallback := createWorktreePath(cfg, "pr-42-"+branch); knownWorktreePath(context.Background(), cfg.ActiveProfile.RepositoryPath, fallback) {
+		t.Fatalf("created fallback PR worktree %q instead of reusing %q", fallback, existingPath)
 	}
 }
 
@@ -679,6 +962,66 @@ func assertGitBranch(t *testing.T, repo string, branch string) {
 	got := strings.TrimSpace(runGit(t, repo, "branch", "--show-current"))
 	if got != branch {
 		t.Fatalf("branch = %q, want %q", got, branch)
+	}
+}
+
+func remotePRFixture(number int, state string, author string, title string, branch string) RemotePullRequest {
+	return RemotePullRequest{
+		Number:      number,
+		Title:       title,
+		URL:         fmt.Sprintf("https://github.com/owner/repo/pull/%d", number),
+		State:       state,
+		HeadRefName: branch,
+		BaseRefName: "main",
+		Author:      GitHubActor{Login: author},
+		UpdatedAt:   "2026-05-05T12:00:00Z",
+	}
+}
+
+func liveBluesteelConfig(t *testing.T) Config {
+	t.Helper()
+	if os.Getenv("WT_MANAGER_LIVE_GH") != "1" {
+		t.Skip("set WT_MANAGER_LIVE_GH=1 to run live gh/bluesteel integration tests")
+	}
+	if _, err := exec.LookPath("gh"); err != nil {
+		t.Skipf("gh not found: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := runCommand(ctx, "", "gh", "auth", "status"); err != nil {
+		t.Skipf("gh is not authenticated: %v", err)
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir() error = %v", err)
+	}
+	appConfig, configPath, existed, err := loadAppConfig(homeDir)
+	if err != nil {
+		t.Fatalf("loadAppConfig() error = %v", err)
+	}
+	if !existed {
+		t.Fatalf("%s does not exist", configPath)
+	}
+	profile := findProfile(appConfig.Profiles, "bluesteel")
+	if profile == nil {
+		t.Fatalf("bluesteel profile missing from %s", configPath)
+	}
+	resolved := resolveProfilePaths(*profile, homeDir)
+	if resolved.GitHubRepo == "" {
+		t.Fatalf("bluesteel profile has no githubRepo in %s", configPath)
+	}
+	if _, err := os.Stat(resolved.RepositoryPath); err != nil {
+		t.Fatalf("bluesteel repositoryPath %s is unavailable: %v", resolved.RepositoryPath, err)
+	}
+
+	return Config{
+		HomeDir:       homeDir,
+		ConfigPath:    configPath,
+		App:           appConfig,
+		ActiveProfile: resolved,
+		RepoSlug:      resolved.GitHubRepo,
+		ConfigExists:  true,
 	}
 }
 
