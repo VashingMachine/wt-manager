@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VashingMachine/wt-manager/internal/core"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -38,6 +39,7 @@ type setupResult struct {
 }
 
 type setupModel struct {
+	services       core.Services
 	cfg            Config
 	startup        bool
 	step           setupStep
@@ -63,6 +65,7 @@ type setupAgentOption struct {
 }
 
 type directoryPicker struct {
+	services core.Services
 	input    textinput.Model
 	dirs     []string
 	filtered []string
@@ -70,13 +73,13 @@ type directoryPicker struct {
 	homeDir  string
 }
 
-func newSetupModel(cfg Config, startup bool) setupModel {
+func newSetupModel(cfg Config, startup bool, services core.Services) setupModel {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	repoPath := cfg.SetupRepo
 	if repoPath == "" {
-		if found, ok := inferRepoFromCWD(); ok {
+		if found, ok := services.InferRepoFromCWD(); ok {
 			repoPath = found
 		}
 	}
@@ -89,7 +92,7 @@ func newSetupModel(cfg Config, startup bool) setupModel {
 	profileName := ""
 	worktreesDir := ""
 	if repoPath != "" {
-		profile := profileFromRepo(ctx, cfg.HomeDir, repoPath)
+		profile := services.ProfileFromRepo(ctx, cfg.HomeDir, repoPath)
 		profileName = profile.Name
 		worktreesDir = profile.WorktreesDir
 	}
@@ -125,9 +128,9 @@ func newSetupModel(cfg Config, startup bool) setupModel {
 	}
 	focusSetupInput(step, &profileInput, &customName, &customCommand)
 
-	seeds := setupDirectorySeeds(cfg.HomeDir, repoPath)
-	repoPicker := newDirectoryPicker(cfg.HomeDir, seeds, defaultRepo)
-	worktreePicker := newDirectoryPicker(cfg.HomeDir, setupDirectorySeeds(cfg.HomeDir, worktreesDir), worktreesDir)
+	seeds := setupDirectorySeeds(services, cfg.HomeDir, repoPath)
+	repoPicker := newDirectoryPicker(services, cfg.HomeDir, seeds, defaultRepo)
+	worktreePicker := newDirectoryPicker(services, cfg.HomeDir, setupDirectorySeeds(services, cfg.HomeDir, worktreesDir), worktreesDir)
 
 	existingAgents := []AgentTool(nil)
 	if cfg.ConfigExists {
@@ -135,6 +138,7 @@ func newSetupModel(cfg Config, startup bool) setupModel {
 	}
 
 	return setupModel{
+		services:       services,
 		cfg:            cfg,
 		startup:        startup,
 		step:           step,
@@ -143,7 +147,7 @@ func newSetupModel(cfg Config, startup bool) setupModel {
 		profileInput:   profileInput,
 		customName:     customName,
 		customCommand:  customCommand,
-		agentOptions:   detectSetupAgents(existingAgents, cfg.App.DefaultAgent, exec.LookPath),
+		agentOptions:   detectSetupAgents(services, existingAgents, cfg.App.DefaultAgent, exec.LookPath),
 		repoPath:       repoPath,
 		worktreesDir:   worktreesDir,
 		status:         cfg.SetupReason,
@@ -206,7 +210,7 @@ func (s setupModel) updateRepoStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
 		selected := s.repoPicker.SelectedPath()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		repoPath, ok := repoRootFromDir(ctx, expandPath(selected, s.cfg.HomeDir))
+		repoPath, ok := s.services.RepoRootFromDir(ctx, s.services.ExpandPath(selected, s.cfg.HomeDir))
 		if !ok {
 			s.status = fmt.Sprintf("%s is not inside a git repository", selected)
 			return s, nil
@@ -217,7 +221,7 @@ func (s setupModel) updateRepoStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
 		}
 		if s.worktreesDir == "" || s.worktreesDir == s.cfg.HomeDir {
 			s.worktreesDir = filepath.Dir(repoPath)
-			s.worktreePicker = newDirectoryPicker(s.cfg.HomeDir, setupDirectorySeeds(s.cfg.HomeDir, s.worktreesDir), s.worktreesDir)
+			s.worktreePicker = newDirectoryPicker(s.services, s.cfg.HomeDir, setupDirectorySeeds(s.services, s.cfg.HomeDir, s.worktreesDir), s.worktreesDir)
 		}
 		s.step = setupStepProfile
 		s.profileInput.Focus()
@@ -252,7 +256,7 @@ func (s setupModel) updateProfileStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
 func (s setupModel) updateWorktreesStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
 	switch key.String() {
 	case "enter":
-		s.worktreesDir = expandPath(s.worktreePicker.SelectedPath(), s.cfg.HomeDir)
+		s.worktreesDir = s.services.ExpandPath(s.worktreePicker.SelectedPath(), s.cfg.HomeDir)
 		if strings.TrimSpace(s.worktreesDir) == "" {
 			s.status = "Worktrees folder is required"
 			return s, nil
@@ -366,11 +370,11 @@ func (s setupModel) updateGitHubStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
 			s.status = err.Error()
 			return s, nil
 		}
-		if err := os.MkdirAll(expandPath(s.worktreesDir, s.cfg.HomeDir), 0o755); err != nil {
+		if err := os.MkdirAll(s.services.ExpandPath(s.worktreesDir, s.cfg.HomeDir), 0o755); err != nil {
 			s.status = fmt.Sprintf("Create worktrees folder failed: %v", err)
 			return s, nil
 		}
-		if err := writeAppConfig(cfg.ConfigPath, cfg.App); err != nil {
+		if err := s.services.WriteAppConfig(cfg.ConfigPath, cfg.App); err != nil {
 			s.status = fmt.Sprintf("Save config failed: %v", err)
 			return s, nil
 		}
@@ -468,17 +472,17 @@ func setupCardStyle(width int) lipgloss.Style {
 		Width(max(64, min(96, width-6)))
 }
 
-func newDirectoryPicker(homeDir string, seeds []string, initial string) directoryPicker {
+func newDirectoryPicker(services core.Services, homeDir string, seeds []string, initial string) directoryPicker {
 	input := textinput.New()
 	input.Prompt = "search/path: "
 	input.Placeholder = "~/projects"
 	input.CharLimit = 240
 	input.Width = 72
-	input.SetValue(compactPath(initial, homeDir))
+	input.SetValue(services.CompactPath(initial, homeDir))
 	input.CursorEnd()
 	input.Focus()
 
-	picker := directoryPicker{input: input, dirs: discoverDirectories(seeds, 3, 700), homeDir: homeDir}
+	picker := directoryPicker{services: services, input: input, dirs: discoverDirectories(services, seeds, 3, 700), homeDir: homeDir}
 	picker.refilter()
 	return picker
 }
@@ -504,7 +508,7 @@ func (p directoryPicker) Update(key tea.KeyMsg) (directoryPicker, tea.Cmd) {
 
 func (p *directoryPicker) refilter() {
 	query := strings.TrimSpace(p.input.Value())
-	p.filtered = filterDirectories(p.dirs, query, p.homeDir)
+	p.filtered = filterDirectories(p.services, p.dirs, query, p.homeDir)
 	if p.cursor >= len(p.filtered) {
 		p.cursor = max(0, len(p.filtered)-1)
 	}
@@ -513,7 +517,7 @@ func (p *directoryPicker) refilter() {
 func (p directoryPicker) SelectedPath() string {
 	query := strings.TrimSpace(p.input.Value())
 	if query != "" && (strings.HasPrefix(query, "~") || strings.HasPrefix(query, "/") || strings.HasPrefix(query, ".")) {
-		typed := expandPath(query, p.homeDir)
+		typed := p.services.ExpandPath(query, p.homeDir)
 		if _, err := os.Stat(typed); err == nil {
 			return typed
 		}
@@ -522,7 +526,7 @@ func (p directoryPicker) SelectedPath() string {
 		}
 	}
 	if len(p.filtered) == 0 {
-		return expandPath(query, p.homeDir)
+		return p.services.ExpandPath(query, p.homeDir)
 	}
 	return p.filtered[min(max(p.cursor, 0), len(p.filtered)-1)]
 }
@@ -537,7 +541,7 @@ func (p directoryPicker) View(width int) string {
 			cursor = "> "
 			style = infoStyle.Copy().Bold(true)
 		}
-		lines = append(lines, style.Render(cursor+compactPath(p.filtered[i], p.homeDir)))
+		lines = append(lines, style.Render(cursor+p.services.CompactPath(p.filtered[i], p.homeDir)))
 	}
 	if len(p.filtered) == 0 {
 		lines = append(lines, mutedStyle.Render("  no matching folders; enter uses typed path"))
@@ -545,13 +549,13 @@ func (p directoryPicker) View(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func setupDirectorySeeds(homeDir string, paths ...string) []string {
+func setupDirectorySeeds(services core.Services, homeDir string, paths ...string) []string {
 	seeds := []string{}
 	for _, path := range paths {
 		if path == "" {
 			continue
 		}
-		expanded := expandPath(path, homeDir)
+		expanded := services.ExpandPath(path, homeDir)
 		seeds = append(seeds, expanded, filepath.Dir(expanded))
 	}
 	seeds = append(seeds,
@@ -563,11 +567,11 @@ func setupDirectorySeeds(homeDir string, paths ...string) []string {
 	return uniqueCleanPaths(seeds)
 }
 
-func discoverDirectories(seeds []string, maxDepth int, maxDirs int) []string {
+func discoverDirectories(services core.Services, seeds []string, maxDepth int, maxDirs int) []string {
 	seen := map[string]struct{}{}
 	var dirs []string
 	for _, seed := range uniqueCleanPaths(seeds) {
-		walkDirectories(seed, 0, maxDepth, maxDirs, seen, &dirs)
+		walkDirectories(services, seed, 0, maxDepth, maxDirs, seen, &dirs)
 		if len(dirs) >= maxDirs {
 			break
 		}
@@ -576,7 +580,7 @@ func discoverDirectories(seeds []string, maxDepth int, maxDirs int) []string {
 	return dirs
 }
 
-func walkDirectories(path string, depth int, maxDepth int, maxDirs int, seen map[string]struct{}, dirs *[]string) {
+func walkDirectories(services core.Services, path string, depth int, maxDepth int, maxDirs int, seen map[string]struct{}, dirs *[]string) {
 	if len(*dirs) >= maxDirs || depth > maxDepth {
 		return
 	}
@@ -584,7 +588,7 @@ func walkDirectories(path string, depth int, maxDepth int, maxDirs int, seen map
 	if err != nil || !info.IsDir() {
 		return
 	}
-	clean := canonicalPath(path)
+	clean := services.CanonicalPath(path)
 	if _, ok := seen[clean]; ok {
 		return
 	}
@@ -599,7 +603,7 @@ func walkDirectories(path string, depth int, maxDepth int, maxDirs int, seen map
 		if len(*dirs) >= maxDirs || !entry.IsDir() || skipSetupDir(entry) {
 			continue
 		}
-		walkDirectories(filepath.Join(path, entry.Name()), depth+1, maxDepth, maxDirs, seen, dirs)
+		walkDirectories(services, filepath.Join(path, entry.Name()), depth+1, maxDepth, maxDirs, seen, dirs)
 	}
 }
 
@@ -628,7 +632,7 @@ func uniqueCleanPaths(paths []string) []string {
 	return result
 }
 
-func filterDirectories(dirs []string, query string, homeDir string) []string {
+func filterDirectories(services core.Services, dirs []string, query string, homeDir string) []string {
 	query = strings.TrimSpace(strings.ToLower(query))
 	if query == "" {
 		return append([]string(nil), dirs...)
@@ -639,7 +643,7 @@ func filterDirectories(dirs []string, query string, homeDir string) []string {
 	}
 	var scored []scoredDir
 	for _, dir := range dirs {
-		candidate := strings.ToLower(compactPath(dir, homeDir))
+		candidate := strings.ToLower(services.CompactPath(dir, homeDir))
 		base := strings.ToLower(filepath.Base(dir))
 		score := -1
 		switch {
@@ -666,8 +670,8 @@ func filterDirectories(dirs []string, query string, homeDir string) []string {
 		if scored[i].score != scored[j].score {
 			return scored[i].score < scored[j].score
 		}
-		left := strings.ToLower(compactPath(scored[i].path, homeDir))
-		right := strings.ToLower(compactPath(scored[j].path, homeDir))
+		left := strings.ToLower(services.CompactPath(scored[i].path, homeDir))
+		right := strings.ToLower(services.CompactPath(scored[j].path, homeDir))
 		if len(left) != len(right) {
 			return len(left) < len(right)
 		}
@@ -693,8 +697,8 @@ func fuzzyMatch(candidate string, query string) bool {
 	return idx == len(query)
 }
 
-func detectSetupAgents(existing []AgentTool, defaultAgent string, lookup func(string) (string, error)) []setupAgentOption {
-	defaults := defaultAppConfig().Agents
+func detectSetupAgents(services core.Services, existing []AgentTool, defaultAgent string, lookup func(string) (string, error)) []setupAgentOption {
+	defaults := services.DefaultAppConfig().Agents
 	options := make([]setupAgentOption, 0, len(defaults)+len(existing))
 	seen := map[string]struct{}{}
 	for _, agent := range defaults {
@@ -747,7 +751,7 @@ func completeSetupConfig(s setupModel) (Config, []string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return cfg, checkGitHubCLI(ctx, cfg.RepoSlug), nil
+	return cfg, s.services.CheckGitHubCLI(ctx, cfg.RepoSlug), nil
 }
 
 func buildSetupConfig(s setupModel) (Config, error) {
@@ -758,7 +762,7 @@ func buildSetupConfig(s setupModel) (Config, error) {
 	if strings.TrimSpace(s.repoPath) == "" {
 		return Config{}, errors.New("repository path is required")
 	}
-	worktreesDir := expandPath(s.worktreesDir, s.cfg.HomeDir)
+	worktreesDir := s.services.ExpandPath(s.worktreesDir, s.cfg.HomeDir)
 	if strings.TrimSpace(worktreesDir) == "" {
 		return Config{}, errors.New("worktrees folder is required")
 	}
@@ -772,31 +776,31 @@ func buildSetupConfig(s setupModel) (Config, error) {
 
 	profile := RepositoryProfile{
 		Name:           profileName,
-		RepositoryPath: compactPath(s.repoPath, s.cfg.HomeDir),
-		WorktreesDir:   compactPath(worktreesDir, s.cfg.HomeDir),
+		RepositoryPath: s.services.CompactPath(s.repoPath, s.cfg.HomeDir),
+		WorktreesDir:   s.services.CompactPath(worktreesDir, s.cfg.HomeDir),
 		RemoteName:     "origin",
 	}
-	profile.GitHubRepo = inferGitHubRepo(ctx, resolveProfilePaths(profile, s.cfg.HomeDir))
+	profile.GitHubRepo = s.services.InferGitHubRepo(ctx, s.services.ResolveProfilePaths(profile, s.cfg.HomeDir))
 
 	appConfig := s.cfg.App
 	appConfig.Agents = agents
-	if findAgent(agents, appConfig.DefaultAgent) == nil {
+	if s.services.FindAgent(agents, appConfig.DefaultAgent) == nil {
 		appConfig.DefaultAgent = agents[0].Name
 	}
-	appConfig.Profiles = upsertProfile(appConfig.Profiles, profile, s.cfg.HomeDir)
+	appConfig.Profiles = upsertProfile(s.services, appConfig.Profiles, profile, s.cfg.HomeDir)
 	appConfig.DefaultProfile = profile.Name
-	normalized, _, err := normalizeAppConfig(appConfig)
+	normalized, _, err := s.services.NormalizeAppConfig(appConfig)
 	if err != nil {
 		return Config{}, err
 	}
 
-	active, err := activeProfile(normalized, s.cfg.HomeDir)
+	active, err := s.services.ActiveProfile(normalized, s.cfg.HomeDir)
 	if err != nil {
 		return Config{}, err
 	}
 	repoSlug := active.GitHubRepo
 	if repoSlug == "" {
-		repoSlug = inferGitHubRepo(ctx, active)
+		repoSlug = s.services.InferGitHubRepo(ctx, active)
 	}
 
 	return Config{
@@ -809,33 +813,15 @@ func buildSetupConfig(s setupModel) (Config, error) {
 	}, nil
 }
 
-func upsertProfile(profiles []RepositoryProfile, next RepositoryProfile, homeDir string) []RepositoryProfile {
-	nextPath := canonicalPath(expandPath(next.RepositoryPath, homeDir))
+func upsertProfile(services core.Services, profiles []RepositoryProfile, next RepositoryProfile, homeDir string) []RepositoryProfile {
+	nextPath := services.CanonicalPath(services.ExpandPath(next.RepositoryPath, homeDir))
 	for i := range profiles {
-		if profiles[i].Name == next.Name || canonicalPath(expandPath(profiles[i].RepositoryPath, homeDir)) == nextPath {
+		if profiles[i].Name == next.Name || services.CanonicalPath(services.ExpandPath(profiles[i].RepositoryPath, homeDir)) == nextPath {
 			profiles[i] = next
 			return profiles
 		}
 	}
 	return append(profiles, next)
-}
-
-func checkGitHubCLI(ctx context.Context, repoSlug string) []string {
-	if _, err := exec.LookPath("gh"); err != nil {
-		return []string{"gh not found; PR lookup will be disabled until gh is installed"}
-	}
-	if _, err := runCommand(ctx, "", "gh", "--version"); err != nil {
-		return []string{"gh is installed but not runnable; PR lookup may be unavailable"}
-	}
-	if _, err := runCommand(ctx, "", "gh", "auth", "status"); err != nil {
-		return []string{"gh is not authenticated; PR lookup will be unavailable until gh auth login"}
-	}
-	if repoSlug != "" {
-		if _, err := runCommand(ctx, "", "gh", "repo", "view", repoSlug); err != nil {
-			return []string{fmt.Sprintf("gh cannot access %s; PR lookup may be unavailable", repoSlug)}
-		}
-	}
-	return nil
 }
 
 func agentNames(agents []AgentTool) []string {

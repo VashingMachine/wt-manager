@@ -1,9 +1,10 @@
-package main
+package tui
 
 import (
 	"strings"
 	"testing"
 
+	"github.com/VashingMachine/wt-manager/internal/services"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -133,6 +134,84 @@ func TestTogglePRRadarDoesNotPanicWithExistingRows(t *testing.T) {
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
 }
 
+func TestToggleFromPRRadarRefreshesWorktrees(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	m.prMode = true
+	m.remotePRs = []RemotePullRequest{layoutTestRemotePR()}
+	m.visiblePRs = m.remotePRs
+	m.table.SetRows(nil)
+	m.table.SetColumns(m.activeColumns())
+	m.rebuildRows()
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
+	got := next.(model)
+	if got.prMode {
+		t.Fatal("PR Radar mode stayed enabled")
+	}
+	if !got.loading {
+		t.Fatal("switching to worktree mode did not start refresh")
+	}
+	if cmd == nil {
+		t.Fatal("switching to worktree mode returned no refresh command")
+	}
+}
+
+func TestStaleRemotePRDetailResultIsIgnored(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	m.prMode = true
+	first := layoutTestRemotePR()
+	second := layoutTestRemotePR()
+	second.Number = 432
+	second.Title = "Second PR"
+	m.remotePRs = []RemotePullRequest{first, second}
+	m.visiblePRs = m.remotePRs
+	m.table.SetRows(nil)
+	m.table.SetColumns(m.activeColumns())
+	m.rebuildRows()
+	m.selectedPRNumber = first.Number
+	m.prDetailRequest = 2
+	m.prDetailLoading = true
+
+	next, _ := m.Update(remotePRDetailResult{Number: first.Number, RequestID: 1, PullRequest: first})
+	got := next.(model)
+	if got.prDetail != nil {
+		t.Fatalf("stale detail result set prDetail = %#v", got.prDetail)
+	}
+	if !got.prDetailLoading {
+		t.Fatal("stale detail result cleared loading state")
+	}
+}
+
+func TestRemotePRDetailResultRefreshesSelectedListRow(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	m.prMode = true
+	pr := layoutTestRemotePR()
+	pr.StatusCheckRollup = []StatusCheck{{Name: "tests", Status: "queued"}}
+	m.remotePRs = []RemotePullRequest{pr}
+	m.visiblePRs = m.remotePRs
+	m.table.SetRows(nil)
+	m.table.SetColumns(m.activeColumns())
+	m.rebuildRows()
+	m.selectedPRNumber = pr.Number
+	m.prDetailRequest = 1
+	m.prDetailLoading = true
+
+	detail := pr
+	detail.StatusCheckRollup = []StatusCheck{{Name: "tests", Status: "completed", Conclusion: "failure"}}
+	next, _ := m.Update(remotePRDetailResult{Number: pr.Number, RequestID: 1, PullRequest: detail})
+	got := next.(model)
+	if got.prDetail == nil || checksSummary(got.prDetail.StatusCheckRollup) != "1 fail" {
+		t.Fatalf("detail was not loaded: %#v", got.prDetail)
+	}
+	if checksSummary(got.visiblePRs[0].StatusCheckRollup) != "1 fail" {
+		t.Fatalf("visible PR row was not refreshed: %#v", got.visiblePRs[0].StatusCheckRollup)
+	}
+	view := ansi.Strip(got.tableView())
+	if !strings.Contains(view, "1 fail") || !strings.Contains(view, "blocked") {
+		t.Fatalf("PR table did not render refreshed detail fields: %q", view)
+	}
+}
+
 func TestRemotePRDetailViewContentWrapsToWidth(t *testing.T) {
 	pr := layoutTestRemotePR()
 	pr.Body = strings.Repeat("Risky auth change ", 30)
@@ -196,7 +275,7 @@ func TestHelpModalListsKeybindings(t *testing.T) {
 }
 
 func layoutTestModel(width, height int) model {
-	m := newModel(Config{
+	m := NewModel(Config{
 		ActiveProfile: RepositoryProfile{
 			Name:           "bluesteel",
 			RepositoryPath: "/Users/test/projects/bluesteel",
@@ -207,7 +286,7 @@ func layoutTestModel(width, height int) model {
 			DefaultAgent: "opencode",
 			Agents:       []AgentTool{{Name: "opencode", Command: "opencode"}},
 		},
-	})
+	}, services.NewService())
 	m.ready = true
 	m.loading = false
 	m.width = width

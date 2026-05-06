@@ -1,4 +1,4 @@
-package main
+package services
 
 import (
 	"bufio"
@@ -16,185 +16,27 @@ import (
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/VashingMachine/wt-manager/internal/core"
 )
 
 const refreshTimeout = 45 * time.Second
 
-type Config struct {
-	HomeDir       string
-	ConfigPath    string
-	App           AppConfig
-	ActiveProfile RepositoryProfile
-	RepoSlug      string
-	ConfigExists  bool
-	SetupNeeded   bool
-	SetupReason   string
-	SetupRepo     string
-}
-
-type AppConfig struct {
-	DefaultProfile string              `json:"defaultProfile"`
-	Profiles       []RepositoryProfile `json:"profiles"`
-	DefaultAgent   string              `json:"defaultAgent"`
-	Agents         []AgentTool         `json:"agents"`
-}
-
-type RepositoryProfile struct {
-	Name           string `json:"name"`
-	RepositoryPath string `json:"repositoryPath"`
-	WorktreesDir   string `json:"worktreesDir"`
-	RemoteName     string `json:"remoteName"`
-	GitHubRepo     string `json:"githubRepo"`
-}
-
-type AgentTool struct {
-	Name    string `json:"name"`
-	Command string `json:"command"`
-}
-
-type Worktree struct {
-	Name      string
-	Path      string
-	Branch    string
-	Head      string
-	Missing   bool
-	Detached  bool
-	Prunable  bool
-	IsMain    bool
-	Managed   bool
-	Status    RepoStatus
-	Commit    CommitInfo
-	PR        *PullRequest
-	LoadError string
-}
-
-type RepoStatus struct {
-	Dirty     bool
-	Ahead     int
-	Behind    int
-	Staged    int
-	Unstaged  int
-	Untracked int
-	Conflicts int
-	Files     []string
-}
-
-type CommitInfo struct {
-	Hash     string
-	Relative string
-	Subject  string
-}
-
-type PullRequest struct {
-	HeadRefName string `json:"headRefName"`
-	Number      int    `json:"number"`
-	Title       string `json:"title"`
-	URL         string `json:"url"`
-	State       string `json:"state"`
-	Body        string `json:"body"`
-	Author      struct {
-		Login string `json:"login"`
-		Name  string `json:"name"`
-	} `json:"author"`
-}
-
-type RemotePullRequest struct {
-	Number            int             `json:"number"`
-	Title             string          `json:"title"`
-	URL               string          `json:"url"`
-	State             string          `json:"state"`
-	Body              string          `json:"body"`
-	HeadRefName       string          `json:"headRefName"`
-	HeadSHA           string          `json:"-"`
-	BaseRefName       string          `json:"baseRefName"`
-	IsDraft           bool            `json:"isDraft"`
-	Author            GitHubActor     `json:"author"`
-	Assignees         []GitHubActor   `json:"assignees"`
-	ReviewRequests    []ReviewRequest `json:"reviewRequests"`
-	Labels            []PullLabel     `json:"labels"`
-	ReviewDecision    string          `json:"reviewDecision"`
-	StatusCheckRollup []StatusCheck   `json:"statusCheckRollup"`
-	ChangedFiles      int             `json:"changedFiles"`
-	Additions         int             `json:"additions"`
-	Deletions         int             `json:"deletions"`
-	CreatedAt         string          `json:"createdAt"`
-	UpdatedAt         string          `json:"updatedAt"`
-	Files             []PullFile      `json:"files"`
-	Comments          []PullComment   `json:"comments"`
-	Commits           []PullCommit    `json:"commits"`
-	Diff              string          `json:"-"`
-}
-
-type GitHubActor struct {
-	Login string `json:"login"`
-	Name  string `json:"name"`
-	Slug  string `json:"slug"`
-}
-
-type ReviewRequest struct {
-	RequestedReviewer GitHubActor `json:"requestedReviewer"`
-}
-
-type PullLabel struct {
-	Name string `json:"name"`
-}
-
-type StatusCheck struct {
-	Name       string `json:"name"`
-	Workflow   string `json:"workflowName"`
-	Status     string `json:"status"`
-	Conclusion string `json:"conclusion"`
-	URL        string `json:"url"`
-	Summary    string `json:"summary"`
-}
-
-type PullFile struct {
-	Path      string `json:"path"`
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
-}
-
-type PullComment struct {
-	Author    GitHubActor `json:"author"`
-	Body      string      `json:"body"`
-	CreatedAt string      `json:"createdAt"`
-	URL       string      `json:"url"`
-}
-
-type PullCommit struct {
-	Oid             string `json:"oid"`
-	MessageHeadline string `json:"messageHeadline"`
-	CommittedDate   string `json:"committedDate"`
-}
-
-type loadResult struct {
-	Worktrees []Worktree
-	Warning   string
-	Err       error
-}
-
-type remotePRListResult struct {
-	PullRequests []RemotePullRequest
-	CurrentUser  string
-	Err          error
-}
-
-type remotePRDetailResult struct {
-	PullRequest RemotePullRequest
-	Err         error
-}
-
-type askPRResult struct {
-	Question string
-	Answer   string
-	Err      error
-}
-
-type openPRWorktreeResult struct {
-	Message string
-	Err     error
-}
+type Config = core.Config
+type AppConfig = core.AppConfig
+type RepositoryProfile = core.RepositoryProfile
+type AgentTool = core.AgentTool
+type Worktree = core.Worktree
+type RepoStatus = core.RepoStatus
+type CommitInfo = core.CommitInfo
+type PullRequest = core.PullRequest
+type RemotePullRequest = core.RemotePullRequest
+type GitHubActor = core.GitHubActor
+type ReviewRequest = core.ReviewRequest
+type PullLabel = core.PullLabel
+type StatusCheck = core.StatusCheck
+type PullFile = core.PullFile
+type PullComment = core.PullComment
+type PullCommit = core.PullCommit
 
 func defaultConfig(forceSetup bool) (Config, error) {
 	homeDir, err := os.UserHomeDir()
@@ -494,101 +336,6 @@ func writeAppConfig(configPath string, appConfig AppConfig) error {
 	}
 	data = append(data, '\n')
 	return os.WriteFile(configPath, data, 0o600)
-}
-
-func saveAppConfigCmd(cfg Config) tea.Cmd {
-	return func() tea.Msg {
-		if err := writeAppConfig(cfg.ConfigPath, cfg.App); err != nil {
-			return actionResult{Err: fmt.Errorf("save config failed: %w", err)}
-		}
-		return actionResult{Message: fmt.Sprintf("Saved config %s", cfg.ConfigPath)}
-	}
-}
-
-func saveAgentConfigCmd(cfg Config) tea.Cmd {
-	return func() tea.Msg {
-		if err := writeAppConfig(cfg.ConfigPath, cfg.App); err != nil {
-			return actionResult{Err: fmt.Errorf("save config failed: %w", err)}
-		}
-		return actionResult{Message: fmt.Sprintf("Default AI agent set to %s", cfg.App.DefaultAgent)}
-	}
-}
-
-func loadWorktreesCmd(cfg Config, showAll bool) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-		defer cancel()
-
-		worktrees, warning, err := collectWorktrees(ctx, cfg, showAll)
-		return loadResult{Worktrees: worktrees, Warning: warning, Err: err}
-	}
-}
-
-func loadRemotePullRequestsCmd(cfg Config) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-		defer cancel()
-
-		pullRequests, err := loadRemotePullRequests(ctx, cfg)
-		currentUser := ""
-		if err == nil {
-			currentUser, _ = loadGitHubCurrentUser(ctx, cfg)
-		}
-		return remotePRListResult{PullRequests: pullRequests, CurrentUser: currentUser, Err: err}
-	}
-}
-
-func loadRemotePullRequestDetailCmd(cfg Config, number int) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-		defer cancel()
-
-		pullRequest, err := loadRemotePullRequestDetail(ctx, cfg, number)
-		return remotePRDetailResult{PullRequest: pullRequest, Err: err}
-	}
-}
-
-func askPullRequestAgentCmd(cfg Config, agent AgentTool, pullRequest RemotePullRequest, question string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-		defer cancel()
-
-		prompt := buildPullRequestChatPrompt(pullRequest, question)
-		answer, err := runAgentWithPrompt(ctx, cfg.ActiveProfile.RepositoryPath, agent.Command, prompt)
-		return askPRResult{Question: question, Answer: strings.TrimSpace(answer), Err: err}
-	}
-}
-
-func openPRWorktreeInVSCodeCmd(cfg Config, pullRequest RemotePullRequest) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-		defer cancel()
-
-		wt, _, err := ensurePullRequestWorktree(ctx, cfg, pullRequest)
-		if err != nil {
-			return openPRWorktreeResult{Err: err}
-		}
-		if err := openVSCodeWorktree(ctx, wt); err != nil {
-			return openPRWorktreeResult{Err: err}
-		}
-		return openPRWorktreeResult{Message: fmt.Sprintf("Opened PR #%d worktree in VS Code", pullRequest.Number)}
-	}
-}
-
-func openPRWorktreeAgentCmd(cfg Config, pullRequest RemotePullRequest, agent AgentTool) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-		defer cancel()
-
-		wt, _, err := ensurePullRequestWorktree(ctx, cfg, pullRequest)
-		if err != nil {
-			return openPRWorktreeResult{Err: err}
-		}
-		if err := openAgentInGhostty(ctx, wt, agent); err != nil {
-			return openPRWorktreeResult{Err: err}
-		}
-		return openPRWorktreeResult{Message: fmt.Sprintf("Opened %s for PR #%d worktree", agent.Name, pullRequest.Number)}
-	}
 }
 
 func loadRemotePullRequests(ctx context.Context, cfg Config) ([]RemotePullRequest, error) {
@@ -1346,37 +1093,20 @@ func loadPullRequestIndex(ctx context.Context, cfg Config) (map[string]*PullRequ
 	return index, ""
 }
 
-func removeWorktreeCmd(cfg Config, wt Worktree) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-		defer cancel()
-
-		repoPath := cfg.ActiveProfile.RepositoryPath
-		var err error
-		if wt.Missing || wt.Prunable {
-			_, err = runCommand(ctx, repoPath, "git", "-C", repoPath, "worktree", "prune")
-		} else if wt.Status.Dirty {
-			_, err = runCommand(ctx, repoPath, "git", "-C", repoPath, "worktree", "remove", "--force", wt.Path)
-		} else {
-			_, err = runCommand(ctx, repoPath, "git", "-C", repoPath, "worktree", "remove", wt.Path)
-		}
-		if err == nil {
-			_, _ = runCommand(ctx, repoPath, "git", "-C", repoPath, "worktree", "prune")
-		}
-
-		return deleteResult{Path: wt.Path, Name: wt.Name, Err: err}
+func removeWorktree(ctx context.Context, cfg Config, wt Worktree) error {
+	repoPath := cfg.ActiveProfile.RepositoryPath
+	var err error
+	if wt.Missing || wt.Prunable {
+		_, err = runCommand(ctx, repoPath, "git", "-C", repoPath, "worktree", "prune")
+	} else if wt.Status.Dirty {
+		_, err = runCommand(ctx, repoPath, "git", "-C", repoPath, "worktree", "remove", "--force", wt.Path)
+	} else {
+		_, err = runCommand(ctx, repoPath, "git", "-C", repoPath, "worktree", "remove", wt.Path)
 	}
-}
-
-func createWorktreeCmd(cfg Config, name string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-		defer cancel()
-
-		path := createWorktreePath(cfg, name)
-		existing, err := createWorktree(ctx, cfg, name, path)
-		return createResult{Path: path, Name: name, Existing: existing, Err: err}
+	if err == nil {
+		_, _ = runCommand(ctx, repoPath, "git", "-C", repoPath, "worktree", "prune")
 	}
+	return err
 }
 
 func createWorktree(ctx context.Context, cfg Config, branch string, path string) (bool, error) {
@@ -1502,46 +1232,23 @@ func defaultRemoteRef(ctx context.Context, repoPath string, remoteName string) s
 	return ref
 }
 
-func expireDeleteArmCmd(path string, armedAt time.Time) tea.Cmd {
-	return tea.Tick(deleteConfirmWindow, func(time.Time) tea.Msg {
-		return deleteArmExpired{Path: path, ArmedAt: armedAt}
-	})
-}
-
 func createWorktreePath(cfg Config, name string) string {
 	worktreeName := strings.ReplaceAll(name, "/", "-")
 	return filepath.Join(cfg.ActiveProfile.WorktreesDir, worktreeName)
 }
 
-func openBrowserCmd(url string) tea.Cmd {
-	return func() tea.Msg {
-		cmdName := "open"
-		args := []string{url}
-		if runtime.GOOS == "linux" {
-			cmdName = "xdg-open"
-		}
-		if runtime.GOOS == "windows" {
-			cmdName = "cmd"
-			args = []string{"/c", "start", url}
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_, err := runCommand(ctx, "", cmdName, args...)
-		return actionResult{Message: "Opened PR in browser", Err: err}
+func openBrowser(ctx context.Context, url string) error {
+	cmdName := "open"
+	args := []string{url}
+	if runtime.GOOS == "linux" {
+		cmdName = "xdg-open"
 	}
-}
-
-func openVSCodeWorktreeCmd(wt Worktree) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := openVSCodeWorktree(ctx, wt); err == nil {
-			return actionResult{Message: fmt.Sprintf("Opened %s in VS Code", wt.Name)}
-		} else {
-			return actionResult{Err: err}
-		}
+	if runtime.GOOS == "windows" {
+		cmdName = "cmd"
+		args = []string{"/c", "start", url}
 	}
+	_, err := runCommand(ctx, "", cmdName, args...)
+	return err
 }
 
 func openVSCodeWorktree(ctx context.Context, wt Worktree) error {
@@ -1554,18 +1261,6 @@ func openVSCodeWorktree(ctx context.Context, wt Worktree) error {
 	}
 	_, fallbackErr := runCommand(ctx, "", "open", "-a", "Visual Studio Code", wt.Path)
 	return fallbackErr
-}
-
-func openAgentInGhosttyCmd(wt Worktree, agent AgentTool) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := openAgentInGhostty(ctx, wt, agent); err == nil {
-			return actionResult{Message: fmt.Sprintf("Opened %s for %s", agent.Name, wt.Name)}
-		} else {
-			return actionResult{Err: err}
-		}
-	}
 }
 
 func openAgentInGhostty(ctx context.Context, wt Worktree, agent AgentTool) error {

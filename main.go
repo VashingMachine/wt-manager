@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/VashingMachine/wt-manager/internal/app"
 )
 
 func main() {
@@ -22,13 +22,14 @@ func main() {
 		os.Exit(2)
 	}
 
-	cfg, err := defaultConfig(forceSetup)
+	application := app.New()
+	cfg, err := application.DefaultConfig(forceSetup)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
 	}
 
-	p := tea.NewProgram(newModel(cfg), tea.WithAltScreen())
+	p := application.NewProgram(cfg)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "wt-manager failed: %v\n", err)
 		os.Exit(1)

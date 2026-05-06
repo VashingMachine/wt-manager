@@ -1,11 +1,13 @@
-package main
+package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/VashingMachine/wt-manager/internal/core"
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -36,6 +38,24 @@ type deleteArmExpired struct {
 }
 
 type actionResult struct {
+	Message string
+	Err     error
+}
+
+type remotePRDetailResult struct {
+	Number      int
+	RequestID   int
+	PullRequest RemotePullRequest
+	Err         error
+}
+
+type askPRResult struct {
+	Question string
+	Answer   string
+	Err      error
+}
+
+type openPRWorktreeResult struct {
 	Message string
 	Err     error
 }
@@ -107,6 +127,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 }
 
 type model struct {
+	services         core.Services
 	cfg              Config
 	keys             keyMap
 	help             help.Model
@@ -124,6 +145,8 @@ type model struct {
 	selectedPRIndex  int
 	prDetail         *RemotePullRequest
 	prDetailLoading  bool
+	prDetailRequest  int
+	prDetailCancel   context.CancelFunc
 	prMode           bool
 	prStateFilter    string
 	prUserFilter     string
@@ -162,7 +185,7 @@ type model struct {
 	ready            bool
 }
 
-func newModel(cfg Config) model {
+func NewModel(cfg Config, services core.Services) model {
 	columns := []table.Column{{Title: "Worktree", Width: 20}, {Title: "Branch", Width: 28}, {Title: "State", Width: 10}, {Title: "Delta", Width: 10}, {Title: "PR", Width: 14}, {Title: "Last Commit", Width: 40}}
 	tbl := table.New(table.WithColumns(columns), table.WithRows(nil), table.WithFocused(true), table.WithHeight(12))
 	tbl.KeyMap.LineUp.SetEnabled(false)
@@ -204,6 +227,7 @@ func newModel(cfg Config) model {
 	h.ShowAll = false
 
 	m := model{
+		services:        services,
 		cfg:             cfg,
 		keys:            defaultKeys(),
 		help:            h,
@@ -219,7 +243,7 @@ func newModel(cfg Config) model {
 		statusMessage:   "Loading worktrees...",
 	}
 	if cfg.SetupNeeded {
-		setup := newSetupModel(cfg, true)
+		setup := newSetupModel(cfg, true, services)
 		m.setup = &setup
 		m.loading = false
 		m.statusMessage = cfg.SetupReason
@@ -231,7 +255,7 @@ func (m model) Init() tea.Cmd {
 	if m.setup != nil {
 		return nil
 	}
-	return tea.Batch(loadWorktreesCmd(m.cfg, m.showAll), m.spinner.Tick)
+	return tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -283,20 +307,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMessage = fmt.Sprintf("Loaded %d remote PRs", len(m.remotePRs))
 		m.applyPRFilter()
 		if selected := m.selectedRemotePR(); selected != nil {
-			m.prDetailLoading = true
-			m.statusMessage = fmt.Sprintf("Loading PR #%d details...", selected.Number)
-			return m, tea.Batch(loadRemotePullRequestDetailCmd(m.cfg, selected.Number), m.spinner.Tick)
+			return m.startPRDetailLoad(selected.Number)
 		}
 		return m, nil
 	case remotePRDetailResult:
+		if !m.isCurrentPRDetailResult(msg) {
+			return m, nil
+		}
 		m.prDetailLoading = false
+		m.prDetailCancel = nil
 		if msg.Err != nil {
+			if errors.Is(msg.Err, context.Canceled) {
+				m.updateDetailContent()
+				return m, nil
+			}
 			m.statusMessage = fmt.Sprintf("PR detail failed: %v", msg.Err)
 			m.statusError = true
 			m.updateDetailContent()
 			return m, nil
 		}
 		m.prDetail = &msg.PullRequest
+		m.mergeRemotePRDetail(msg.PullRequest)
 		m.statusMessage = fmt.Sprintf("Loaded PR #%d details", msg.PullRequest.Number)
 		m.statusError = false
 		m.updateDetailContent()
@@ -323,7 +354,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusMessage = msg.Message
 		m.statusError = false
-		return m, loadWorktreesCmd(m.cfg, m.showAll)
+		return m, loadWorktreesCmd(m.services, m.cfg, m.showAll)
 	case setupResult:
 		if msg.Cancelled {
 			m.setup = nil
@@ -355,7 +386,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		m.statusMessage = msg.Message + ". Loading worktrees..."
 		m.statusError = false
-		return m, tea.Batch(loadWorktreesCmd(m.cfg, m.showAll), m.spinner.Tick)
+		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
 	case deleteResult:
 		m.loading = false
 		if msg.Err != nil {
@@ -369,7 +400,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMessage = fmt.Sprintf("Deleted %s. Refreshing...", msg.Name)
 		m.statusError = false
 		m.loading = true
-		return m, tea.Batch(loadWorktreesCmd(m.cfg, m.showAll), m.spinner.Tick)
+		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
 	case createResult:
 		m.loading = false
 		if msg.Err != nil {
@@ -386,7 +417,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusError = false
 		m.loading = true
-		return m, tea.Batch(loadWorktreesCmd(m.cfg, m.showAll), m.spinner.Tick)
+		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
 	case deleteArmExpired:
 		if m.deleteArmedPath == msg.Path && m.deleteArmedAt.Equal(msg.ArmedAt) {
 			m.clearDeleteArm()
@@ -522,15 +553,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusError = false
 			if m.prMode {
 				m.rememberPRSelection()
-				m.prDetail = nil
+				m.cancelPRDetailLoad()
 				m.statusMessage = "Refreshing remote PRs..."
-				return m, tea.Batch(loadRemotePullRequestsCmd(m.cfg), m.spinner.Tick)
+				return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg), m.spinner.Tick)
 			}
 			m.rememberSelection()
-			return m, tea.Batch(loadWorktreesCmd(m.cfg, m.showAll), m.spinner.Tick)
+			return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
 		}
 		if key.Matches(msg, m.keys.PRRadar) {
 			m.clearDeleteArm()
+			m.cancelPRDetailLoad()
+			wasPRMode := m.prMode
+			if wasPRMode {
+				m.rememberPRSelection()
+			} else {
+				m.rememberSelection()
+			}
 			m.prMode = !m.prMode
 			m.filtering = false
 			m.creatingWorktree = false
@@ -545,11 +583,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.prMode {
 				m.loading = true
 				m.statusMessage = "Loading remote PRs..."
-				return m, tea.Batch(loadRemotePullRequestsCmd(m.cfg), m.spinner.Tick)
+				return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg), m.spinner.Tick)
 			}
-			m.loading = false
-			m.statusMessage = "Showing worktrees"
-			return m, nil
+			m.loading = true
+			m.statusMessage = "Refreshing worktrees..."
+			return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
 		}
 		if m.prMode && key.Matches(msg, m.keys.StateFilter) {
 			m.cyclePRStateFilter()
@@ -559,7 +597,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.prMode && key.Matches(msg, m.keys.UserFilter) {
-			m.prUserOptions = append([]string{"all"}, remotePRUsers(m.remotePRs)...)
+			m.prUserOptions = append([]string{"all"}, m.services.RemotePRUsers(m.remotePRs)...)
 			m.prUserCursor = m.currentPRUserIndex()
 			m.selectingPRUser = true
 			m.statusMessage = "Filter PRs by user"
@@ -625,7 +663,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMessage = map[bool]string{true: "Showing all repo worktrees", false: "Showing managed worktrees only"}[m.showAll]
 			m.statusError = false
 			m.rememberSelection()
-			return m, tea.Batch(loadWorktreesCmd(m.cfg, m.showAll), m.spinner.Tick)
+			return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
 		}
 		if key.Matches(msg, m.keys.ToggleBody) {
 			m.showPRBody = !m.showPRBody
@@ -640,7 +678,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusError = true
 					return m, nil
 				}
-				return m, openBrowserCmd(selected.URL)
+				return m, openBrowserCmd(m.services, selected.URL)
 			}
 			selected := m.selectedWorktree()
 			if selected == nil || selected.PR == nil {
@@ -648,7 +686,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusError = true
 				return m, nil
 			}
-			return m, openBrowserCmd(selected.PR.URL)
+			return m, openBrowserCmd(m.services, selected.PR.URL)
 		}
 		if key.Matches(msg, m.keys.OpenCode) {
 			if m.prMode {
@@ -661,7 +699,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.loading = true
 				m.statusMessage = fmt.Sprintf("Preparing PR #%d worktree for VS Code...", selected.Number)
 				m.statusError = false
-				return m, tea.Batch(openPRWorktreeInVSCodeCmd(m.cfg, *selected), m.spinner.Tick)
+				return m, tea.Batch(openPRWorktreeInVSCodeCmd(m.services, m.services, m.cfg, *selected), m.spinner.Tick)
 			}
 			selected := m.selectedWorktree()
 			if selected == nil {
@@ -672,7 +710,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusError = true
 				return m, nil
 			}
-			return m, openVSCodeWorktreeCmd(*selected)
+			return m, openVSCodeWorktreeCmd(m.services, *selected)
 		}
 		if key.Matches(msg, m.keys.OpenAgent) {
 			if m.prMode {
@@ -691,7 +729,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.loading = true
 				m.statusMessage = fmt.Sprintf("Preparing PR #%d worktree for %s...", selected.Number, agent.Name)
 				m.statusError = false
-				return m, tea.Batch(openPRWorktreeAgentCmd(m.cfg, *selected, *agent), m.spinner.Tick)
+				return m, tea.Batch(openPRWorktreeAgentCmd(m.services, m.services, m.cfg, *selected, *agent), m.spinner.Tick)
 			}
 			selected := m.selectedWorktree()
 			if selected == nil {
@@ -708,7 +746,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusError = true
 				return m, nil
 			}
-			return m, openAgentInGhosttyCmd(*selected, *agent)
+			return m, openAgentCmd(m.services, *selected, *agent)
 		}
 		if key.Matches(msg, m.keys.AgentMenu) {
 			m.clearDeleteArm()
@@ -729,13 +767,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key.Matches(msg, m.keys.Setup) {
 			m.clearDeleteArm()
 			setupCfg := m.cfg
-			if currentRepo, ok := inferRepoFromCWD(); ok {
+			if currentRepo, ok := m.services.InferRepoFromCWD(); ok {
 				setupCfg.SetupRepo = currentRepo
 			} else {
 				setupCfg.SetupRepo = m.cfg.ActiveProfile.RepositoryPath
 			}
 			setupCfg.SetupReason = "Add or update a repository profile"
-			setup := newSetupModel(setupCfg, false)
+			setup := newSetupModel(setupCfg, false, m.services)
 			m.setup = &setup
 			m.loading = false
 			m.statusMessage = "Setup"
@@ -753,10 +791,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				branch := selected.HeadRefName
 				m.loading = true
-				m.selectedPath = createWorktreePath(m.cfg, branch)
+				m.selectedPath = m.services.CreateWorktreePath(m.cfg, branch)
 				m.statusMessage = fmt.Sprintf("Creating worktree for PR #%d (%s)...", selected.Number, branch)
 				m.statusError = false
-				return m, tea.Batch(createWorktreeCmd(m.cfg, branch), m.spinner.Tick)
+				return m, tea.Batch(createWorktreeCmd(m.services, m.cfg, branch), m.spinner.Tick)
 			}
 			m.creatingWorktree = true
 			m.newInput.SetValue("")
@@ -789,7 +827,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.loading = true
 				m.statusMessage = fmt.Sprintf("Deleting %s...", wt.Name)
 				m.statusError = false
-				return m, tea.Batch(removeWorktreeCmd(m.cfg, wt), m.spinner.Tick)
+				return m, tea.Batch(removeWorktreeCmd(m.services, m.cfg, wt), m.spinner.Tick)
 			}
 
 			m.deleteArmedPath = selected.Path
@@ -811,9 +849,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.movePRSelection(0)
 				selected := m.selectedRemotePR()
 				if selected != nil {
-					m.prDetailLoading = true
-					m.prDetail = nil
-					return m, tea.Batch(loadRemotePullRequestDetailCmd(m.cfg, selected.Number), m.spinner.Tick)
+					return m.startPRDetailLoad(selected.Number)
 				}
 			} else {
 				m.moveSelection(0)
@@ -848,10 +884,10 @@ func (m model) updateNewWorktree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.creatingWorktree = false
 		m.newInput.Blur()
 		m.loading = true
-		m.selectedPath = createWorktreePath(m.cfg, name)
+		m.selectedPath = m.services.CreateWorktreePath(m.cfg, name)
 		m.statusMessage = fmt.Sprintf("Creating %s...", name)
 		m.statusError = false
-		return m, tea.Batch(createWorktreeCmd(m.cfg, name), m.spinner.Tick)
+		return m, tea.Batch(createWorktreeCmd(m.services, m.cfg, name), m.spinner.Tick)
 	}
 
 	var cmd tea.Cmd
@@ -893,7 +929,7 @@ func (m model) updatePRQuestion(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		m.statusMessage = fmt.Sprintf("Asking %s about PR #%d...", agent.Name, selected.Number)
 		m.statusError = false
-		return m, tea.Batch(askPullRequestAgentCmd(m.cfg, *agent, *selected, question), m.spinner.Tick)
+		return m, tea.Batch(askPullRequestAgentCmd(m.services, m.cfg, *agent, *selected, question), m.spinner.Tick)
 	}
 
 	var cmd tea.Cmd
@@ -979,7 +1015,7 @@ func (m model) updateAgentSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectingAgent = false
 		m.statusMessage = fmt.Sprintf("Saving default AI agent %s...", m.cfg.App.DefaultAgent)
 		m.statusError = false
-		return m, saveAgentConfigCmd(m.cfg)
+		return m, saveAgentConfigCmd(m.services, m.cfg)
 	}
 
 	return m, nil
@@ -1013,13 +1049,13 @@ func (m model) updateProfileSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		m.profileCursor = min(max(m.profileCursor, 0), len(m.cfg.App.Profiles)-1)
 		profile := m.cfg.App.Profiles[m.profileCursor]
-		resolved := resolveProfilePaths(profile, m.cfg.HomeDir)
+		resolved := m.services.ResolveProfilePaths(profile, m.cfg.HomeDir)
 		m.cfg.App.DefaultProfile = profile.Name
 		m.cfg.ActiveProfile = resolved
 		m.cfg.RepoSlug = resolved.GitHubRepo
 		if m.cfg.RepoSlug == "" {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			m.cfg.RepoSlug = inferGitHubRepo(ctx, resolved)
+			m.cfg.RepoSlug = m.services.InferGitHubRepo(ctx, resolved)
 			cancel()
 		}
 		m.selectingProfile = false
@@ -1035,7 +1071,7 @@ func (m model) updateProfileSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		m.statusMessage = fmt.Sprintf("Switching to %s...", profile.Name)
 		m.statusError = false
-		return m, tea.Batch(saveAppConfigCmd(m.cfg), loadWorktreesCmd(m.cfg, m.showAll), m.spinner.Tick)
+		return m, tea.Batch(saveAppConfigCmd(m.services, m.cfg), loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
 	}
 
 	return m, nil
@@ -1085,7 +1121,7 @@ func (m *model) applyFilter() {
 }
 
 func (m *model) applyPRFilter() {
-	m.visiblePRs = filterRemotePullRequestsWithAuthor(m.remotePRs, m.filterQuery, m.prStateFilter, m.prUserFilter, m.prAuthorFilter)
+	m.visiblePRs = m.services.FilterRemotePullRequestsWithAuthor(m.remotePRs, m.filterQuery, m.prStateFilter, m.prUserFilter, m.prAuthorFilter)
 	m.rebuildRows()
 	m.selectPRByNumber()
 	m.updateDetailContent()
@@ -1290,11 +1326,11 @@ func (m *model) selectedWorktreePath() string {
 }
 
 func (m model) defaultAgent() *AgentTool {
-	return findAgent(m.cfg.App.Agents, m.cfg.App.DefaultAgent)
+	return m.services.FindAgent(m.cfg.App.Agents, m.cfg.App.DefaultAgent)
 }
 
 func (m model) copilotAgent() *AgentTool {
-	if agent := findAgent(m.cfg.App.Agents, "copilot"); agent != nil {
+	if agent := m.services.FindAgent(m.cfg.App.Agents, "copilot"); agent != nil {
 		return agent
 	}
 	return m.defaultAgent()
@@ -1448,11 +1484,50 @@ func (m model) movePRSelectionAndLoad(delta int) (tea.Model, tea.Cmd) {
 	if selected == nil {
 		return m, nil
 	}
+	return m.startPRDetailLoad(selected.Number)
+}
+
+func (m model) startPRDetailLoad(number int) (tea.Model, tea.Cmd) {
+	m.cancelPRDetailLoad()
+	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+	m.prDetailRequest++
+	m.prDetailCancel = cancel
 	m.prDetailLoading = true
 	m.prDetail = nil
-	m.statusMessage = fmt.Sprintf("Loading PR #%d details...", selected.Number)
+	m.statusMessage = fmt.Sprintf("Loading PR #%d details...", number)
 	m.statusError = false
-	return m, tea.Batch(loadRemotePullRequestDetailCmd(m.cfg, selected.Number), m.spinner.Tick)
+	return m, tea.Batch(loadRemotePullRequestDetailCmd(m.services, ctx, m.cfg, number, m.prDetailRequest), m.spinner.Tick)
+}
+
+func (m *model) cancelPRDetailLoad() {
+	if m.prDetailCancel != nil {
+		m.prDetailCancel()
+		m.prDetailCancel = nil
+	}
+	m.prDetailRequest++
+	m.prDetailLoading = false
+	m.prDetail = nil
+}
+
+func (m model) isCurrentPRDetailResult(result remotePRDetailResult) bool {
+	return result.RequestID == m.prDetailRequest && result.Number == m.selectedPRNumber
+}
+
+func (m *model) mergeRemotePRDetail(detail RemotePullRequest) {
+	for idx := range m.remotePRs {
+		if m.remotePRs[idx].Number == detail.Number {
+			m.remotePRs[idx] = detail
+			break
+		}
+	}
+	for idx := range m.visiblePRs {
+		if m.visiblePRs[idx].Number == detail.Number {
+			m.visiblePRs[idx] = detail
+			break
+		}
+	}
+	m.rebuildRows()
+	m.selectPRByNumber()
 }
 
 func (m *model) movePRSelection(delta int) {
