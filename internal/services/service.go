@@ -126,6 +126,10 @@ func (s *Service) LoadRemotePullRequestDetail(ctx context.Context, cfg Config, n
 	return loadRemotePullRequestDetail(ctx, cfg, number)
 }
 
+func (s *Service) ApproveRemotePullRequest(ctx context.Context, cfg Config, number int) error {
+	return approveRemotePullRequest(ctx, cfg, number)
+}
+
 func (s *Service) FilterRemotePullRequestsWithAuthor(pullRequests []RemotePullRequest, query string, state string, user string, author string) []RemotePullRequest {
 	return filterRemotePullRequestsWithAuthor(pullRequests, query, state, user, author)
 }

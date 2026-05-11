@@ -55,6 +55,11 @@ type askPRResult struct {
 	Err      error
 }
 
+type approvePRResult struct {
+	Number int
+	Err    error
+}
+
 type openPRWorktreeResult struct {
 	Message string
 	Err     error
@@ -74,6 +79,8 @@ type keyMap struct {
 	FailedGHA   key.Binding
 	HelpPage    key.Binding
 	AskPR       key.Binding
+	PRDiff      key.Binding
+	ApprovePR   key.Binding
 	Filter      key.Binding
 	ToggleBody  key.Binding
 	OpenPR      key.Binding
@@ -104,6 +111,8 @@ func defaultKeys() keyMap {
 		FailedGHA:   key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "failed checks")),
 		HelpPage:    key.NewBinding(key.WithKeys("h"), key.WithHelp("h", "help")),
 		AskPR:       key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "ask agent")),
+		PRDiff:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "full diff")),
+		ApprovePR:   key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "approve PR")),
 		Filter:      key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 		ToggleBody:  key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "toggle PR body")),
 		OpenPR:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open PR in browser")),
@@ -119,70 +128,75 @@ func defaultKeys() keyMap {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.HelpPage, k.Refresh, k.PRRadar, k.Filter, k.New, k.OpenPR, k.OpenAgent, k.Quit}
+	return []key.Binding{k.HelpPage, k.Refresh, k.PRRadar, k.Filter, k.PRDiff, k.ApprovePR, k.OpenPR, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Up, k.Down, k.Focus, k.HelpPage, k.Refresh, k.ToggleAll, k.PRRadar, k.Filter}, {k.StateFilter, k.UserFilter, k.MineFilter, k.BranchView, k.FailedGHA, k.AskPR, k.New, k.ProfileMenu, k.Setup, k.ToggleBody, k.OpenPR, k.OpenCode, k.OpenAgent, k.AgentMenu, k.Delete, k.Quit}}
+	return [][]key.Binding{{k.Up, k.Down, k.Focus, k.HelpPage, k.Refresh, k.ToggleAll, k.PRRadar, k.Filter}, {k.StateFilter, k.UserFilter, k.MineFilter, k.BranchView, k.FailedGHA, k.PRDiff, k.ApprovePR, k.AskPR, k.New, k.ProfileMenu, k.Setup, k.ToggleBody, k.OpenPR, k.OpenCode, k.OpenAgent, k.AgentMenu, k.Delete, k.Quit}}
 }
 
 type model struct {
-	services         core.Services
-	cfg              Config
-	keys             keyMap
-	help             help.Model
-	table            table.Model
-	detail           viewport.Model
-	filterInput      textinput.Model
-	newInput         textinput.Model
-	setup            *setupModel
-	spinner          spinner.Model
-	allWorktrees     []Worktree
-	visibleWorktrees []Worktree
-	remotePRs        []RemotePullRequest
-	visiblePRs       []RemotePullRequest
-	selectedPRNumber int
-	selectedPRIndex  int
-	prDetail         *RemotePullRequest
-	prDetailLoading  bool
-	prDetailRequest  int
-	prDetailCancel   context.CancelFunc
-	prMode           bool
-	prStateFilter    string
-	prUserFilter     string
-	prAuthorFilter   string
-	prCurrentUser    string
-	prShowBranch     bool
-	prShowFailedGHA  bool
-	selectingPRUser  bool
-	prUserOptions    []string
-	prUserCursor     int
-	askingPR         bool
-	prQuestionInput  textinput.Model
-	prChatQuestion   string
-	prChatAnswer     string
-	width            int
-	height           int
-	showAll          bool
-	showPRBody       bool
-	loading          bool
-	filtering        bool
-	creatingWorktree bool
-	selectingAgent   bool
-	selectingProfile bool
-	showingHelp      bool
-	agentCursor      int
-	profileCursor    int
-	focusTable       bool
-	statusMessage    string
-	statusError      bool
-	deleteArmedPath  string
-	deleteArmedName  string
-	deleteArmedAt    time.Time
-	selectedPath     string
-	selectedIndex    int
-	filterQuery      string
-	ready            bool
+	services                       core.Services
+	cfg                            Config
+	keys                           keyMap
+	help                           help.Model
+	table                          table.Model
+	detail                         viewport.Model
+	filterInput                    textinput.Model
+	newInput                       textinput.Model
+	setup                          *setupModel
+	spinner                        spinner.Model
+	allWorktrees                   []Worktree
+	visibleWorktrees               []Worktree
+	remotePRs                      []RemotePullRequest
+	visiblePRs                     []RemotePullRequest
+	selectedPRNumber               int
+	selectedPRIndex                int
+	prDetail                       *RemotePullRequest
+	prDetailLoading                bool
+	prDetailRequest                int
+	prDetailCancel                 context.CancelFunc
+	prMode                         bool
+	prStateFilter                  string
+	prUserFilter                   string
+	prAuthorFilter                 string
+	prCurrentUser                  string
+	prShowBranch                   bool
+	prShowFailedGHA                bool
+	prDiffMode                     bool
+	selectingPRUser                bool
+	prUserOptions                  []string
+	prUserCursor                   int
+	askingPR                       bool
+	confirmingPRApproval           bool
+	prApprovalPendingNumber        int
+	prApprovalAwaitingDetailNumber int
+	prApprovalWarnings             []string
+	prQuestionInput                textinput.Model
+	prChatQuestion                 string
+	prChatAnswer                   string
+	width                          int
+	height                         int
+	showAll                        bool
+	showPRBody                     bool
+	loading                        bool
+	filtering                      bool
+	creatingWorktree               bool
+	selectingAgent                 bool
+	selectingProfile               bool
+	showingHelp                    bool
+	agentCursor                    int
+	profileCursor                  int
+	focusTable                     bool
+	statusMessage                  string
+	statusError                    bool
+	deleteArmedPath                string
+	deleteArmedName                string
+	deleteArmedAt                  time.Time
+	selectedPath                   string
+	selectedIndex                  int
+	filterQuery                    string
+	ready                          bool
 }
 
 func NewModel(cfg Config, services core.Services) model {
@@ -317,6 +331,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.prDetailLoading = false
 		m.prDetailCancel = nil
 		if msg.Err != nil {
+			m.prApprovalAwaitingDetailNumber = 0
 			if errors.Is(msg.Err, context.Canceled) {
 				m.updateDetailContent()
 				return m, nil
@@ -328,6 +343,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.prDetail = &msg.PullRequest
 		m.mergeRemotePRDetail(msg.PullRequest)
+		if m.prApprovalAwaitingDetailNumber == msg.PullRequest.Number {
+			m.prApprovalAwaitingDetailNumber = 0
+			m.showPRApprovalConfirmation(msg.PullRequest)
+			m.statusMessage = fmt.Sprintf("Confirm approval for PR #%d", msg.PullRequest.Number)
+			m.statusError = false
+			m.updateDetailContent()
+			return m, nil
+		}
 		m.statusMessage = fmt.Sprintf("Loaded PR #%d details", msg.PullRequest.Number)
 		m.statusError = false
 		m.updateDetailContent()
@@ -344,6 +367,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMessage = "Agent answered PR question; see Agent chat in Details"
 		m.statusError = false
 		m.updateDetailContent()
+		return m, nil
+	case approvePRResult:
+		m.loading = false
+		m.confirmingPRApproval = false
+		m.prApprovalPendingNumber = 0
+		m.prApprovalWarnings = nil
+		if msg.Err != nil {
+			m.statusMessage = fmt.Sprintf("Approve failed for PR #%d: %v", msg.Number, msg.Err)
+			m.statusError = true
+			return m, nil
+		}
+		m.statusMessage = fmt.Sprintf("Approved PR #%d. Refreshing details...", msg.Number)
+		m.statusError = false
+		if m.prMode && msg.Number == m.selectedPRNumber {
+			return m.startPRDetailLoad(msg.Number)
+		}
 		return m, nil
 	case openPRWorktreeResult:
 		m.loading = false
@@ -374,10 +413,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cfg = msg.Config
 		m.showAll = false
 		m.showPRBody = false
+		m.prDiffMode = false
 		m.filtering = false
 		m.creatingWorktree = false
 		m.selectingAgent = false
 		m.selectingProfile = false
+		m.confirmingPRApproval = false
+		m.prApprovalPendingNumber = 0
+		m.prApprovalAwaitingDetailNumber = 0
+		m.prApprovalWarnings = nil
 		m.filterQuery = ""
 		m.filterInput.SetValue("")
 		m.selectedPath = ""
@@ -461,6 +505,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.askingPR {
 			return m.updatePRQuestion(msg)
+		}
+
+		if m.confirmingPRApproval {
+			return m.updatePRApprovalConfirmation(msg)
+		}
+
+		if m.prMode && m.prDiffMode {
+			return m.updatePRDiffMode(msg)
 		}
 
 		if m.creatingWorktree {
@@ -554,6 +606,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.prMode {
 				m.rememberPRSelection()
 				m.cancelPRDetailLoad()
+				m.confirmingPRApproval = false
+				m.prApprovalPendingNumber = 0
+				m.prApprovalAwaitingDetailNumber = 0
+				m.prApprovalWarnings = nil
 				m.statusMessage = "Refreshing remote PRs..."
 				return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg), m.spinner.Tick)
 			}
@@ -574,6 +630,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.creatingWorktree = false
 			m.askingPR = false
 			m.selectingPRUser = false
+			m.confirmingPRApproval = false
+			m.prApprovalPendingNumber = 0
+			m.prApprovalAwaitingDetailNumber = 0
+			m.prApprovalWarnings = nil
+			m.prDiffMode = false
 			m.table.SetCursor(0)
 			m.table.SetRows(nil)
 			m.table.SetColumns(m.activeColumns())
@@ -650,6 +711,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMessage = fmt.Sprintf("Ask %s about PR #%d", m.prAgentLabel(), selected.Number)
 			m.statusError = false
 			return m, nil
+		}
+		if m.prMode && key.Matches(msg, m.keys.PRDiff) {
+			selected := m.selectedRemotePR()
+			if selected == nil {
+				m.statusMessage = "Select a remote PR first"
+				m.statusError = true
+				return m, nil
+			}
+			m.prDiffMode = true
+			m.resize()
+			m.statusMessage = "Showing full-screen PR diff"
+			m.statusError = false
+			if m.prDiffMode && (m.prDetail == nil || m.prDetail.Number != selected.Number) && !m.prDetailLoading {
+				return m.startPRDetailLoad(selected.Number)
+			}
+			if m.prDiffMode && m.prDetailLoading {
+				m.statusMessage = fmt.Sprintf("Loading PR #%d diff...", selected.Number)
+			}
+			return m, nil
+		}
+		if m.prMode && key.Matches(msg, m.keys.ApprovePR) {
+			return m.beginPRApproval()
 		}
 		if key.Matches(msg, m.keys.ToggleAll) {
 			if m.prMode {
@@ -937,6 +1020,79 @@ func (m model) updatePRQuestion(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m model) updatePRApprovalConfirmation(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.confirmingPRApproval = false
+		m.prApprovalPendingNumber = 0
+		m.prApprovalWarnings = nil
+		m.statusMessage = "PR approval cancelled"
+		m.statusError = false
+		return m, nil
+	case "enter", "A":
+		number := m.prApprovalPendingNumber
+		if number <= 0 {
+			m.confirmingPRApproval = false
+			m.statusMessage = "No PR approval is pending"
+			m.statusError = true
+			return m, nil
+		}
+		m.confirmingPRApproval = false
+		m.loading = true
+		m.statusMessage = fmt.Sprintf("Approving PR #%d...", number)
+		m.statusError = false
+		return m, tea.Batch(approveRemotePullRequestCmd(m.services, m.cfg, number), m.spinner.Tick)
+	}
+	return m, nil
+}
+
+func (m model) updatePRDiffMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Quit):
+		return m, tea.Quit
+	case key.Matches(msg, m.keys.Refresh):
+		m.loading = true
+		m.rememberPRSelection()
+		m.cancelPRDetailLoad()
+		m.confirmingPRApproval = false
+		m.prApprovalPendingNumber = 0
+		m.prApprovalAwaitingDetailNumber = 0
+		m.prApprovalWarnings = nil
+		m.statusMessage = "Refreshing remote PRs..."
+		m.statusError = false
+		return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg), m.spinner.Tick)
+	case key.Matches(msg, m.keys.ApprovePR):
+		return m.beginPRApproval()
+	case key.Matches(msg, m.keys.OpenPR):
+		selected := m.selectedRemotePRForDetail()
+		if selected == nil {
+			m.statusMessage = "Selected row has no PR"
+			m.statusError = true
+			return m, nil
+		}
+		return m, openBrowserCmd(m.services, selected.URL)
+	}
+
+	switch msg.String() {
+	case "esc":
+		m.prDiffMode = false
+		m.resize()
+		m.statusMessage = "Closed PR diff"
+		m.statusError = false
+		return m, nil
+	case "enter":
+		m.statusMessage = "Press esc to close PR diff"
+		m.statusError = false
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.detail, cmd = m.detail.Update(msg)
+	return m, cmd
+}
+
 func (m model) updatePRUserSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
@@ -1061,8 +1217,13 @@ func (m model) updateProfileSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectingProfile = false
 		m.showAll = false
 		m.showPRBody = false
+		m.prDiffMode = false
 		m.filtering = false
 		m.creatingWorktree = false
+		m.confirmingPRApproval = false
+		m.prApprovalPendingNumber = 0
+		m.prApprovalAwaitingDetailNumber = 0
+		m.prApprovalWarnings = nil
 		m.filterQuery = ""
 		m.filterInput.SetValue("")
 		m.selectedPath = ""
@@ -1248,6 +1409,13 @@ func (m *model) resize() {
 		return
 	}
 
+	if m.prMode && m.prDiffMode {
+		m.detail.Width = max(20, m.width)
+		m.detail.Height = max(1, m.height-3)
+		m.updateDetailContent()
+		return
+	}
+
 	usableWidth := max(20, m.width-appStyle.GetHorizontalFrameSize())
 	cardFrameWidth := cardStyle.GetHorizontalFrameSize()
 	availableHeight := max(10, m.height-8)
@@ -1315,6 +1483,36 @@ func (m *model) selectedRemotePRForDetail() *RemotePullRequest {
 		return m.prDetail
 	}
 	return m.selectedRemotePR()
+}
+
+func (m model) beginPRApproval() (tea.Model, tea.Cmd) {
+	selected := m.selectedRemotePR()
+	if selected == nil {
+		m.statusMessage = "Select a remote PR first"
+		m.statusError = true
+		return m, nil
+	}
+	if m.prDetail != nil && m.prDetail.Number == selected.Number {
+		m.showPRApprovalConfirmation(*m.prDetail)
+		m.statusMessage = fmt.Sprintf("Confirm approval for PR #%d", selected.Number)
+		m.statusError = false
+		return m, nil
+	}
+	m.prApprovalAwaitingDetailNumber = selected.Number
+	if m.prDetailLoading && selected.Number == m.selectedPRNumber {
+		m.statusMessage = fmt.Sprintf("Loading PR #%d details before approval...", selected.Number)
+		m.statusError = false
+		return m, nil
+	}
+	m.statusMessage = fmt.Sprintf("Loading PR #%d details before approval...", selected.Number)
+	m.statusError = false
+	return m.startPRDetailLoad(selected.Number)
+}
+
+func (m *model) showPRApprovalConfirmation(pr RemotePullRequest) {
+	m.confirmingPRApproval = true
+	m.prApprovalPendingNumber = pr.Number
+	m.prApprovalWarnings = prApprovalWarnings(pr)
 }
 
 func (m *model) selectedWorktreePath() string {
@@ -1439,7 +1637,12 @@ func (m *model) updateDetailContent() {
 			m.detail.GotoTop()
 			return
 		}
-		m.detail.SetContent(remotePRDetailViewContent(selected, m.prDetailLoading, m.prShowFailedGHA, m.prChatQuestion, m.prChatAnswer, m.detail.Width))
+		if m.prDiffMode {
+			m.detail.SetContent(remotePRDiffViewContent(selected, m.prDetailLoading, m.detail.Width))
+			m.detail.GotoTop()
+			return
+		}
+		m.detail.SetContent(remotePRDetailViewContent(selected, m.prDetailLoading, m.prShowFailedGHA, false, m.prChatQuestion, m.prChatAnswer, m.detail.Width))
 		m.detail.GotoTop()
 		return
 	}
@@ -1544,6 +1747,10 @@ func (m *model) movePRSelection(delta int) {
 	m.table.SetCursor(next)
 	m.selectedPRIndex = next
 	m.selectedPRNumber = m.visiblePRs[next].Number
+	m.confirmingPRApproval = false
+	m.prApprovalPendingNumber = 0
+	m.prApprovalAwaitingDetailNumber = 0
+	m.prApprovalWarnings = nil
 	m.updateDetailContent()
 }
 
@@ -1709,6 +1916,26 @@ func reviewReadiness(pr RemotePullRequest) string {
 	return "ready"
 }
 
+func prApprovalWarnings(pr RemotePullRequest) []string {
+	var warnings []string
+	if pr.IsDraft {
+		warnings = append(warnings, "PR is still marked as draft")
+	}
+	if !strings.EqualFold(pr.State, "open") {
+		warnings = append(warnings, fmt.Sprintf("PR state is %s", strings.ToLower(emptyDash(pr.State))))
+	}
+	if checksFailing(pr.StatusCheckRollup) {
+		warnings = append(warnings, "one or more status checks are failing")
+	}
+	if checksPending(pr.StatusCheckRollup) {
+		warnings = append(warnings, "one or more status checks are still pending")
+	}
+	if strings.EqualFold(pr.ReviewDecision, "CHANGES_REQUESTED") {
+		warnings = append(warnings, "latest reviews include requested changes")
+	}
+	return warnings
+}
+
 func checksFailing(checks []StatusCheck) bool {
 	for _, check := range checks {
 		conclusion := strings.ToLower(check.Conclusion)
@@ -1869,7 +2096,7 @@ func detailViewContent(wt *Worktree, showPRBody bool, width int) string {
 	return lipgloss.NewStyle().Width(max(1, width)).Render(strings.Join(lines, "\n"))
 }
 
-func remotePRDetailViewContent(pr *RemotePullRequest, loading bool, showFailedGHA bool, chatQuestion string, chatAnswer string, width int) string {
+func remotePRDetailViewContent(pr *RemotePullRequest, loading bool, showFailedGHA bool, diffMode bool, chatQuestion string, chatAnswer string, width int) string {
 	if pr == nil {
 		return "No remote PR selected"
 	}
@@ -1909,6 +2136,16 @@ func remotePRDetailViewContent(pr *RemotePullRequest, loading bool, showFailedGH
 	}
 	if loading {
 		lines = append(lines, "", styledWrappedLine("Loading PR details...", infoStyle, contentWidth))
+	}
+	if diffMode {
+		lines = append(lines, "", detailSection("Diff"))
+		if loading && strings.TrimSpace(pr.Diff) == "" {
+			lines = append(lines, styledWrappedLine("  loading diff...", infoStyle, contentWidth))
+		} else {
+			lines = append(lines, renderPullRequestDiff(pr.Diff, contentWidth)...)
+		}
+		lines = append(lines, "", styledWrappedLine("Actions: esc returns to overview, A approves PR, o opens PR", subtleStyle, contentWidth))
+		return strings.Join(lines, "\n")
 	}
 	if showFailedGHA {
 		lines = append(lines, "")
@@ -1951,8 +2188,19 @@ func remotePRDetailViewContent(pr *RemotePullRequest, loading bool, showFailedGH
 		}
 	}
 
-	lines = append(lines, "", styledWrappedLine("Actions: o opens PR, n creates worktree, f toggles failed checks, c asks agent", subtleStyle, contentWidth))
+	lines = append(lines, "", styledWrappedLine("Actions: enter opens full diff, A approves PR, o opens PR, n creates worktree, f toggles failed checks, c asks agent", subtleStyle, contentWidth))
 	return strings.Join(lines, "\n")
+}
+
+func remotePRDiffViewContent(pr *RemotePullRequest, loading bool, width int) string {
+	if pr == nil {
+		return "No remote PR selected"
+	}
+	contentWidth := max(1, width)
+	if loading && strings.TrimSpace(pr.Diff) == "" {
+		return styledWrappedLine("Loading PR diff...", infoStyle, contentWidth)
+	}
+	return strings.Join(renderPullRequestDiff(pr.Diff, contentWidth), "\n")
 }
 
 func failedGHADetailLines(checks []StatusCheck, width int) []string {

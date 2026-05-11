@@ -73,6 +73,15 @@ func askPullRequestAgentCmd(services core.AgentService, cfg Config, agent AgentT
 	}
 }
 
+func approveRemotePullRequestCmd(services core.PullRequestService, cfg Config, number int) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+		defer cancel()
+
+		return approvePRResult{Number: number, Err: services.ApproveRemotePullRequest(ctx, cfg, number)}
+	}
+}
+
 func openPRWorktreeInVSCodeCmd(worktrees core.WorktreeService, opener core.OpenerService, cfg Config, pullRequest RemotePullRequest) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)

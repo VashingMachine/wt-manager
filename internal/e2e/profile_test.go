@@ -16,11 +16,11 @@ import (
 )
 
 const e2eEnv = "WT_MANAGER_E2E"
-const bluesteelProfile = "bluesteel"
+const defaultLiveProfile = "app"
 
-func TestBluesteelProfileWithRealGitAndGitHubCLI(t *testing.T) {
+func TestConfiguredProfileWithRealGitAndGitHubCLI(t *testing.T) {
 	if os.Getenv(e2eEnv) != "1" {
-		t.Skipf("set %s=1 to run real git/gh bluesteel e2e tests", e2eEnv)
+		t.Skipf("set %s=1 to run real git/gh profile e2e tests", e2eEnv)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -31,10 +31,10 @@ func TestBluesteelProfileWithRealGitAndGitHubCLI(t *testing.T) {
 	requireCommand(t, ctx, "gh", "auth", "status")
 
 	svc := services.NewService()
-	cfg := loadBluesteelConfig(t, svc)
+	cfg := loadLiveProfileConfig(t, svc)
 
 	if cfg.RepoSlug == "" {
-		t.Fatalf("profile %q has no githubRepo and it could not be inferred", bluesteelProfile)
+		t.Fatalf("profile %q has no githubRepo and it could not be inferred", cfg.ActiveProfile.Name)
 	}
 	if _, err := os.Stat(cfg.ActiveProfile.RepositoryPath); err != nil {
 		t.Fatalf("repositoryPath %s is unavailable: %v", cfg.ActiveProfile.RepositoryPath, err)
@@ -76,7 +76,7 @@ func TestBluesteelProfileWithRealGitAndGitHubCLI(t *testing.T) {
 		t.Fatalf("LoadRemotePullRequests() error = %v", err)
 	}
 	if len(prs) == 0 {
-		t.Fatal("LoadRemotePullRequests() returned no PRs for bluesteel")
+		t.Fatalf("LoadRemotePullRequests() returned no PRs for profile %s", cfg.ActiveProfile.Name)
 	}
 	for _, pr := range prs {
 		if pr.Number == 0 || pr.Title == "" || pr.URL == "" || pr.Author.Login == "" {
@@ -105,8 +105,12 @@ func TestBluesteelProfileWithRealGitAndGitHubCLI(t *testing.T) {
 	}
 }
 
-func loadBluesteelConfig(t *testing.T, svc *services.Service) core.Config {
+func loadLiveProfileConfig(t *testing.T, svc *services.Service) core.Config {
 	t.Helper()
+	profileName := strings.TrimSpace(os.Getenv("WT_MANAGER_LIVE_PROFILE"))
+	if profileName == "" {
+		profileName = defaultLiveProfile
+	}
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -127,9 +131,9 @@ func loadBluesteelConfig(t *testing.T, svc *services.Service) core.Config {
 		t.Fatalf("NormalizeAppConfig() error = %v", err)
 	}
 
-	profile := svc.FindProfile(appConfig.Profiles, bluesteelProfile)
+	profile := svc.FindProfile(appConfig.Profiles, profileName)
 	if profile == nil {
-		t.Fatalf("profile %q missing from %s", bluesteelProfile, configPath)
+		t.Fatalf("profile %q missing from %s", profileName, configPath)
 	}
 	resolved := svc.ResolveProfilePaths(*profile, homeDir)
 	repoSlug := resolved.GitHubRepo

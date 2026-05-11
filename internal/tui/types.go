@@ -18,3 +18,4 @@ type StatusCheck = core.StatusCheck
 type PullFile = core.PullFile
 type PullComment = core.PullComment
 type PullCommit = core.PullCommit
+type PullReview = core.PullReview

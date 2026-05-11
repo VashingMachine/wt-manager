@@ -39,6 +39,16 @@ func (m model) View() string {
 	if m.setup != nil {
 		return appStyle.Render(m.setup.View(m.width))
 	}
+	if m.prMode && m.prDiffMode {
+		view := m.fullScreenPRDiffView()
+		if m.confirmingPRApproval {
+			view = overlay(view, renderPRApprovalModal(m), m.width, m.height)
+		}
+		if m.showingHelp {
+			view = overlay(view, renderHelpModal(m), m.width, m.height)
+		}
+		return view
+	}
 
 	headerMeta := fmt.Sprintf("Profile: %s | Repo: %s | Agent: %s | Mode: %s | Filter: %s | Focus: %s", m.cfg.ActiveProfile.Name, m.cfg.ActiveProfile.RepositoryPath, m.cfg.App.DefaultAgent, m.modeLabel(), m.filterLabel(), m.focusLabel())
 	if m.filterQuery != "" {
@@ -116,11 +126,48 @@ func (m model) View() string {
 	if m.askingPR {
 		view = overlay(view, renderPRQuestionModal(m), m.width, m.height)
 	}
+	if m.confirmingPRApproval {
+		view = overlay(view, renderPRApprovalModal(m), m.width, m.height)
+	}
 	if m.showingHelp {
 		view = overlay(view, renderHelpModal(m), m.width, m.height)
 	}
 
 	return view
+}
+
+func (m model) fullScreenPRDiffView() string {
+	selected := m.selectedRemotePRForDetail()
+	title := "PR Diff"
+	meta := "No remote PR selected"
+	if selected != nil {
+		title = fmt.Sprintf("PR #%d %s", selected.Number, selected.Title)
+		meta = fmt.Sprintf("%s -> %s | %s | %s | %s", emptyDash(selected.HeadRefName), emptyDash(selected.BaseRefName), prStateLabel(*selected), checksSummary(selected.StatusCheckRollup), reviewReadiness(*selected))
+		if m.prDetailLoading {
+			meta += " | loading"
+		}
+	}
+
+	width := max(1, m.width)
+	header := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render(clampRunewidth(title, width)),
+		subtleStyle.Render(clampRunewidth(meta, width)),
+	)
+	footerText := "esc close | j/k scroll | A approve | o open PR | r refresh | q quit"
+	status := m.statusMessage
+	if m.loading {
+		status = fmt.Sprintf("%s %s", m.spinner.View(), status)
+	}
+	if status != "" {
+		footerText = fmt.Sprintf("%s | %s", footerText, status)
+	}
+	footerStyle := subtleStyle
+	if m.statusError {
+		footerStyle = errorStyle
+	}
+	footer := footerStyle.Render(clampRunewidth(footerText, width))
+
+	return lipgloss.NewStyle().Width(width).Height(max(1, m.height)).Render(lipgloss.JoinVertical(lipgloss.Left, header, m.detail.View(), footer))
 }
 
 func (m model) tableView() string {
@@ -470,6 +517,9 @@ func (m model) focusLabel() string {
 	if m.askingPR {
 		return "PR chat"
 	}
+	if m.confirmingPRApproval {
+		return "PR approval"
+	}
 	if m.setup != nil {
 		return "setup"
 	}
@@ -617,6 +667,31 @@ func renderPRQuestionModal(m model) string {
 	return modalStyle.Render(message)
 }
 
+func renderPRApprovalModal(m model) string {
+	selected := m.selectedRemotePRForDetail()
+	title := "Approve Pull Request"
+	context := fmt.Sprintf("PR #%d", m.prApprovalPendingNumber)
+	if selected != nil && selected.Number == m.prApprovalPendingNumber {
+		context = fmt.Sprintf("PR #%d: %s", selected.Number, selected.Title)
+	}
+
+	lines := []string{
+		titleStyle.Render(title),
+		"",
+		styledWrappedLine(context, lipgloss.NewStyle(), 58),
+		"",
+		"Submit an approval review through GitHub CLI.",
+	}
+	if len(m.prApprovalWarnings) > 0 {
+		lines = append(lines, "", warnStyle.Render("Warnings:"))
+		for _, warning := range m.prApprovalWarnings {
+			lines = append(lines, styledWrappedLine("  - "+warning, warnStyle, 58))
+		}
+	}
+	lines = append(lines, "", subtleStyle.Render("enter approves, esc cancels"))
+	return modalStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
 func renderHelpModal(m model) string {
 	lines := []string{
 		titleStyle.Render("Keybindings"),
@@ -649,6 +724,9 @@ func renderHelpModal(m model) string {
 		"  Y        toggle PRs authored by @me",
 		"  b        switch final column between title/branch",
 		"  f        show failed GitHub Actions in details",
+		"  enter    open full-screen PR diff",
+		"  esc      close full-screen PR diff",
+		"  A        approve selected PR",
 		"  c        ask configured agent about selected PR",
 		"  n        create worktree from selected PR branch",
 		"  o        open selected PR in browser",

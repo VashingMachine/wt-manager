@@ -37,6 +37,7 @@ type StatusCheck = core.StatusCheck
 type PullFile = core.PullFile
 type PullComment = core.PullComment
 type PullCommit = core.PullCommit
+type PullReview = core.PullReview
 
 func defaultConfig(forceSetup bool) (Config, error) {
 	homeDir, err := os.UserHomeDir()
@@ -418,6 +419,10 @@ func loadRemotePullRequestDetail(ctx context.Context, cfg Config, number int) (R
 	if commits, err := loadRemotePullRequestCommits(ctx, cfg, number); err == nil {
 		pullRequest.Commits = commits
 	}
+	if reviews, err := loadRemotePullRequestReviews(ctx, cfg, number); err == nil {
+		pullRequest.Reviews = reviews
+		pullRequest.ReviewDecision = deriveReviewDecision(reviews)
+	}
 	if restPR.Head.SHA != "" {
 		if checks, err := loadRemotePullRequestChecks(ctx, cfg, restPR.Head.SHA); err == nil {
 			pullRequest.StatusCheckRollup = checks
@@ -429,6 +434,22 @@ func loadRemotePullRequestDetail(ctx context.Context, cfg Config, number int) (R
 		pullRequest.Diff = diff
 	}
 	return pullRequest, nil
+}
+
+func approveRemotePullRequest(ctx context.Context, cfg Config, number int) error {
+	if cfg.RepoSlug == "" {
+		return errors.New("GitHub repository is not configured")
+	}
+	if number <= 0 {
+		return errors.New("pull request number is required")
+	}
+	if _, err := exec.LookPath("gh"); err != nil {
+		return errors.New("gh not found; run setup after installing GitHub CLI")
+	}
+	if _, err := runCommand(ctx, cfg.ActiveProfile.RepositoryPath, "gh", "pr", "review", strconv.Itoa(number), "--approve", "--repo", cfg.RepoSlug); err != nil {
+		return fmt.Errorf("approve PR #%d failed: %w", number, err)
+	}
+	return nil
 }
 
 type restPullRequest struct {
@@ -488,6 +509,14 @@ type restPullCommit struct {
 			Date string `json:"date"`
 		} `json:"author"`
 	} `json:"commit"`
+}
+
+type restPullReview struct {
+	User        restActor `json:"user"`
+	State       string    `json:"state"`
+	Body        string    `json:"body"`
+	SubmittedAt string    `json:"submitted_at"`
+	HTMLURL     string    `json:"html_url"`
 }
 
 type restCheckRuns struct {
@@ -596,6 +625,60 @@ func loadRemotePullRequestCommits(ctx context.Context, cfg Config, number int) (
 		commits = append(commits, PullCommit{Oid: commit.SHA, MessageHeadline: firstLine(commit.Commit.Message), CommittedDate: commit.Commit.Author.Date})
 	}
 	return commits, nil
+}
+
+func loadRemotePullRequestReviews(ctx context.Context, cfg Config, number int) ([]PullReview, error) {
+	output, err := runCommand(ctx, cfg.ActiveProfile.RepositoryPath, "gh", "api", fmt.Sprintf("repos/%s/pulls/%d/reviews?per_page=100", cfg.RepoSlug, number))
+	if err != nil {
+		return nil, err
+	}
+	var restReviews []restPullReview
+	if err := json.Unmarshal([]byte(output), &restReviews); err != nil {
+		return nil, err
+	}
+	reviews := make([]PullReview, 0, len(restReviews))
+	for _, review := range restReviews {
+		reviews = append(reviews, PullReview{
+			Author:      githubActorFromREST(review.User),
+			State:       review.State,
+			Body:        review.Body,
+			SubmittedAt: review.SubmittedAt,
+			URL:         review.HTMLURL,
+		})
+	}
+	return reviews, nil
+}
+
+func deriveReviewDecision(reviews []PullReview) string {
+	latestByUser := map[string]PullReview{}
+	for _, review := range reviews {
+		user := strings.TrimSpace(review.Author.Login)
+		if user == "" {
+			user = strings.TrimSpace(review.Author.Slug)
+		}
+		if user == "" {
+			continue
+		}
+		state := strings.ToUpper(strings.TrimSpace(review.State))
+		if state == "" || state == "COMMENTED" {
+			continue
+		}
+		latestByUser[strings.ToLower(user)] = review
+	}
+
+	approved := false
+	for _, review := range latestByUser {
+		switch strings.ToUpper(strings.TrimSpace(review.State)) {
+		case "CHANGES_REQUESTED":
+			return "CHANGES_REQUESTED"
+		case "APPROVED":
+			approved = true
+		}
+	}
+	if approved {
+		return "APPROVED"
+	}
+	return ""
 }
 
 func loadRemotePullRequestChecks(ctx context.Context, cfg Config, sha string) ([]StatusCheck, error) {

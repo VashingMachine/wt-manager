@@ -339,6 +339,86 @@ func TestBuildPullRequestChatPrompt(t *testing.T) {
 	}
 }
 
+func TestDeriveReviewDecision(t *testing.T) {
+	tests := map[string]struct {
+		reviews []PullReview
+		want    string
+	}{
+		"approved": {
+			reviews: []PullReview{{Author: GitHubActor{Login: "alice"}, State: "APPROVED"}},
+			want:    "APPROVED",
+		},
+		"changes requested wins": {
+			reviews: []PullReview{
+				{Author: GitHubActor{Login: "alice"}, State: "APPROVED"},
+				{Author: GitHubActor{Login: "bob"}, State: "CHANGES_REQUESTED"},
+			},
+			want: "CHANGES_REQUESTED",
+		},
+		"comment only": {
+			reviews: []PullReview{{Author: GitHubActor{Login: "alice"}, State: "COMMENTED"}},
+			want:    "",
+		},
+		"dismissed latest clears reviewer": {
+			reviews: []PullReview{
+				{Author: GitHubActor{Login: "alice"}, State: "APPROVED"},
+				{Author: GitHubActor{Login: "alice"}, State: "DISMISSED"},
+			},
+			want: "",
+		},
+		"latest reviewer state wins": {
+			reviews: []PullReview{
+				{Author: GitHubActor{Login: "alice"}, State: "CHANGES_REQUESTED"},
+				{Author: GitHubActor{Login: "alice"}, State: "APPROVED"},
+			},
+			want: "APPROVED",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := deriveReviewDecision(tc.reviews); got != tc.want {
+				t.Fatalf("deriveReviewDecision() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApproveRemotePullRequestUsesGitHubCLI(t *testing.T) {
+	bin := t.TempDir()
+	argsPath := filepath.Join(bin, "args")
+	writeExecutable(t, filepath.Join(bin, "gh"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$WT_MANAGER_GH_ARGS\"\nexit 0\n")
+	t.Setenv("PATH", bin)
+	t.Setenv("WT_MANAGER_GH_ARGS", argsPath)
+
+	cfg := Config{RepoSlug: "owner/app", ActiveProfile: RepositoryProfile{RepositoryPath: t.TempDir()}}
+	if err := approveRemotePullRequest(context.Background(), cfg, 42); err != nil {
+		t.Fatalf("approveRemotePullRequest() error = %v", err)
+	}
+
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(args) error = %v", err)
+	}
+	got := strings.Join(strings.Fields(string(args)), " ")
+	want := "pr review 42 --approve --repo owner/app"
+	if got != want {
+		t.Fatalf("gh args = %q, want %q", got, want)
+	}
+}
+
+func TestApproveRemotePullRequestReportsCommandFailure(t *testing.T) {
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "gh"), "#!/bin/sh\necho nope >&2\nexit 7\n")
+	t.Setenv("PATH", bin)
+
+	cfg := Config{RepoSlug: "owner/app", ActiveProfile: RepositoryProfile{RepositoryPath: t.TempDir()}}
+	err := approveRemotePullRequest(context.Background(), cfg, 42)
+	if err == nil || !strings.Contains(err.Error(), "approve PR #42 failed") || !strings.Contains(err.Error(), "nope") {
+		t.Fatalf("approveRemotePullRequest() error = %v, want command failure with output", err)
+	}
+}
+
 func TestRemotePullRequestFromREST(t *testing.T) {
 	mergedAt := "2026-05-05T12:00:00Z"
 	got := remotePullRequestFromREST(restPullRequest{
@@ -375,8 +455,8 @@ func TestRemotePullRequestFromREST(t *testing.T) {
 	}
 }
 
-func TestLiveGitHubBluesteelRemotePullRequests(t *testing.T) {
-	cfg := liveBluesteelConfig(t)
+func TestLiveGitHubProfileRemotePullRequests(t *testing.T) {
+	cfg := liveProfileConfig(t)
 	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 	defer cancel()
 
@@ -385,7 +465,7 @@ func TestLiveGitHubBluesteelRemotePullRequests(t *testing.T) {
 		t.Fatalf("loadRemotePullRequests() live error = %v", err)
 	}
 	if len(prs) == 0 {
-		t.Fatal("loadRemotePullRequests() returned no PRs for bluesteel")
+		t.Fatalf("loadRemotePullRequests() returned no PRs for profile %s", cfg.ActiveProfile.Name)
 	}
 	for _, pr := range prs {
 		if pr.Number == 0 || pr.Title == "" || pr.URL == "" || pr.Author.Login == "" {
@@ -397,8 +477,8 @@ func TestLiveGitHubBluesteelRemotePullRequests(t *testing.T) {
 	}
 }
 
-func TestLiveGitHubBluesteelRemotePullRequestDetail(t *testing.T) {
-	cfg := liveBluesteelConfig(t)
+func TestLiveGitHubProfileRemotePullRequestDetail(t *testing.T) {
+	cfg := liveProfileConfig(t)
 	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 	defer cancel()
 
@@ -407,7 +487,7 @@ func TestLiveGitHubBluesteelRemotePullRequestDetail(t *testing.T) {
 		t.Fatalf("loadRemotePullRequests() live error = %v", err)
 	}
 	if len(prs) == 0 {
-		t.Fatal("loadRemotePullRequests() returned no PRs for bluesteel")
+		t.Fatalf("loadRemotePullRequests() returned no PRs for profile %s", cfg.ActiveProfile.Name)
 	}
 
 	detail, err := loadRemotePullRequestDetail(ctx, cfg, prs[0].Number)
@@ -698,10 +778,10 @@ func remotePRFixture(number int, state string, author string, title string, bran
 	}
 }
 
-func liveBluesteelConfig(t *testing.T) Config {
+func liveProfileConfig(t *testing.T) Config {
 	t.Helper()
 	if os.Getenv("WT_MANAGER_LIVE_GH") != "1" {
-		t.Skip("set WT_MANAGER_LIVE_GH=1 to run live gh/bluesteel integration tests")
+		t.Skip("set WT_MANAGER_LIVE_GH=1 to run live gh/profile integration tests")
 	}
 	if _, err := exec.LookPath("gh"); err != nil {
 		t.Skipf("gh not found: %v", err)
@@ -723,16 +803,20 @@ func liveBluesteelConfig(t *testing.T) Config {
 	if !existed {
 		t.Fatalf("%s does not exist", configPath)
 	}
-	profile := findProfile(appConfig.Profiles, "bluesteel")
+	profileName := strings.TrimSpace(os.Getenv("WT_MANAGER_LIVE_PROFILE"))
+	if profileName == "" {
+		profileName = "app"
+	}
+	profile := findProfile(appConfig.Profiles, profileName)
 	if profile == nil {
-		t.Fatalf("bluesteel profile missing from %s", configPath)
+		t.Fatalf("%s profile missing from %s", profileName, configPath)
 	}
 	resolved := resolveProfilePaths(*profile, homeDir)
 	if resolved.GitHubRepo == "" {
-		t.Fatalf("bluesteel profile has no githubRepo in %s", configPath)
+		t.Fatalf("%s profile has no githubRepo in %s", profileName, configPath)
 	}
 	if _, err := os.Stat(resolved.RepositoryPath); err != nil {
-		t.Fatalf("bluesteel repositoryPath %s is unavailable: %v", resolved.RepositoryPath, err)
+		t.Fatalf("%s repositoryPath %s is unavailable: %v", profileName, resolved.RepositoryPath, err)
 	}
 
 	return Config{

@@ -104,6 +104,7 @@ type RemotePullRequest struct {
 	Files             []PullFile      `json:"files"`
 	Comments          []PullComment   `json:"comments"`
 	Commits           []PullCommit    `json:"commits"`
+	Reviews           []PullReview    `json:"reviews"`
 	Diff              string          `json:"-"`
 }
 
@@ -149,6 +150,14 @@ type PullCommit struct {
 	CommittedDate   string `json:"committedDate"`
 }
 
+type PullReview struct {
+	Author      GitHubActor `json:"author"`
+	State       string      `json:"state"`
+	Body        string      `json:"body"`
+	SubmittedAt string      `json:"submittedAt"`
+	URL         string      `json:"url"`
+}
+
 type ConfigService interface {
 	DefaultConfig(forceSetup bool) (Config, error)
 	DefaultAppConfig() AppConfig
@@ -180,6 +189,7 @@ type PullRequestService interface {
 	LoadRemotePullRequests(ctx context.Context, cfg Config) ([]RemotePullRequest, error)
 	LoadGitHubCurrentUser(ctx context.Context, cfg Config) (string, error)
 	LoadRemotePullRequestDetail(ctx context.Context, cfg Config, number int) (RemotePullRequest, error)
+	ApproveRemotePullRequest(ctx context.Context, cfg Config, number int) error
 	FilterRemotePullRequestsWithAuthor(pullRequests []RemotePullRequest, query string, state string, user string, author string) []RemotePullRequest
 	RemotePRUsers(pullRequests []RemotePullRequest) []string
 }
