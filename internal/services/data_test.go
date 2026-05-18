@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/VashingMachine/wt-manager/internal/core"
 )
 
 func TestLoadAppConfigMissingDoesNotWrite(t *testing.T) {
@@ -31,6 +33,9 @@ func TestLoadAppConfigMissingDoesNotWrite(t *testing.T) {
 	}
 	if appConfig.DefaultAgent != "codex" {
 		t.Fatalf("DefaultAgent = %q, want codex", appConfig.DefaultAgent)
+	}
+	if appConfig.DefaultEnterAction != core.EnterActionVSCode {
+		t.Fatalf("DefaultEnterAction = %q, want vscode", appConfig.DefaultEnterAction)
 	}
 	for _, name := range []string{"codex", "opencode", "claude", "copilot"} {
 		if findAgent(appConfig.Agents, name) == nil {
@@ -74,11 +79,43 @@ func TestLoadOrCreateAppConfigNormalizesExistingConfig(t *testing.T) {
 	if appConfig.DefaultAgent != "opencode" {
 		t.Fatalf("DefaultAgent = %q, want opencode", appConfig.DefaultAgent)
 	}
+	if appConfig.DefaultEnterAction != core.EnterActionVSCode {
+		t.Fatalf("DefaultEnterAction = %q, want vscode", appConfig.DefaultEnterAction)
+	}
 	if appConfig.Profiles[0].RemoteName != "origin" {
 		t.Fatalf("RemoteName = %q, want origin", appConfig.Profiles[0].RemoteName)
 	}
 	if len(appConfig.Agents) != 1 || appConfig.Agents[0].Name != "opencode" {
 		t.Fatalf("Agents = %#v, want existing configured agents only", appConfig.Agents)
+	}
+}
+
+func TestNormalizeAppConfigDefaultEnterAction(t *testing.T) {
+	for name, tc := range map[string]struct {
+		raw     string
+		want    string
+		changed bool
+	}{
+		"missing": {raw: "", want: core.EnterActionVSCode, changed: true},
+		"invalid": {raw: "bad", want: core.EnterActionVSCode, changed: true},
+		"trimmed": {raw: " terminal ", want: core.EnterActionTerminal, changed: true},
+		"valid":   {raw: core.EnterActionAgent, want: core.EnterActionAgent, changed: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			appConfig := defaultAppConfig()
+			appConfig.DefaultEnterAction = tc.raw
+
+			got, changed, err := normalizeAppConfig(appConfig)
+			if err != nil {
+				t.Fatalf("normalizeAppConfig() error = %v", err)
+			}
+			if got.DefaultEnterAction != tc.want {
+				t.Fatalf("DefaultEnterAction = %q, want %q", got.DefaultEnterAction, tc.want)
+			}
+			if changed != tc.changed {
+				t.Fatalf("changed = %v, want %v", changed, tc.changed)
+			}
+		})
 	}
 }
 
@@ -697,6 +734,21 @@ func TestGhosttyTabScript(t *testing.T) {
 	}
 	if !strings.Contains(script, "copilot") {
 		t.Fatalf("ghosttyTabScript() should include selected agent command in %q", script)
+	}
+}
+
+func TestGhosttyTerminalArgs(t *testing.T) {
+	args := ghosttyTerminalArgs(Worktree{Path: "/tmp/worktree with space"})
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-na", "Ghostty.app", "--args", "--working-directory=/tmp/worktree with space"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("ghosttyTerminalArgs() missing %q in %#v", want, args)
+		}
+	}
+	for _, unwanted := range []string{"codex", "opencode", "claude", "copilot", "-e"} {
+		if strings.Contains(joined, unwanted) {
+			t.Fatalf("ghosttyTerminalArgs() should not include %q in %#v", unwanted, args)
+		}
 	}
 }
 

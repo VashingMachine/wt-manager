@@ -15,11 +15,18 @@ type Config struct {
 }
 
 type AppConfig struct {
-	DefaultProfile string              `json:"defaultProfile"`
-	Profiles       []RepositoryProfile `json:"profiles"`
-	DefaultAgent   string              `json:"defaultAgent"`
-	Agents         []AgentTool         `json:"agents"`
+	DefaultProfile     string              `json:"defaultProfile"`
+	Profiles           []RepositoryProfile `json:"profiles"`
+	DefaultAgent       string              `json:"defaultAgent"`
+	Agents             []AgentTool         `json:"agents"`
+	DefaultEnterAction string              `json:"defaultEnterAction"`
 }
+
+const (
+	EnterActionVSCode   = "vscode"
+	EnterActionAgent    = "agent"
+	EnterActionTerminal = "terminal"
+)
 
 type RepositoryProfile struct {
 	Name           string `json:"name"`
@@ -203,6 +210,7 @@ type OpenerService interface {
 	OpenBrowser(ctx context.Context, url string) error
 	OpenVSCodeWorktree(ctx context.Context, wt Worktree) error
 	OpenAgent(ctx context.Context, wt Worktree, agent AgentTool) error
+	OpenTerminal(ctx context.Context, wt Worktree) error
 }
 
 type Services interface {

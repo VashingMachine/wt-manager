@@ -132,6 +132,15 @@ func saveAgentConfigCmd(services core.ConfigService, cfg Config) tea.Cmd {
 	}
 }
 
+func saveEnterActionConfigCmd(services core.ConfigService, cfg Config, label string) tea.Cmd {
+	return func() tea.Msg {
+		if err := services.WriteAppConfig(cfg.ConfigPath, cfg.App); err != nil {
+			return actionResult{Err: fmt.Errorf("save config failed: %w", err)}
+		}
+		return actionResult{Message: fmt.Sprintf("Default Enter action set to %s", label)}
+	}
+}
+
 func removeWorktreeCmd(services core.WorktreeService, cfg Config, wt Worktree) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
@@ -177,6 +186,18 @@ func openAgentCmd(services core.OpenerService, wt Worktree, agent AgentTool) tea
 		defer cancel()
 		if err := services.OpenAgent(ctx, wt, agent); err == nil {
 			return actionResult{Message: fmt.Sprintf("Opened %s for %s", agent.Name, wt.Name)}
+		} else {
+			return actionResult{Err: err}
+		}
+	}
+}
+
+func openTerminalWorktreeCmd(services core.OpenerService, wt Worktree) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := services.OpenTerminal(ctx, wt); err == nil {
+			return actionResult{Message: fmt.Sprintf("Opened terminal for %s", wt.Name)}
 		} else {
 			return actionResult{Err: err}
 		}

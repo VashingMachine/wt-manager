@@ -50,7 +50,7 @@ func (m model) View() string {
 		return view
 	}
 
-	headerMeta := fmt.Sprintf("Profile: %s | Repo: %s | Agent: %s | Mode: %s | Filter: %s | Focus: %s", m.cfg.ActiveProfile.Name, m.cfg.ActiveProfile.RepositoryPath, m.cfg.App.DefaultAgent, m.modeLabel(), m.filterLabel(), m.focusLabel())
+	headerMeta := fmt.Sprintf("Profile: %s | Repo: %s | Agent: %s | Enter: %s | Mode: %s | Filter: %s | Focus: %s", m.cfg.ActiveProfile.Name, m.cfg.ActiveProfile.RepositoryPath, m.cfg.App.DefaultAgent, enterActionLabel(m.cfg.App.DefaultEnterAction), m.modeLabel(), m.filterLabel(), m.focusLabel())
 	if m.filterQuery != "" {
 		headerMeta += fmt.Sprintf(" | Query: %q", m.filterQuery)
 	}
@@ -116,6 +116,9 @@ func (m model) View() string {
 	}
 	if m.selectingAgent {
 		view = overlay(view, renderAgentSelectorModal(m), m.width, m.height)
+	}
+	if m.selectingEnterAction {
+		view = overlay(view, renderEnterActionSelectorModal(m), m.width, m.height)
 	}
 	if m.selectingProfile {
 		view = overlay(view, renderProfileSelectorModal(m), m.width, m.height)
@@ -508,6 +511,9 @@ func (m model) focusLabel() string {
 	if m.selectingAgent {
 		return "agent selector"
 	}
+	if m.selectingEnterAction {
+		return "enter action"
+	}
 	if m.selectingProfile {
 		return "profile selector"
 	}
@@ -567,6 +573,40 @@ func renderAgentSelectorModal(m model) string {
 
 			lines = append(lines, style.Render(fmt.Sprintf("%s%-10s %s%s", cursor, agent.Name, agent.Command, current)))
 		}
+	}
+
+	lines = append(lines,
+		"",
+		subtleStyle.Render(fmt.Sprintf("Config: %s", m.cfg.ConfigPath)),
+		subtleStyle.Render("enter selects, esc cancels"),
+	)
+
+	return modalStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+func renderEnterActionSelectorModal(m model) string {
+	lines := []string{
+		titleStyle.Render("Enter Action"),
+		"",
+		"Choose what enter does for the selected worktree.",
+		"",
+	}
+
+	currentAction := normalizedEnterAction(m.cfg.App.DefaultEnterAction)
+	for idx, option := range enterActionOptions {
+		cursor := "  "
+		style := subtleStyle
+		if idx == m.enterActionCursor {
+			cursor = "> "
+			style = infoStyle.Copy().Bold(true)
+		}
+
+		current := ""
+		if option.Action == currentAction {
+			current = " current"
+		}
+
+		lines = append(lines, style.Render(fmt.Sprintf("%s%-9s %s%s", cursor, option.Label, option.Description, current)))
 	}
 
 	lines = append(lines,
@@ -713,8 +753,11 @@ func renderHelpModal(m model) string {
 		"  n        create worktree",
 		"  d d      delete selected worktree",
 		"  o        open selected local PR",
+		"  enter    run selected Enter action",
+		"  e        choose Enter action",
 		"  v        open worktree in VS Code",
 		"  i        open worktree with agent in Ghostty",
+		"           terminal action opens worktree in Ghostty",
 		"  p        toggle local PR body in details",
 		"",
 		infoStyle.Render("PR Radar"),

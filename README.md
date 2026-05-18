@@ -13,6 +13,7 @@ It also includes PR Radar, a remote pull request view backed by GitHub CLI. PR R
 - Switch between repository profiles from inside the app.
 - Create worktrees from existing local branches, remote branches, or new branches.
 - Delete worktrees with a double-press confirmation.
+- Configure what `enter` does for selected worktrees.
 - Open the selected worktree in VS Code.
 - Open the selected PR in your browser.
 - Open the selected worktree in a new Ghostty tab with a configured AI coding agent.
@@ -85,7 +86,8 @@ Example:
     { "name": "opencode", "command": "opencode" },
     { "name": "claude", "command": "claude" },
     { "name": "copilot", "command": "copilot" }
-  ]
+  ],
+  "defaultEnterAction": "vscode"
 }
 ```
 
@@ -107,7 +109,8 @@ If `githubRepo` is empty, `wt-manager` tries to infer it from the configured rem
 | `Y` | Toggle PR Radar author filter for your GitHub user |
 | `b` | Toggle PR Radar final column between title and branch |
 | `f` | Toggle failed GitHub Actions in PR details |
-| `enter` | Open selected PR full-screen diff in PR Radar |
+| `enter` | Run the selected worktree Enter action, or open selected PR full-screen diff in PR Radar |
+| `e` | Choose the default worktree Enter action |
 | `esc` | Close full-screen PR diff, clear filter, or cancel the current input |
 | `A` | Approve selected PR in PR Radar after confirmation |
 | `n` | Create a worktree |
@@ -138,6 +141,8 @@ Missing or prunable worktree entries are surfaced in the UI, and Git's worktree 
 ## Agent Sessions
 
 The `i` shortcut opens the selected worktree in Ghostty and runs the configured agent command. Built-in defaults are `codex`, `opencode`, `claude`, and `copilot`, and custom commands can be added during setup.
+
+In worktree mode, `enter` runs the configured `defaultEnterAction`: `vscode`, `agent`, or `terminal`. Press `e` to change it from the TUI. The `terminal` action opens Ghostty in the selected worktree without running an agent command.
 
 On macOS, opening a new Ghostty tab uses UI automation. If macOS blocks the tab automation, grant Accessibility permission to your terminal or `wt-manager`.
 

@@ -96,7 +96,8 @@ func defaultConfig(forceSetup bool) (Config, error) {
 
 func defaultAppConfig() AppConfig {
 	return AppConfig{
-		DefaultAgent: "codex",
+		DefaultAgent:       "codex",
+		DefaultEnterAction: core.EnterActionVSCode,
 		Agents: []AgentTool{
 			{Name: "codex", Command: "codex"},
 			{Name: "opencode", Command: "opencode"},
@@ -142,6 +143,10 @@ func loadOrCreateAppConfig(homeDir string) (AppConfig, string, error) {
 func normalizeAppConfig(appConfig AppConfig) (AppConfig, bool, error) {
 	changed := false
 	defaults := defaultAppConfig()
+	if normalized := normalizeEnterAction(appConfig.DefaultEnterAction); normalized != appConfig.DefaultEnterAction {
+		appConfig.DefaultEnterAction = normalized
+		changed = true
+	}
 	if len(appConfig.Agents) == 0 {
 		appConfig.Agents = defaults.Agents
 		changed = true
@@ -188,6 +193,19 @@ func normalizeAppConfig(appConfig AppConfig) (AppConfig, bool, error) {
 	}
 
 	return appConfig, changed, nil
+}
+
+func normalizeEnterAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case core.EnterActionVSCode:
+		return core.EnterActionVSCode
+	case core.EnterActionAgent:
+		return core.EnterActionAgent
+	case core.EnterActionTerminal:
+		return core.EnterActionTerminal
+	default:
+		return core.EnterActionVSCode
+	}
 }
 
 func findAgent(agents []AgentTool, name string) *AgentTool {
@@ -1360,6 +1378,18 @@ func openAgentInGhostty(ctx context.Context, wt Worktree, agent AgentTool) error
 		return fmt.Errorf("open Ghostty tab failed: %w. Grant Accessibility permission to wt-manager or your terminal", err)
 	}
 	return nil
+}
+
+func openTerminalInGhostty(ctx context.Context, wt Worktree) error {
+	if runtime.GOOS != "darwin" {
+		return errors.New("opening Ghostty terminals is only supported on macOS")
+	}
+	_, err := runCommand(ctx, "", "open", ghosttyTerminalArgs(wt)...)
+	return err
+}
+
+func ghosttyTerminalArgs(wt Worktree) []string {
+	return []string{"-na", "Ghostty.app", "--args", "--working-directory=" + wt.Path}
 }
 
 func ghosttyTabScript(command string) string {

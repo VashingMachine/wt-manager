@@ -157,3 +157,7 @@ func (s *Service) OpenVSCodeWorktree(ctx context.Context, wt Worktree) error {
 func (s *Service) OpenAgent(ctx context.Context, wt Worktree, agent AgentTool) error {
 	return openAgentInGhostty(ctx, wt, agent)
 }
+
+func (s *Service) OpenTerminal(ctx context.Context, wt Worktree) error {
+	return openTerminalInGhostty(ctx, wt)
+}

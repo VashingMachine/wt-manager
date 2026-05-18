@@ -86,6 +86,7 @@ type keyMap struct {
 	OpenPR      key.Binding
 	OpenCode    key.Binding
 	OpenAgent   key.Binding
+	EnterAction key.Binding
 	AgentMenu   key.Binding
 	ProfileMenu key.Binding
 	Setup       key.Binding
@@ -95,6 +96,18 @@ type keyMap struct {
 }
 
 const deleteConfirmWindow = 1500 * time.Millisecond
+
+type enterActionOption struct {
+	Action      string
+	Label       string
+	Description string
+}
+
+var enterActionOptions = []enterActionOption{
+	{Action: core.EnterActionVSCode, Label: "VS Code", Description: "Open in VS Code"},
+	{Action: core.EnterActionAgent, Label: "Agent", Description: "Open with default agent in Ghostty"},
+	{Action: core.EnterActionTerminal, Label: "Terminal", Description: "Open Ghostty in worktree"},
+}
 
 func defaultKeys() keyMap {
 	return keyMap{
@@ -111,13 +124,14 @@ func defaultKeys() keyMap {
 		FailedGHA:   key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "failed checks")),
 		HelpPage:    key.NewBinding(key.WithKeys("h"), key.WithHelp("h", "help")),
 		AskPR:       key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "ask agent")),
-		PRDiff:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "full diff")),
+		PRDiff:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open/diff")),
 		ApprovePR:   key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "approve PR")),
 		Filter:      key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 		ToggleBody:  key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "toggle PR body")),
 		OpenPR:      key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open PR in browser")),
 		OpenCode:    key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "open VS Code")),
 		OpenAgent:   key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "open agent")),
+		EnterAction: key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "enter action")),
 		AgentMenu:   key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "select agent")),
 		ProfileMenu: key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "switch repo")),
 		Setup:       key.NewBinding(key.WithKeys("I"), key.WithHelp("I", "setup")),
@@ -128,11 +142,11 @@ func defaultKeys() keyMap {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.HelpPage, k.Refresh, k.PRRadar, k.Filter, k.PRDiff, k.ApprovePR, k.OpenPR, k.Quit}
+	return []key.Binding{k.HelpPage, k.Refresh, k.PRRadar, k.Filter, k.PRDiff, k.EnterAction, k.OpenPR, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Up, k.Down, k.Focus, k.HelpPage, k.Refresh, k.ToggleAll, k.PRRadar, k.Filter}, {k.StateFilter, k.UserFilter, k.MineFilter, k.BranchView, k.FailedGHA, k.PRDiff, k.ApprovePR, k.AskPR, k.New, k.ProfileMenu, k.Setup, k.ToggleBody, k.OpenPR, k.OpenCode, k.OpenAgent, k.AgentMenu, k.Delete, k.Quit}}
+	return [][]key.Binding{{k.Up, k.Down, k.Focus, k.HelpPage, k.Refresh, k.ToggleAll, k.PRRadar, k.Filter}, {k.StateFilter, k.UserFilter, k.MineFilter, k.BranchView, k.FailedGHA, k.PRDiff, k.ApprovePR, k.AskPR, k.New, k.ProfileMenu, k.Setup, k.ToggleBody, k.OpenPR, k.OpenCode, k.OpenAgent, k.EnterAction, k.AgentMenu, k.Delete, k.Quit}}
 }
 
 type model struct {
@@ -183,9 +197,11 @@ type model struct {
 	filtering                      bool
 	creatingWorktree               bool
 	selectingAgent                 bool
+	selectingEnterAction           bool
 	selectingProfile               bool
 	showingHelp                    bool
 	agentCursor                    int
+	enterActionCursor              int
 	profileCursor                  int
 	focusTable                     bool
 	statusMessage                  string
@@ -417,6 +433,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.filtering = false
 		m.creatingWorktree = false
 		m.selectingAgent = false
+		m.selectingEnterAction = false
 		m.selectingProfile = false
 		m.confirmingPRApproval = false
 		m.prApprovalPendingNumber = 0
@@ -489,6 +506,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.selectingAgent {
 			return m.updateAgentSelector(msg)
+		}
+
+		if m.selectingEnterAction {
+			return m.updateEnterActionSelector(msg)
 		}
 
 		if m.selectingProfile {
@@ -628,6 +649,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.prMode = !m.prMode
 			m.filtering = false
 			m.creatingWorktree = false
+			m.selectingEnterAction = false
 			m.askingPR = false
 			m.selectingPRUser = false
 			m.confirmingPRApproval = false
@@ -731,8 +753,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if !m.prMode && key.Matches(msg, m.keys.PRDiff) {
+			return m.openSelectedWorktreeWithAction(m.cfg.App.DefaultEnterAction)
+		}
 		if m.prMode && key.Matches(msg, m.keys.ApprovePR) {
 			return m.beginPRApproval()
+		}
+		if key.Matches(msg, m.keys.EnterAction) {
+			if m.prMode {
+				m.statusMessage = "Enter action is available for local worktrees"
+				m.statusError = true
+				return m, nil
+			}
+			m.clearDeleteArm()
+			m.selectingEnterAction = true
+			m.enterActionCursor = m.defaultEnterActionIndex()
+			m.statusMessage = "Select default Enter action"
+			m.statusError = false
+			return m, nil
 		}
 		if key.Matches(msg, m.keys.ToggleAll) {
 			if m.prMode {
@@ -788,12 +826,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if selected == nil {
 				return m, nil
 			}
-			if selected.Missing || selected.Prunable {
-				m.statusMessage = fmt.Sprintf("Cannot open missing worktree %s", selected.Name)
-				m.statusError = true
-				return m, nil
-			}
-			return m, openVSCodeWorktreeCmd(m.services, *selected)
+			return m.openWorktreeWithAction(*selected, core.EnterActionVSCode)
 		}
 		if key.Matches(msg, m.keys.OpenAgent) {
 			if m.prMode {
@@ -818,18 +851,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if selected == nil {
 				return m, nil
 			}
-			if selected.Missing || selected.Prunable {
-				m.statusMessage = fmt.Sprintf("Cannot open missing worktree %s", selected.Name)
-				m.statusError = true
-				return m, nil
-			}
-			agent := m.defaultAgent()
-			if agent == nil {
-				m.statusMessage = "No AI agent configured"
-				m.statusError = true
-				return m, nil
-			}
-			return m, openAgentCmd(m.services, *selected, *agent)
+			return m.openWorktreeWithAction(*selected, core.EnterActionAgent)
 		}
 		if key.Matches(msg, m.keys.AgentMenu) {
 			m.clearDeleteArm()
@@ -1140,6 +1162,38 @@ func (m model) updateHelpPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) updateEnterActionSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.selectingEnterAction = false
+		m.statusMessage = "Enter action selection cancelled"
+		m.statusError = false
+		return m, nil
+	case "up", "k":
+		if m.enterActionCursor > 0 {
+			m.enterActionCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.enterActionCursor < len(enterActionOptions)-1 {
+			m.enterActionCursor++
+		}
+		return m, nil
+	case "enter":
+		m.enterActionCursor = min(max(m.enterActionCursor, 0), len(enterActionOptions)-1)
+		option := enterActionOptions[m.enterActionCursor]
+		m.cfg.App.DefaultEnterAction = option.Action
+		m.selectingEnterAction = false
+		m.statusMessage = fmt.Sprintf("Saving default Enter action %s...", option.Label)
+		m.statusError = false
+		return m, saveEnterActionConfigCmd(m.services, m.cfg, option.Label)
+	}
+
+	return m, nil
+}
+
 func (m model) updateAgentSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
@@ -1220,6 +1274,7 @@ func (m model) updateProfileSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.prDiffMode = false
 		m.filtering = false
 		m.creatingWorktree = false
+		m.selectingEnterAction = false
 		m.confirmingPRApproval = false
 		m.prApprovalPendingNumber = 0
 		m.prApprovalAwaitingDetailNumber = 0
@@ -1523,6 +1578,37 @@ func (m *model) selectedWorktreePath() string {
 	return selected.Path
 }
 
+func (m model) openSelectedWorktreeWithAction(action string) (tea.Model, tea.Cmd) {
+	selected := m.selectedWorktree()
+	if selected == nil {
+		return m, nil
+	}
+	return m.openWorktreeWithAction(*selected, action)
+}
+
+func (m model) openWorktreeWithAction(wt Worktree, action string) (tea.Model, tea.Cmd) {
+	if wt.Missing || wt.Prunable {
+		m.statusMessage = fmt.Sprintf("Cannot open missing worktree %s", wt.Name)
+		m.statusError = true
+		return m, nil
+	}
+
+	switch normalizedEnterAction(action) {
+	case core.EnterActionAgent:
+		agent := m.defaultAgent()
+		if agent == nil {
+			m.statusMessage = "No AI agent configured"
+			m.statusError = true
+			return m, nil
+		}
+		return m, openAgentCmd(m.services, wt, *agent)
+	case core.EnterActionTerminal:
+		return m, openTerminalWorktreeCmd(m.services, wt)
+	default:
+		return m, openVSCodeWorktreeCmd(m.services, wt)
+	}
+}
+
 func (m model) defaultAgent() *AgentTool {
 	return m.services.FindAgent(m.cfg.App.Agents, m.cfg.App.DefaultAgent)
 }
@@ -1551,6 +1637,16 @@ func (m model) defaultAgentIndex() int {
 	return 0
 }
 
+func (m model) defaultEnterActionIndex() int {
+	action := normalizedEnterAction(m.cfg.App.DefaultEnterAction)
+	for idx, option := range enterActionOptions {
+		if option.Action == action {
+			return idx
+		}
+	}
+	return 0
+}
+
 func (m model) defaultProfileIndex() int {
 	for idx, profile := range m.cfg.App.Profiles {
 		if profile.Name == m.cfg.App.DefaultProfile {
@@ -1558,6 +1654,29 @@ func (m model) defaultProfileIndex() int {
 		}
 	}
 	return 0
+}
+
+func normalizedEnterAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case core.EnterActionVSCode:
+		return core.EnterActionVSCode
+	case core.EnterActionAgent:
+		return core.EnterActionAgent
+	case core.EnterActionTerminal:
+		return core.EnterActionTerminal
+	default:
+		return core.EnterActionVSCode
+	}
+}
+
+func enterActionLabel(action string) string {
+	action = normalizedEnterAction(action)
+	for _, option := range enterActionOptions {
+		if option.Action == action {
+			return option.Label
+		}
+	}
+	return enterActionOptions[0].Label
 }
 
 func (m *model) selectByPath() {
