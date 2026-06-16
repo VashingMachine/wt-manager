@@ -1364,49 +1364,6 @@ func openVSCodeWorktree(ctx context.Context, wt Worktree) error {
 	return fallbackErr
 }
 
-func openAgentInGhostty(ctx context.Context, wt Worktree, agent AgentTool) error {
-	if runtime.GOOS != "darwin" {
-		return errors.New("opening Ghostty tabs is only supported on macOS")
-	}
-	command := fmt.Sprintf("cd %s && %s", shellQuote(wt.Path), agent.Command)
-	_, err := runCommand(ctx, "", "osascript", "-e", ghosttyTabScript(command))
-	if err == nil {
-		return nil
-	}
-	_, fallbackErr := runCommand(ctx, "", "open", "-na", "Ghostty.app", "--args", "--working-directory="+wt.Path, "-e", "/bin/zsh", "-lc", agent.Command)
-	if fallbackErr != nil {
-		return fmt.Errorf("open Ghostty tab failed: %w. Grant Accessibility permission to wt-manager or your terminal", err)
-	}
-	return nil
-}
-
-func openTerminalInGhostty(ctx context.Context, wt Worktree) error {
-	if runtime.GOOS != "darwin" {
-		return errors.New("opening Ghostty terminals is only supported on macOS")
-	}
-	_, err := runCommand(ctx, "", "open", ghosttyTerminalArgs(wt)...)
-	return err
-}
-
-func ghosttyTerminalArgs(wt Worktree) []string {
-	return []string{"-na", "Ghostty.app", "--args", "--working-directory=" + wt.Path}
-}
-
-func ghosttyTabScript(command string) string {
-	commandLiteral := appleScriptString(command)
-	return fmt.Sprintf(`set commandText to %s
-tell application "Ghostty" to activate
-delay 0.1
-tell application "System Events"
-	tell process "Ghostty"
-		keystroke "t" using command down
-		delay 0.2
-		keystroke commandText
-		key code 36
-	end tell
-end tell`, commandLiteral)
-}
-
 func appleScriptString(value string) string {
 	replacer := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\n", "\\n", "\r", "\\r")
 	return "\"" + replacer.Replace(value) + "\""

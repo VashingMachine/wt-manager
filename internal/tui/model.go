@@ -32,9 +32,13 @@ type createResult struct {
 	Err      error
 }
 
-type deleteArmExpired struct {
+type deleteArmTick struct {
 	Path    string
 	ArmedAt time.Time
+}
+
+type statusExpired struct {
+	Seq int
 }
 
 type actionResult struct {
@@ -95,7 +99,18 @@ type keyMap struct {
 	Quit        key.Binding
 }
 
-const deleteConfirmWindow = 1500 * time.Millisecond
+const (
+	deleteConfirmWindow = 1500 * time.Millisecond
+	statusClearAfter    = 4 * time.Second
+)
+
+const (
+	loadingWorktrees = "worktrees"
+	loadingPRs       = "prs"
+	loadingDetail    = "detail"
+	loadingAgent     = "agent"
+	loadingMutation  = "mutation"
+)
 
 type enterActionOption struct {
 	Action      string
@@ -105,8 +120,8 @@ type enterActionOption struct {
 
 var enterActionOptions = []enterActionOption{
 	{Action: core.EnterActionVSCode, Label: "VS Code", Description: "Open in VS Code"},
-	{Action: core.EnterActionAgent, Label: "Agent", Description: "Open with default agent in Ghostty"},
-	{Action: core.EnterActionTerminal, Label: "Terminal", Description: "Open Ghostty in worktree"},
+	{Action: core.EnterActionAgent, Label: "Agent", Description: "Open with default agent in a terminal tab"},
+	{Action: core.EnterActionTerminal, Label: "Terminal", Description: "Open terminal in worktree"},
 }
 
 func defaultKeys() keyMap {
@@ -194,6 +209,9 @@ type model struct {
 	showAll                        bool
 	showPRBody                     bool
 	loading                        bool
+	loadingKind                    string
+	loadingStartedAt               time.Time
+	statusSeq                      int
 	filtering                      bool
 	creatingWorktree               bool
 	selectingAgent                 bool
@@ -212,6 +230,7 @@ type model struct {
 	selectedPath                   string
 	selectedIndex                  int
 	filterQuery                    string
+	filterPrevQuery                string
 	ready                          bool
 }
 
@@ -251,26 +270,28 @@ func NewModel(cfg Config, services core.Services) model {
 
 	spin := spinner.New()
 	spin.Spinner = spinner.MiniDot
-	spin.Style = subtleStyle.Copy()
+	spin.Style = spinnerWorktreeStyle
 
 	h := help.New()
 	h.ShowAll = false
 
 	m := model{
-		services:        services,
-		cfg:             cfg,
-		keys:            defaultKeys(),
-		help:            h,
-		table:           tbl,
-		detail:          vp,
-		filterInput:     filterInput,
-		newInput:        newInput,
-		prQuestionInput: prQuestionInput,
-		prStateFilter:   "open",
-		spinner:         spin,
-		loading:         true,
-		focusTable:      true,
-		statusMessage:   "Loading worktrees...",
+		services:            services,
+		cfg:                 cfg,
+		keys:                defaultKeys(),
+		help:                h,
+		table:               tbl,
+		detail:              vp,
+		filterInput:         filterInput,
+		newInput:            newInput,
+		prQuestionInput:     prQuestionInput,
+		prStateFilter:       "open",
+		spinner:             spin,
+		loading:             true,
+		loadingKind:         loadingWorktrees,
+		loadingStartedAt:    time.Now(),
+		focusTable:          true,
+		statusMessage:       "Loading worktrees...",
 	}
 	if cfg.SetupNeeded {
 		setup := newSetupModel(cfg, true, services)
@@ -279,6 +300,49 @@ func NewModel(cfg Config, services core.Services) model {
 		m.statusMessage = cfg.SetupReason
 	}
 	return m
+}
+
+func (m model) isBusy() bool {
+	return m.loading || m.prDetailLoading
+}
+
+func (m *model) applySpinnerForKind(kind string) {
+	m.loadingKind = kind
+	m.loadingStartedAt = time.Now()
+	switch kind {
+	case loadingAgent:
+		m.spinner.Spinner = spinner.Points
+		m.spinner.Style = spinnerAgentStyle
+	case loadingMutation:
+		m.spinner.Spinner = spinner.Line
+		m.spinner.Style = spinnerMutationStyle
+	case loadingPRs, loadingDetail:
+		m.spinner.Spinner = spinner.MiniDot
+		m.spinner.Style = spinnerPRStyle
+	default:
+		m.spinner.Spinner = spinner.MiniDot
+		m.spinner.Style = spinnerWorktreeStyle
+	}
+}
+
+// startLoading flips the model into a busy state with a spinner styled for the
+// kind of operation, and returns the tick command that drives the animation.
+func (m *model) startLoading(kind, message string) tea.Cmd {
+	m.loading = true
+	m.statusMessage = message
+	m.statusError = false
+	m.applySpinnerForKind(kind)
+	return m.spinner.Tick
+}
+
+// setTransientStatus shows a low-value confirmation that clears on its own
+// after statusClearAfter, unless a newer status replaced it in the meantime.
+func (m *model) setTransientStatus(message string) tea.Cmd {
+	m.statusMessage = message
+	m.statusError = false
+	m.statusSeq++
+	seq := m.statusSeq
+	return tea.Tick(statusClearAfter, func(time.Time) tea.Msg { return statusExpired{Seq: seq} })
 }
 
 func (m model) Init() tea.Cmd {
@@ -298,7 +362,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateDetailContent()
 		return m, nil
 	case spinner.TickMsg:
-		if !m.loading {
+		if !m.isBusy() {
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -444,10 +508,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectedPath = ""
 		m.selectedIndex = 0
 		m.clearDeleteArm()
-		m.loading = true
-		m.statusMessage = msg.Message + ". Loading worktrees..."
-		m.statusError = false
-		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
+		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, msg.Message+". Loading worktrees..."))
 	case deleteResult:
 		m.loading = false
 		if msg.Err != nil {
@@ -458,10 +519,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.clearDeleteArm()
 		m.optimisticRemove(msg.Path)
-		m.statusMessage = fmt.Sprintf("Deleted %s. Refreshing...", msg.Name)
-		m.statusError = false
-		m.loading = true
-		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
+		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, fmt.Sprintf("Deleted %s. Refreshing...", msg.Name)))
 	case createResult:
 		m.loading = false
 		if msg.Err != nil {
@@ -471,30 +529,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.selectedPath = msg.Path
+		message := fmt.Sprintf("Created %s. Refreshing...", msg.Name)
 		if msg.Existing {
-			m.statusMessage = fmt.Sprintf("Selected existing worktree %s. Refreshing...", msg.Name)
-		} else {
-			m.statusMessage = fmt.Sprintf("Created %s. Refreshing...", msg.Name)
+			message = fmt.Sprintf("Selected existing worktree %s. Refreshing...", msg.Name)
 		}
-		m.statusError = false
-		m.loading = true
-		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
-	case deleteArmExpired:
-		if m.deleteArmedPath == msg.Path && m.deleteArmedAt.Equal(msg.ArmedAt) {
+		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, message))
+	case deleteArmTick:
+		if m.deleteArmedPath != msg.Path || !m.deleteArmedAt.Equal(msg.ArmedAt) {
+			return m, nil
+		}
+		if time.Since(m.deleteArmedAt) > deleteConfirmWindow {
 			m.clearDeleteArm()
-			m.statusMessage = "Delete confirmation expired"
-			m.statusError = false
+			return m, m.setTransientStatus("Delete confirmation expired")
+		}
+		return m, deleteArmTickCmd(msg.Path, msg.ArmedAt)
+	case statusExpired:
+		if msg.Seq == m.statusSeq && !m.isBusy() && !m.statusError {
+			m.statusMessage = ""
 		}
 		return m, nil
 	case actionResult:
 		if msg.Err != nil {
 			m.statusMessage = msg.Err.Error()
 			m.statusError = true
-		} else {
-			m.statusMessage = msg.Message
-			m.statusError = false
+			return m, nil
 		}
-		return m, nil
+		return m, m.setTransientStatus(msg.Message)
 	case tea.KeyMsg:
 		if m.setup != nil {
 			setup := *m.setup
@@ -545,32 +605,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if msg.String() == "esc" {
-			if m.showingHelp {
-				m.showingHelp = false
-				m.statusMessage = "Help closed"
-				m.statusError = false
-				return m, nil
-			}
 			if m.deleteArmedPath != "" {
 				m.clearDeleteArm()
-				m.statusMessage = "Delete cancelled"
-				m.statusError = false
-				return m, nil
+				return m, m.setTransientStatus("Delete cancelled")
 			}
 			if m.filterQuery != "" {
 				m.rememberSelection()
 				m.filterQuery = ""
 				m.filterInput.SetValue("")
 				m.applyFilter()
-				m.statusMessage = "Filter cleared"
-				m.statusError = false
-				return m, nil
+				return m, m.setTransientStatus("Filter cleared")
 			}
 		}
 
 		if key.Matches(msg, m.keys.Filter) {
 			m.clearDeleteArm()
 			m.filtering = true
+			m.filterPrevQuery = m.filterQuery
 			m.filterInput.SetValue(m.filterQuery)
 			m.filterInput.CursorEnd()
 			m.filterInput.Focus()
@@ -615,15 +666,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.focusTable {
 				m.table.Blur()
 			}
-			m.statusMessage = map[bool]string{true: "Table focused", false: "Details focused"}[m.focusTable]
-			m.statusError = false
-			return m, nil
+			return m, m.setTransientStatus(map[bool]string{true: "Table focused", false: "Details focused"}[m.focusTable])
 		}
 		if key.Matches(msg, m.keys.Refresh) {
 			m.clearDeleteArm()
-			m.loading = true
-			m.statusMessage = "Refreshing worktrees..."
-			m.statusError = false
 			if m.prMode {
 				m.rememberPRSelection()
 				m.cancelPRDetailLoad()
@@ -631,11 +677,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.prApprovalPendingNumber = 0
 				m.prApprovalAwaitingDetailNumber = 0
 				m.prApprovalWarnings = nil
-				m.statusMessage = "Refreshing remote PRs..."
-				return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg), m.spinner.Tick)
+				return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg), m.startLoading(loadingPRs, "Refreshing remote PRs..."))
 			}
 			m.rememberSelection()
-			return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
+			return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, "Refreshing worktrees..."))
 		}
 		if key.Matches(msg, m.keys.PRRadar) {
 			m.clearDeleteArm()
@@ -664,13 +709,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateDetailContent()
 			m.statusError = false
 			if m.prMode {
-				m.loading = true
-				m.statusMessage = "Loading remote PRs..."
-				return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg), m.spinner.Tick)
+				return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg), m.startLoading(loadingPRs, "Loading remote PRs..."))
 			}
-			m.loading = true
-			m.statusMessage = "Refreshing worktrees..."
-			return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
+			return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, "Refreshing worktrees..."))
 		}
 		if m.prMode && key.Matches(msg, m.keys.StateFilter) {
 			m.cyclePRStateFilter()
@@ -780,11 +821,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.clearDeleteArm()
 			m.showAll = !m.showAll
-			m.loading = true
-			m.statusMessage = map[bool]string{true: "Showing all repo worktrees", false: "Showing managed worktrees only"}[m.showAll]
-			m.statusError = false
 			m.rememberSelection()
-			return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
+			message := map[bool]string{true: "Showing all repo worktrees", false: "Showing managed worktrees only"}[m.showAll]
+			return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, message))
 		}
 		if key.Matches(msg, m.keys.ToggleBody) {
 			m.showPRBody = !m.showPRBody
@@ -817,10 +856,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusError = true
 					return m, nil
 				}
-				m.loading = true
-				m.statusMessage = fmt.Sprintf("Preparing PR #%d worktree for VS Code...", selected.Number)
-				m.statusError = false
-				return m, tea.Batch(openPRWorktreeInVSCodeCmd(m.services, m.services, m.cfg, *selected), m.spinner.Tick)
+				return m, tea.Batch(openPRWorktreeInVSCodeCmd(m.services, m.services, m.cfg, *selected), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for VS Code...", selected.Number)))
 			}
 			selected := m.selectedWorktree()
 			if selected == nil {
@@ -842,10 +878,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusError = true
 					return m, nil
 				}
-				m.loading = true
-				m.statusMessage = fmt.Sprintf("Preparing PR #%d worktree for %s...", selected.Number, agent.Name)
-				m.statusError = false
-				return m, tea.Batch(openPRWorktreeAgentCmd(m.services, m.services, m.cfg, *selected, *agent), m.spinner.Tick)
+				return m, tea.Batch(openPRWorktreeAgentCmd(m.services, m.services, m.cfg, *selected, *agent), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for %s...", selected.Number, agent.Name)))
 			}
 			selected := m.selectedWorktree()
 			if selected == nil {
@@ -895,11 +928,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				branch := selected.HeadRefName
-				m.loading = true
 				m.selectedPath = m.services.CreateWorktreePath(m.cfg, branch)
-				m.statusMessage = fmt.Sprintf("Creating worktree for PR #%d (%s)...", selected.Number, branch)
-				m.statusError = false
-				return m, tea.Batch(createWorktreeCmd(m.services, m.cfg, branch), m.spinner.Tick)
+				return m, tea.Batch(createWorktreeCmd(m.services, m.cfg, branch), m.startLoading(loadingMutation, fmt.Sprintf("Creating worktree for PR #%d (%s)...", selected.Number, branch)))
 			}
 			m.creatingWorktree = true
 			m.newInput.SetValue("")
@@ -929,10 +959,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				wt := *selected
 				m.rememberSelection()
 				m.clearDeleteArm()
-				m.loading = true
-				m.statusMessage = fmt.Sprintf("Deleting %s...", wt.Name)
-				m.statusError = false
-				return m, tea.Batch(removeWorktreeCmd(m.services, m.cfg, wt), m.spinner.Tick)
+				return m, tea.Batch(removeWorktreeCmd(m.services, m.cfg, wt), m.startLoading(loadingMutation, fmt.Sprintf("Deleting %s...", wt.Name)))
 			}
 
 			m.deleteArmedPath = selected.Path
@@ -940,7 +967,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.deleteArmedAt = now
 			m.statusMessage = fmt.Sprintf("Press d again to delete %s", selected.Name)
 			m.statusError = false
-			return m, expireDeleteArmCmd(selected.Path, now)
+			return m, deleteArmTickCmd(selected.Path, now)
 		}
 	}
 
@@ -975,9 +1002,7 @@ func (m model) updateNewWorktree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.creatingWorktree = false
 		m.newInput.Blur()
-		m.statusMessage = "New worktree cancelled"
-		m.statusError = false
-		return m, nil
+		return m, m.setTransientStatus("New worktree cancelled")
 	case "enter":
 		name := strings.TrimSpace(m.newInput.Value())
 		if name == "" {
@@ -988,11 +1013,8 @@ func (m model) updateNewWorktree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		m.creatingWorktree = false
 		m.newInput.Blur()
-		m.loading = true
 		m.selectedPath = m.services.CreateWorktreePath(m.cfg, name)
-		m.statusMessage = fmt.Sprintf("Creating %s...", name)
-		m.statusError = false
-		return m, tea.Batch(createWorktreeCmd(m.services, m.cfg, name), m.spinner.Tick)
+		return m, tea.Batch(createWorktreeCmd(m.services, m.cfg, name), m.startLoading(loadingMutation, fmt.Sprintf("Creating %s...", name)))
 	}
 
 	var cmd tea.Cmd
@@ -1007,9 +1029,7 @@ func (m model) updatePRQuestion(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.askingPR = false
 		m.prQuestionInput.Blur()
-		m.statusMessage = "PR question cancelled"
-		m.statusError = false
-		return m, nil
+		return m, m.setTransientStatus("PR question cancelled")
 	case "enter":
 		question := strings.TrimSpace(m.prQuestionInput.Value())
 		if question == "" {
@@ -1031,10 +1051,7 @@ func (m model) updatePRQuestion(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.askingPR = false
 		m.prQuestionInput.Blur()
-		m.loading = true
-		m.statusMessage = fmt.Sprintf("Asking %s about PR #%d...", agent.Name, selected.Number)
-		m.statusError = false
-		return m, tea.Batch(askPullRequestAgentCmd(m.services, m.cfg, *agent, *selected, question), m.spinner.Tick)
+		return m, tea.Batch(askPullRequestAgentCmd(m.services, m.cfg, *agent, *selected, question), m.startLoading(loadingAgent, fmt.Sprintf("Asking %s about PR #%d...", agent.Name, selected.Number)))
 	}
 
 	var cmd tea.Cmd
@@ -1050,9 +1067,7 @@ func (m model) updatePRApprovalConfirmation(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		m.confirmingPRApproval = false
 		m.prApprovalPendingNumber = 0
 		m.prApprovalWarnings = nil
-		m.statusMessage = "PR approval cancelled"
-		m.statusError = false
-		return m, nil
+		return m, m.setTransientStatus("PR approval cancelled")
 	case "enter", "A":
 		number := m.prApprovalPendingNumber
 		if number <= 0 {
@@ -1062,10 +1077,7 @@ func (m model) updatePRApprovalConfirmation(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 			return m, nil
 		}
 		m.confirmingPRApproval = false
-		m.loading = true
-		m.statusMessage = fmt.Sprintf("Approving PR #%d...", number)
-		m.statusError = false
-		return m, tea.Batch(approveRemotePullRequestCmd(m.services, m.cfg, number), m.spinner.Tick)
+		return m, tea.Batch(approveRemotePullRequestCmd(m.services, m.cfg, number), m.startLoading(loadingMutation, fmt.Sprintf("Approving PR #%d...", number)))
 	}
 	return m, nil
 }
@@ -1075,16 +1087,13 @@ func (m model) updatePRDiffMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Quit):
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Refresh):
-		m.loading = true
 		m.rememberPRSelection()
 		m.cancelPRDetailLoad()
 		m.confirmingPRApproval = false
 		m.prApprovalPendingNumber = 0
 		m.prApprovalAwaitingDetailNumber = 0
 		m.prApprovalWarnings = nil
-		m.statusMessage = "Refreshing remote PRs..."
-		m.statusError = false
-		return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg), m.spinner.Tick)
+		return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg), m.startLoading(loadingPRs, "Refreshing remote PRs..."))
 	case key.Matches(msg, m.keys.ApprovePR):
 		return m.beginPRApproval()
 	case key.Matches(msg, m.keys.OpenPR):
@@ -1101,13 +1110,9 @@ func (m model) updatePRDiffMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.prDiffMode = false
 		m.resize()
-		m.statusMessage = "Closed PR diff"
-		m.statusError = false
-		return m, nil
+		return m, m.setTransientStatus("Closed PR diff")
 	case "enter":
-		m.statusMessage = "Press esc to close PR diff"
-		m.statusError = false
-		return m, nil
+		return m, m.setTransientStatus("Press esc to close PR diff")
 	}
 
 	var cmd tea.Cmd
@@ -1121,9 +1126,7 @@ func (m model) updatePRUserSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc":
 		m.selectingPRUser = false
-		m.statusMessage = "PR user filter cancelled"
-		m.statusError = false
-		return m, nil
+		return m, m.setTransientStatus("PR user filter cancelled")
 	case "up", "k":
 		if m.prUserCursor > 0 {
 			m.prUserCursor--
@@ -1155,9 +1158,7 @@ func (m model) updateHelpPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc", "h", "enter":
 		m.showingHelp = false
-		m.statusMessage = "Help closed"
-		m.statusError = false
-		return m, nil
+		return m, m.setTransientStatus("Help closed")
 	}
 	return m, nil
 }
@@ -1168,9 +1169,7 @@ func (m model) updateEnterActionSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc":
 		m.selectingEnterAction = false
-		m.statusMessage = "Enter action selection cancelled"
-		m.statusError = false
-		return m, nil
+		return m, m.setTransientStatus("Enter action selection cancelled")
 	case "up", "k":
 		if m.enterActionCursor > 0 {
 			m.enterActionCursor--
@@ -1200,9 +1199,7 @@ func (m model) updateAgentSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc":
 		m.selectingAgent = false
-		m.statusMessage = "AI agent selection cancelled"
-		m.statusError = false
-		return m, nil
+		return m, m.setTransientStatus("AI agent selection cancelled")
 	case "up", "k":
 		if len(m.cfg.App.Agents) > 0 && m.agentCursor > 0 {
 			m.agentCursor--
@@ -1237,9 +1234,7 @@ func (m model) updateProfileSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc":
 		m.selectingProfile = false
-		m.statusMessage = "Repository profile selection cancelled"
-		m.statusError = false
-		return m, nil
+		return m, m.setTransientStatus("Repository profile selection cancelled")
 	case "up", "k":
 		if len(m.cfg.App.Profiles) > 0 && m.profileCursor > 0 {
 			m.profileCursor--
@@ -1284,10 +1279,7 @@ func (m model) updateProfileSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedPath = ""
 		m.selectedIndex = 0
 		m.clearDeleteArm()
-		m.loading = true
-		m.statusMessage = fmt.Sprintf("Switching to %s...", profile.Name)
-		m.statusError = false
-		return m, tea.Batch(saveAppConfigCmd(m.services, m.cfg), loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
+		return m, tea.Batch(saveAppConfigCmd(m.services, m.cfg), loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, fmt.Sprintf("Switching to %s...", profile.Name)))
 	}
 
 	return m, nil
@@ -1295,7 +1287,17 @@ func (m model) updateProfileSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "enter":
+	case "esc":
+		m.filtering = false
+		m.filterInput.Blur()
+		if m.filterQuery != m.filterPrevQuery {
+			m.rememberSelection()
+			m.filterQuery = m.filterPrevQuery
+			m.filterInput.SetValue(m.filterPrevQuery)
+			m.applyFilter()
+		}
+		return m, m.setTransientStatus("Filter cancelled")
+	case "enter":
 		m.filtering = false
 		m.filterInput.Blur()
 		m.statusMessage = m.filterSummary()
@@ -1394,69 +1396,32 @@ func (m *model) rebuildRows() {
 	rows := make([]table.Row, 0, len(m.visibleWorktrees))
 	compact := m.table.Width() <= 70
 	for _, wt := range m.visibleWorktrees {
-		commit := wt.Commit.Subject
-		if wt.Commit.Relative != "" {
-			commit = fmt.Sprintf("%s %s", wt.Commit.Relative, wt.Commit.Subject)
-		}
+		rows = append(rows, table.Row(worktreeRowCells(wt, compact)))
+	}
+	if len(rows) == 0 {
+		columnCount := 6
 		if compact {
-			rows = append(rows, table.Row{
-				wt.Name,
-				truncateText(wt.Branch, 20),
-				stateLabel(wt),
-				shortPR(wt.PR),
-			})
-			continue
+			columnCount = 4
 		}
-		rows = append(rows, table.Row{
-			wt.Name,
-			truncateText(wt.Branch, 28),
-			stateLabel(wt),
-			changeSummary(wt.Status),
-			shortPR(wt.PR),
-			truncateText(commit, 48),
-		})
+		rows = append(rows, table.Row(emptyTableRow(columnCount, m.emptyWorktreesMessage())))
 	}
 	m.table.SetRows(rows)
-	if len(rows) == 0 {
-		if compact {
-			m.table.SetRows([]table.Row{{"-", "-", "-", "No worktrees found"}})
-		} else {
-			m.table.SetRows([]table.Row{{"-", "-", "-", "-", "-", "No worktrees found"}})
-		}
-	}
 }
 
 func (m *model) rebuildPRRows() {
 	rows := make([]table.Row, 0, len(m.visiblePRs))
 	compact := m.table.Width() <= 70
 	for _, pr := range m.visiblePRs {
+		rows = append(rows, table.Row(m.prRowCells(pr, compact)))
+	}
+	if len(rows) == 0 {
+		columnCount := 7
 		if compact {
-			rows = append(rows, table.Row{
-				fmt.Sprintf("#%d", pr.Number),
-				truncateText(pr.Author.Login, 16),
-				prStateLabel(pr),
-				truncateText(m.prHeadline(pr), 48),
-			})
-			continue
+			columnCount = 4
 		}
-		rows = append(rows, table.Row{
-			fmt.Sprintf("#%d", pr.Number),
-			truncateText(pr.Author.Login, 18),
-			prStateLabel(pr),
-			checksSummary(pr.StatusCheckRollup),
-			reviewReadiness(pr),
-			shortTime(pr.UpdatedAt),
-			truncateText(m.prHeadline(pr), 60),
-		})
+		rows = append(rows, table.Row(emptyTableRow(columnCount, m.emptyPRsMessage())))
 	}
 	m.table.SetRows(rows)
-	if len(rows) == 0 {
-		if compact {
-			m.table.SetRows([]table.Row{{"-", "-", "-", "No PRs found"}})
-		} else {
-			m.table.SetRows([]table.Row{{"-", "-", "-", "-", "-", "-", "No PRs found"}})
-		}
-	}
 }
 
 func (m *model) resize() {
@@ -1473,7 +1438,7 @@ func (m *model) resize() {
 
 	usableWidth := max(20, m.width-appStyle.GetHorizontalFrameSize())
 	cardFrameWidth := cardStyle.GetHorizontalFrameSize()
-	availableHeight := max(10, m.height-8)
+	availableHeight := max(10, m.height-9)
 	stacked := m.width < 130
 	if stacked {
 		m.table.SetHeight(max(6, availableHeight/2))
@@ -1818,6 +1783,9 @@ func (m model) startPRDetailLoad(number int) (tea.Model, tea.Cmd) {
 	m.prDetail = nil
 	m.statusMessage = fmt.Sprintf("Loading PR #%d details...", number)
 	m.statusError = false
+	if !m.loading {
+		m.applySpinnerForKind(loadingDetail)
+	}
 	return m, tea.Batch(loadRemotePullRequestDetailCmd(m.services, ctx, m.cfg, number, m.prDetailRequest), m.spinner.Tick)
 }
 
@@ -1930,21 +1898,23 @@ func (m model) currentPRUserIndex() int {
 	return 0
 }
 
+// Column minimums account for the two-cell selection pointer in the first
+// column and the icon prefixes in State/Ready/PR cells.
 func buildColumns(totalWidth int) []table.Column {
 	if totalWidth <= 70 {
-		widths := distributeColumnWidths(totalWidth-tableCellStyle.GetHorizontalFrameSize()*4, []int{8, 10, 5, 5}, []int{16, 20, 10, 12}, []int{1, 0, 3, 2})
+		widths := distributeColumnWidths(totalWidth-tableCellStyle.GetHorizontalFrameSize()*4, []int{10, 10, 7, 7}, []int{18, 20, 12, 14}, []int{1, 0, 3, 2})
 		return []table.Column{{Title: "Worktree", Width: widths[0]}, {Title: "Branch", Width: widths[1]}, {Title: "State", Width: widths[2]}, {Title: "PR", Width: widths[3]}}
 	}
-	widths := distributeColumnWidths(totalWidth-tableCellStyle.GetHorizontalFrameSize()*6, []int{12, 16, 5, 5, 6, 12}, []int{18, 26, 8, 8, 10, 18}, []int{5, 1, 0, 4, 2, 3})
+	widths := distributeColumnWidths(totalWidth-tableCellStyle.GetHorizontalFrameSize()*6, []int{14, 16, 7, 6, 8, 12}, []int{20, 26, 10, 9, 13, 18}, []int{5, 1, 0, 4, 2, 3})
 	return []table.Column{{Title: "Worktree", Width: widths[0]}, {Title: "Branch", Width: widths[1]}, {Title: "State", Width: widths[2]}, {Title: "Delta", Width: widths[3]}, {Title: "PR", Width: widths[4]}, {Title: "Last Commit", Width: widths[5]}}
 }
 
 func buildPRColumns(totalWidth int) []table.Column {
 	if totalWidth <= 70 {
-		widths := distributeColumnWidths(totalWidth-tableCellStyle.GetHorizontalFrameSize()*4, []int{5, 8, 5, 12}, []int{8, 14, 10, 26}, []int{3, 1, 2, 0})
+		widths := distributeColumnWidths(totalWidth-tableCellStyle.GetHorizontalFrameSize()*4, []int{7, 8, 7, 12}, []int{10, 14, 12, 26}, []int{3, 1, 2, 0})
 		return []table.Column{{Title: "PR", Width: widths[0]}, {Title: "Author", Width: widths[1]}, {Title: "State", Width: widths[2]}, {Title: "Title", Width: widths[3]}}
 	}
-	widths := distributeColumnWidths(totalWidth-tableCellStyle.GetHorizontalFrameSize()*7, []int{5, 8, 5, 6, 6, 8, 14}, []int{8, 14, 8, 10, 10, 12, 30}, []int{6, 1, 4, 3, 5, 2, 0})
+	widths := distributeColumnWidths(totalWidth-tableCellStyle.GetHorizontalFrameSize()*7, []int{7, 8, 7, 6, 8, 8, 14}, []int{10, 14, 10, 10, 11, 12, 30}, []int{6, 1, 4, 3, 5, 2, 0})
 	return []table.Column{{Title: "PR", Width: widths[0]}, {Title: "Author", Width: widths[1]}, {Title: "State", Width: widths[2]}, {Title: "Checks", Width: widths[3]}, {Title: "Ready", Width: widths[4]}, {Title: "Updated", Width: widths[5]}, {Title: "Title", Width: widths[6]}}
 }
 
@@ -1970,13 +1940,7 @@ func shortReviewDecision(decision string) string {
 	}
 }
 
-func checksSummary(checks []StatusCheck) string {
-	if len(checks) == 0 {
-		return "-"
-	}
-	failing := 0
-	pending := 0
-	passing := 0
+func checksCounts(checks []StatusCheck) (failing, pending, passing int) {
 	for _, check := range checks {
 		conclusion := strings.ToLower(check.Conclusion)
 		status := strings.ToLower(check.Status)
@@ -1989,6 +1953,14 @@ func checksSummary(checks []StatusCheck) string {
 			pending++
 		}
 	}
+	return failing, pending, passing
+}
+
+func checksSummary(checks []StatusCheck) string {
+	if len(checks) == 0 {
+		return "-"
+	}
+	failing, pending, passing := checksCounts(checks)
 	if failing > 0 {
 		return fmt.Sprintf("%d fail", failing)
 	}
@@ -2150,9 +2122,9 @@ func detailViewContent(wt *Worktree, showPRBody bool, width int) string {
 		fmt.Sprintf("Worktree: %s", wt.Name),
 		fmt.Sprintf("Path: %s", wt.Path),
 		fmt.Sprintf("Branch: %s", wt.Branch),
-		fmt.Sprintf("State: %s", stateLabel(*wt)),
-		fmt.Sprintf("Tracking: %s", trackingSummary(wt.Status)),
-		fmt.Sprintf("Changes: staged=%d unstaged=%d untracked=%d conflicts=%d", wt.Status.Staged, wt.Status.Unstaged, wt.Status.Untracked, wt.Status.Conflicts),
+		fmt.Sprintf("State: %s", stateDisplay(*wt)),
+		fmt.Sprintf("Tracking: %s", trackingDisplay(wt.Status)),
+		fmt.Sprintf("Changes: %s (staged=%d unstaged=%d untracked=%d conflicts=%d)", changeDisplay(wt.Status), wt.Status.Staged, wt.Status.Unstaged, wt.Status.Untracked, wt.Status.Conflicts),
 	)
 
 	if wt.Commit.Hash != "" {
@@ -2167,7 +2139,7 @@ func detailViewContent(wt *Worktree, showPRBody bool, width int) string {
 		lines = append(lines, "", fmt.Sprintf("Load note: %s", wt.LoadError))
 	}
 
-	lines = append(lines, "", "Changed files:")
+	lines = append(lines, "", detailSection("Changed files"))
 	if len(wt.Status.Files) == 0 {
 		lines = append(lines, "  none")
 	} else {
@@ -2180,7 +2152,7 @@ func detailViewContent(wt *Worktree, showPRBody bool, width int) string {
 		}
 	}
 
-	lines = append(lines, "", "Pull request:")
+	lines = append(lines, "", detailSection("Pull request"))
 	if wt.PR == nil {
 		lines = append(lines, "  none")
 	} else {
@@ -2189,7 +2161,7 @@ func detailViewContent(wt *Worktree, showPRBody bool, width int) string {
 			author = fmt.Sprintf("%s (%s)", wt.PR.Author.Login, wt.PR.Author.Name)
 		}
 		lines = append(lines,
-			fmt.Sprintf("  #%d %s", wt.PR.Number, strings.ToLower(wt.PR.State)),
+			fmt.Sprintf("  %s", shortPRDisplay(wt.PR)),
 			fmt.Sprintf("  %s", wt.PR.Title),
 			fmt.Sprintf("  %s", wt.PR.URL),
 		)
@@ -2235,12 +2207,12 @@ func remotePRDetailViewContent(pr *RemotePullRequest, loading bool, showFailedGH
 	lines := []string{
 		detailTitleLine(fmt.Sprintf("PR #%d", pr.Number), pr.Title, contentWidth),
 		detailField("URL", pr.URL, infoStyle, contentWidth),
-		detailField("State", prStateLabel(*pr), prStateCellStyle(*pr), contentWidth),
+		detailField("State", prStateDisplay(*pr), prStateCellStyle(*pr), contentWidth),
 		detailField("Author", emptyDash(pr.Author.Login), magentaStyle, contentWidth),
 		detailField("Branch", fmt.Sprintf("%s -> %s", emptyDash(pr.HeadRefName), emptyDash(pr.BaseRefName)), purpleStyle, contentWidth),
-		detailField("Review", shortReviewDecision(pr.ReviewDecision), mutedStyle, contentWidth),
-		detailField("Checks", checksSummary(pr.StatusCheckRollup), checksCellStyle(pr.StatusCheckRollup), contentWidth),
-		detailField("Ready", reviewReadiness(*pr), readinessCellStyle(*pr), contentWidth),
+		detailField("Review", reviewDisplay(pr.ReviewDecision), mutedStyle, contentWidth),
+		detailField("Checks", checksDetailDisplay(pr.StatusCheckRollup), checksCellStyle(pr.StatusCheckRollup), contentWidth),
+		detailField("Ready", readinessDisplay(*pr), readinessCellStyle(*pr), contentWidth),
 		detailField("Size", fmt.Sprintf("%d files, +%d/-%d", pr.ChangedFiles, pr.Additions, pr.Deletions), deltaSizeStyle(*pr), contentWidth),
 		detailField("Updated", emptyDash(pr.UpdatedAt), mutedStyle, contentWidth),
 	}
@@ -2253,8 +2225,16 @@ func remotePRDetailViewContent(pr *RemotePullRequest, loading bool, showFailedGH
 	if reviewerList := actorList(reviewers); reviewerList != "" {
 		lines = append(lines, detailField("Review requests", reviewerList, magentaStyle, contentWidth))
 	}
-	if loading {
+	if loading && strings.TrimSpace(pr.Body) == "" && len(pr.Files) == 0 {
+		lines = append(lines, "", detailSection("Description"))
+		lines = append(lines, skeletonLines(contentWidth, 3)...)
+		lines = append(lines, "", detailSection("Files"))
+		lines = append(lines, skeletonLines(contentWidth, 2)...)
 		lines = append(lines, "", styledWrappedLine("Loading PR details...", infoStyle, contentWidth))
+		return strings.Join(lines, "\n")
+	}
+	if loading {
+		lines = append(lines, "", styledWrappedLine("Refreshing PR details...", infoStyle, contentWidth))
 	}
 	if diffMode {
 		lines = append(lines, "", detailSection("Diff"))
@@ -2354,7 +2334,23 @@ func detailTitleLine(prefix string, title string, width int) string {
 }
 
 func detailSection(title string) string {
-	return titleStyle.Render(title + ":")
+	return titleStyle.Render(icons.Section + " " + title + ":")
+}
+
+// skeletonLines renders dimmed placeholder bars of varying length, used while
+// detail content is still being fetched.
+func skeletonLines(width int, rows int) []string {
+	width = max(1, width)
+	fractions := []float64{0.9, 0.55, 0.75, 0.4}
+	lines := make([]string, 0, rows)
+	for i := 0; i < rows; i++ {
+		barWidth := min(width-2, int(float64(width-2)*fractions[i%len(fractions)]))
+		if barWidth < 1 {
+			barWidth = 1
+		}
+		lines = append(lines, "  "+skeletonStyle.Render(strings.Repeat(icons.SkeletonBlock, barWidth)))
+	}
+	return lines
 }
 
 func detailField(label string, value string, valueStyle lipgloss.Style, width int) string {

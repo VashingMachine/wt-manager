@@ -1,24 +1,18 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func expireDeleteArmCmd(path string, armedAt time.Time) tea.Cmd {
-	return tea.Tick(deleteConfirmWindow, func(time.Time) tea.Msg {
-		return deleteArmExpired{Path: path, ArmedAt: armedAt}
+// deleteArmTickCmd re-renders the armed-delete countdown roughly ten times a
+// second; the Update handler re-issues it until the confirmation window ends.
+func deleteArmTickCmd(path string, armedAt time.Time) tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
+		return deleteArmTick{Path: path, ArmedAt: armedAt}
 	})
-}
-
-func shortPR(pr *PullRequest) string {
-	if pr == nil {
-		return "-"
-	}
-	return fmt.Sprintf("#%d %s", pr.Number, strings.ToLower(pr.State))
 }
 
 func stateLabel(wt Worktree) string {
@@ -40,25 +34,11 @@ func stateLabel(wt Worktree) string {
 	}
 }
 
-func changeSummary(status RepoStatus) string {
-	return fmt.Sprintf("%d/%d/?%d", status.Staged, status.Unstaged, status.Untracked)
-}
-
-func trackingSummary(status RepoStatus) string {
-	if status.Ahead == 0 && status.Behind == 0 {
-		return "up to date"
-	}
-	return fmt.Sprintf("+%d/-%d", status.Ahead, status.Behind)
-}
-
 func truncateText(text string, max int) string {
-	if max <= 0 || len(text) <= max {
-		return text
+	if max <= 0 {
+		return ""
 	}
-	if max <= 1 {
-		return text[:max]
-	}
-	return text[:max-1] + "…"
+	return truncateRunes(text, max)
 }
 
 func firstLine(text string) string {

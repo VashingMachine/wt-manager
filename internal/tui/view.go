@@ -3,33 +3,11 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
-)
-
-var (
-	appStyle         = lipgloss.NewStyle().Padding(1, 2)
-	titleStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("81"))
-	subtleStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	mutedStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	successStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	warnStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	infoStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
-	magentaStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("171"))
-	purpleStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("141"))
-	errorStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("204"))
-	cardStyle        = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
-	focusStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("62")).Padding(0, 1)
-	headerCellStyle  = lipgloss.NewStyle().Padding(0, 1).Bold(true).Foreground(lipgloss.Color("252"))
-	tableCellStyle   = lipgloss.NewStyle().Padding(0, 1)
-	selectedRowStyle = lipgloss.NewStyle().
-				Background(lipgloss.Color("62")).
-				Bold(true)
-	statusStyle      = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("252"))
-	statusErrorStyle = statusStyle.Copy().Foreground(lipgloss.Color("204"))
-	modalStyle       = lipgloss.NewStyle().Border(lipgloss.DoubleBorder()).BorderForeground(lipgloss.Color("62")).Padding(1, 2).Width(64)
 )
 
 func (m model) View() string {
@@ -50,26 +28,15 @@ func (m model) View() string {
 		return view
 	}
 
-	headerMeta := fmt.Sprintf("Profile: %s | Repo: %s | Agent: %s | Enter: %s | Mode: %s | Filter: %s | Focus: %s", m.cfg.ActiveProfile.Name, m.cfg.ActiveProfile.RepositoryPath, m.cfg.App.DefaultAgent, enterActionLabel(m.cfg.App.DefaultEnterAction), m.modeLabel(), m.filterLabel(), m.focusLabel())
-	if m.filterQuery != "" {
-		headerMeta += fmt.Sprintf(" | Query: %q", m.filterQuery)
-	}
+	header := m.headerView()
 
-	header := lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Render("wt-manager"),
-		subtleStyle.Render(headerMeta),
-	)
-	if m.filtering {
-		header = lipgloss.JoinVertical(lipgloss.Left, header, subtleStyle.Render(m.filterInput.View()))
-	}
-
-	tableCard := cardStyle.Copy()
+	tableCard := cardStyle
 	if m.focusTable {
-		tableCard = focusStyle.Copy()
+		tableCard = focusStyle
 	}
-	detailCard := cardStyle.Copy()
+	detailCard := cardStyle
 	if !m.focusTable {
-		detailCard = focusStyle.Copy()
+		detailCard = focusStyle
 	}
 
 	tableTitle := infoStyle.Render("Worktrees")
@@ -94,17 +61,8 @@ func (m model) View() string {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, tableBlock, detailBlock)
 	}
 
-	statusRenderer := statusStyle
-	if m.statusError {
-		statusRenderer = statusErrorStyle
-	}
-	status := statusRenderer.Render(m.statusMessage)
-	if m.loading {
-		status = statusRenderer.Render(fmt.Sprintf("%s %s", m.spinner.View(), m.statusMessage))
-	}
-
 	footer := lipgloss.JoinVertical(lipgloss.Left,
-		status,
+		m.statusBarView(),
 		subtleStyle.Render(m.help.View(m.keys)),
 	)
 
@@ -139,13 +97,125 @@ func (m model) View() string {
 	return view
 }
 
+func (m model) headerView() string {
+	badge := badgeWorktreesStyle.Render("WORKTREES")
+	if m.prMode {
+		badge = badgePRRadarStyle.Render("PR RADAR")
+	}
+	chip := chipStyle.Render(icons.Dot + " " + m.cfg.ActiveProfile.Name)
+	title := lipgloss.JoinHorizontal(lipgloss.Center, titleStyle.Render("wt-manager"), "  ", badge, " ", chip)
+
+	usable := max(20, m.width-appStyle.GetHorizontalFrameSize())
+
+	// The filter input line is always reserved so toggling "/" does not shift
+	// the layout below it.
+	filterLine := ""
+	if m.filtering {
+		filterLine = subtleStyle.Render(m.filterInput.View())
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, title, m.headerMetaLine(usable), filterLine)
+}
+
+func (m model) headerMetaLine(usable int) string {
+	build := func(repoPath string) string {
+		separator := mutedStyle.Render(" · ")
+		parts := []string{
+			mutedStyle.Render("repo ") + subtleStyle.Render(repoPath),
+			mutedStyle.Render("agent ") + subtleStyle.Render(emptyDash(m.cfg.App.DefaultAgent)),
+			mutedStyle.Render("enter ") + subtleStyle.Render(enterActionLabel(m.cfg.App.DefaultEnterAction)),
+			mutedStyle.Render("focus ") + subtleStyle.Render(m.focusLabel()),
+		}
+		if label := m.filterLabel(); label != "" {
+			parts = append(parts, mutedStyle.Render("filter ")+subtleStyle.Render(label))
+		}
+		line := strings.Join(parts, separator)
+		if m.filterQuery != "" {
+			line += " " + warnStyle.Render(fmt.Sprintf("/%q", m.filterQuery))
+		}
+		return line
+	}
+
+	repo := m.cfg.ActiveProfile.RepositoryPath
+	line := build(repo)
+	for lipgloss.Width(line) > usable && len([]rune(repo)) > 8 {
+		repo = truncateRunes(repo, len([]rune(repo))-1)
+		line = build(repo)
+	}
+	if lipgloss.Width(line) > usable {
+		plain := fmt.Sprintf("repo %s · agent %s · enter %s · focus %s", repo, emptyDash(m.cfg.App.DefaultAgent), enterActionLabel(m.cfg.App.DefaultEnterAction), m.focusLabel())
+		line = subtleStyle.Render(clampRunewidth(plain, usable))
+	}
+	return line
+}
+
+// elapsedHint reports how long the current operation has been running, once it
+// is slow enough to be worth mentioning (agent calls earlier than the rest).
+func (m model) elapsedHint() string {
+	if m.loadingStartedAt.IsZero() {
+		return ""
+	}
+	threshold := 5 * time.Second
+	if m.loadingKind == loadingAgent {
+		threshold = 3 * time.Second
+	}
+	elapsed := time.Since(m.loadingStartedAt)
+	if elapsed < threshold {
+		return ""
+	}
+	return fmt.Sprintf("(%ds)", int(elapsed.Seconds()))
+}
+
+func (m model) quietStatusHint() string {
+	if m.prMode {
+		return fmt.Sprintf("%s %d PRs · / filter · h help", icons.Dot, len(m.visiblePRs))
+	}
+	return fmt.Sprintf("%s %d worktrees · / filter · h help", icons.Dot, len(m.visibleWorktrees))
+}
+
+func isSuccessStatus(message string) bool {
+	for _, prefix := range []string{"Loaded ", "Deleted ", "Created ", "Approved ", "Saved ", "Opened ", "Selected "} {
+		if strings.HasPrefix(message, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m model) statusBarView() string {
+	if m.isBusy() {
+		message := m.statusMessage
+		if hint := m.elapsedHint(); hint != "" {
+			message += " " + mutedStyle.Render(hint)
+		}
+		return statusStyle.Render(fmt.Sprintf("%s %s", m.spinner.View(), message))
+	}
+	if m.statusError {
+		return statusErrorStyle.Render(fmt.Sprintf("%s %s", icons.Err, m.statusMessage))
+	}
+	if m.deleteArmedPath != "" {
+		remaining := deleteConfirmWindow - time.Since(m.deleteArmedAt)
+		if remaining < 0 {
+			remaining = 0
+		}
+		return statusStyle.Render(warnStyle.Render(fmt.Sprintf("%s Press d again to delete %s (%.1fs)", icons.Warn, m.deleteArmedName, remaining.Seconds())))
+	}
+	if strings.TrimSpace(m.statusMessage) == "" {
+		return statusStyle.Render(mutedStyle.Render(m.quietStatusHint()))
+	}
+	if isSuccessStatus(m.statusMessage) {
+		return statusOKStyle.Render(fmt.Sprintf("%s %s", icons.OK, m.statusMessage))
+	}
+	return statusStyle.Render(m.statusMessage)
+}
+
 func (m model) fullScreenPRDiffView() string {
 	selected := m.selectedRemotePRForDetail()
 	title := "PR Diff"
 	meta := "No remote PR selected"
 	if selected != nil {
 		title = fmt.Sprintf("PR #%d %s", selected.Number, selected.Title)
-		meta = fmt.Sprintf("%s -> %s | %s | %s | %s", emptyDash(selected.HeadRefName), emptyDash(selected.BaseRefName), prStateLabel(*selected), checksSummary(selected.StatusCheckRollup), reviewReadiness(*selected))
+		meta = fmt.Sprintf("%s -> %s | %s | %s | %s", emptyDash(selected.HeadRefName), emptyDash(selected.BaseRefName), prStateDisplay(*selected), checksDisplay(selected.StatusCheckRollup), readinessDisplay(*selected))
 		if m.prDetailLoading {
 			meta += " | loading"
 		}
@@ -158,8 +228,10 @@ func (m model) fullScreenPRDiffView() string {
 	)
 	footerText := "esc close | j/k scroll | A approve | o open PR | r refresh | q quit"
 	status := m.statusMessage
-	if m.loading {
+	if m.isBusy() {
 		status = fmt.Sprintf("%s %s", m.spinner.View(), status)
+	} else if m.statusError && status != "" {
+		status = fmt.Sprintf("%s %s", icons.Err, status)
 	}
 	if status != "" {
 		footerText = fmt.Sprintf("%s | %s", footerText, status)
@@ -179,26 +251,25 @@ func (m model) tableView() string {
 	if m.prMode {
 		return m.prTableView(columns)
 	}
+	loadingLine := ""
 	if len(m.visibleWorktrees) == 0 {
-		rows = append(rows, emptyTableRow(len(columns)))
+		if m.loading {
+			loadingLine = tableCellStyle.Render(m.spinner.View() + " " + subtleStyle.Render("Loading worktrees..."))
+		} else {
+			loadingLine = tableCellStyle.Render(mutedStyle.Render(m.emptyWorktreesMessage()))
+		}
 	} else {
 		compact := m.table.Width() <= 70
 		start, end := visibleRowRange(m.table.Cursor(), len(m.visibleWorktrees), m.table.Height())
 		for _, wt := range m.visibleWorktrees[start:end] {
-			commit := wt.Commit.Subject
-			if wt.Commit.Relative != "" {
-				commit = fmt.Sprintf("%s %s", wt.Commit.Relative, wt.Commit.Subject)
-			}
-
-			if compact {
-				rows = append(rows, []string{wt.Name, wt.Branch, stateLabel(wt), shortPR(wt.PR)})
-			} else {
-				rows = append(rows, []string{wt.Name, wt.Branch, stateLabel(wt), changeSummary(wt.Status), shortPR(wt.PR), commit})
-			}
+			rows = append(rows, worktreeRowCells(wt, compact))
 		}
 	}
 
 	lines := []string{renderTableHeader(columns)}
+	if loadingLine != "" {
+		lines = append(lines, loadingLine)
+	}
 	start, _ := visibleRowRange(m.table.Cursor(), len(m.visibleWorktrees), m.table.Height())
 	for idx, row := range rows {
 		absoluteIndex := start + idx
@@ -207,7 +278,8 @@ func (m model) tableView() string {
 		if len(m.visibleWorktrees) > 0 && absoluteIndex < len(m.visibleWorktrees) {
 			wt = &m.visibleWorktrees[absoluteIndex]
 		}
-		lines = append(lines, renderTableRow(columns, row, wt, selected))
+		armed := wt != nil && m.deleteArmedPath != "" && wt.Path == m.deleteArmedPath
+		lines = append(lines, renderTableRow(columns, row, wt, selected, m.focusTable, armed))
 	}
 
 	for len(lines)-1 < m.table.Height() {
@@ -219,21 +291,25 @@ func (m model) tableView() string {
 
 func (m model) prTableView(columns []table.Column) string {
 	rows := make([][]string, 0, len(m.visiblePRs))
+	loadingLine := ""
 	if len(m.visiblePRs) == 0 {
-		rows = append(rows, emptyTableRow(len(columns)))
+		if m.loading {
+			loadingLine = tableCellStyle.Render(m.spinner.View() + " " + subtleStyle.Render("Loading remote PRs..."))
+		} else {
+			loadingLine = tableCellStyle.Render(mutedStyle.Render(m.emptyPRsMessage()))
+		}
 	} else {
 		compact := m.table.Width() <= 70
 		start, end := visibleRowRange(m.table.Cursor(), len(m.visiblePRs), m.table.Height())
 		for _, pr := range m.visiblePRs[start:end] {
-			if compact {
-				rows = append(rows, []string{fmt.Sprintf("#%d", pr.Number), pr.Author.Login, prStateLabel(pr), m.prHeadline(pr)})
-			} else {
-				rows = append(rows, []string{fmt.Sprintf("#%d", pr.Number), pr.Author.Login, prStateLabel(pr), checksSummary(pr.StatusCheckRollup), reviewReadiness(pr), shortTime(pr.UpdatedAt), m.prHeadline(pr)})
-			}
+			rows = append(rows, m.prRowCells(pr, compact))
 		}
 	}
 
 	lines := []string{renderTableHeader(columns)}
+	if loadingLine != "" {
+		lines = append(lines, loadingLine)
+	}
 	start, _ := visibleRowRange(m.table.Cursor(), len(m.visiblePRs), m.table.Height())
 	for idx, row := range rows {
 		absoluteIndex := start + idx
@@ -242,13 +318,31 @@ func (m model) prTableView(columns []table.Column) string {
 		if len(m.visiblePRs) > 0 && absoluteIndex < len(m.visiblePRs) {
 			pr = &m.visiblePRs[absoluteIndex]
 		}
-		lines = append(lines, renderPRTableRow(columns, row, pr, selected))
+		lines = append(lines, renderPRTableRow(columns, row, pr, selected, m.focusTable))
 	}
 
 	for len(lines)-1 < m.table.Height() {
 		lines = append(lines, strings.Repeat(" ", m.table.Width()))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func worktreeRowCells(wt Worktree, compact bool) []string {
+	if compact {
+		return []string{wt.Name, wt.Branch, stateDisplay(wt), shortPRDisplay(wt.PR)}
+	}
+	commit := wt.Commit.Subject
+	if wt.Commit.Relative != "" {
+		commit = fmt.Sprintf("%s %s", wt.Commit.Relative, wt.Commit.Subject)
+	}
+	return []string{wt.Name, wt.Branch, stateDisplay(wt), changeDisplay(wt.Status), shortPRDisplay(wt.PR), commit}
+}
+
+func (m model) prRowCells(pr RemotePullRequest, compact bool) []string {
+	if compact {
+		return []string{fmt.Sprintf("#%d", pr.Number), pr.Author.Login, prStateDisplay(pr), m.prHeadline(pr)}
+	}
+	return []string{fmt.Sprintf("#%d", pr.Number), pr.Author.Login, prStateDisplay(pr), checksDisplay(pr.StatusCheckRollup), readinessDisplay(pr), shortTime(pr.UpdatedAt), m.prHeadline(pr)}
 }
 
 func visibleRowRange(cursor, total, height int) (int, int) {
@@ -266,59 +360,103 @@ func visibleRowRange(cursor, total, height int) (int, int) {
 	return start, end
 }
 
-func emptyTableRow(columnCount int) []string {
+func (m model) emptyWorktreesMessage() string {
+	if m.filterQuery != "" {
+		return "No matches — esc clears filter"
+	}
+	return "No worktrees — n creates one"
+}
+
+func (m model) emptyPRsMessage() string {
+	if m.filterQuery != "" || m.prUserFilter != "" || m.prAuthorFilter != "" {
+		return "No PRs match — esc clears"
+	}
+	if m.prStateFilter != "" && m.prStateFilter != "all" {
+		return fmt.Sprintf("No %s PRs — S cycles state", m.prStateFilter)
+	}
+	return "No PRs found"
+}
+
+func emptyTableRow(columnCount int, message string) []string {
 	row := make([]string, columnCount)
 	for i := range row {
 		row[i] = "-"
 	}
 	if columnCount > 0 {
-		row[columnCount-1] = "No worktrees found"
+		row[columnCount-1] = message
 	}
 	return row
 }
 
 func renderTableHeader(columns []table.Column) string {
 	cells := make([]string, 0, len(columns))
-	for _, column := range columns {
-		cell := padCell(runewidth.Truncate(column.Title, column.Width, "…"), column.Width)
+	for idx, column := range columns {
+		title := column.Title
+		if idx == 0 {
+			title = "  " + title
+		}
+		cell := padCellForColumn(runewidth.Truncate(title, column.Width, "…"), column)
 		cells = append(cells, headerCellStyle.Render(cell))
 	}
 	return strings.Join(cells, "")
 }
 
-func renderTableRow(columns []table.Column, row []string, wt *Worktree, selected bool) string {
+// rowCellValue prepares one cell: selected rows carry a pointer in the first
+// column, every other row gets matching indentation so columns stay aligned.
+func rowCellValue(raw string, columnIndex int, selected bool) string {
+	value := singleLineCell(raw)
+	if columnIndex == 0 {
+		prefix := "  "
+		if selected {
+			prefix = icons.Pointer + " "
+		}
+		value = prefix + value
+	}
+	return value
+}
+
+func rowLineStyle(line string, selected, focused, armed bool) string {
+	switch {
+	case armed:
+		return armedRowStyle.Render(line)
+	case selected && focused:
+		return selectedRowStyle.Render(line)
+	case selected:
+		return blurredRowStyle.Render(line)
+	default:
+		return line
+	}
+}
+
+func renderTableRow(columns []table.Column, row []string, wt *Worktree, selected, focused, armed bool) string {
 	cells := make([]string, 0, len(columns))
 	for idx, column := range columns {
 		value := ""
 		if idx < len(row) {
-			value = singleLineCell(row[idx])
+			value = rowCellValue(row[idx], idx, selected)
 		}
 		value = runewidth.Truncate(value, column.Width, "…")
-		cell := padCell(value, column.Width)
+		cell := padCellForColumn(value, column)
 		if wt != nil {
 			cell = styleTableCell(cell, column.Title, wt)
-		} else if wt == nil {
+		} else {
 			cell = mutedStyle.Render(cell)
 		}
 		cells = append(cells, tableCellStyle.Render(cell))
 	}
 
-	line := strings.Join(cells, "")
-	if selected {
-		return selectedRowStyle.Render(line)
-	}
-	return line
+	return rowLineStyle(strings.Join(cells, ""), selected, focused, armed)
 }
 
-func renderPRTableRow(columns []table.Column, row []string, pr *RemotePullRequest, selected bool) string {
+func renderPRTableRow(columns []table.Column, row []string, pr *RemotePullRequest, selected, focused bool) string {
 	cells := make([]string, 0, len(columns))
 	for idx, column := range columns {
 		value := ""
 		if idx < len(row) {
-			value = singleLineCell(row[idx])
+			value = rowCellValue(row[idx], idx, selected)
 		}
 		value = runewidth.Truncate(value, column.Width, "…")
-		cell := padCell(value, column.Width)
+		cell := padCellForColumn(value, column)
 		if pr != nil {
 			cell = stylePRTableCell(cell, column.Title, pr)
 		} else {
@@ -326,11 +464,7 @@ func renderPRTableRow(columns []table.Column, row []string, pr *RemotePullReques
 		}
 		cells = append(cells, tableCellStyle.Render(cell))
 	}
-	line := strings.Join(cells, "")
-	if selected {
-		return selectedRowStyle.Render(line)
-	}
-	return line
+	return rowLineStyle(strings.Join(cells, ""), selected, focused, false)
 }
 
 func stylePRTableCell(cell, title string, pr *RemotePullRequest) string {
@@ -457,6 +591,32 @@ func padCell(value string, width int) string {
 	return value + strings.Repeat(" ", padding)
 }
 
+func padCellLeft(value string, width int) string {
+	padding := width - runewidth.StringWidth(value)
+	if padding <= 0 {
+		return value
+	}
+	return strings.Repeat(" ", padding) + value
+}
+
+// rightAlignedColumns lists the numeric-ish columns that read better right
+// aligned in both tables.
+func columnRightAligned(title string) bool {
+	switch title {
+	case "Delta", "Checks", "Updated":
+		return true
+	default:
+		return false
+	}
+}
+
+func padCellForColumn(value string, column table.Column) string {
+	if columnRightAligned(column.Title) {
+		return padCellLeft(value, column.Width)
+	}
+	return padCell(value, column.Width)
+}
+
 func singleLineCell(value string) string {
 	replacer := strings.NewReplacer("\r", " ", "\n", " ", "\t", " ")
 	return strings.Join(strings.Fields(replacer.Replace(value)), " ")
@@ -494,13 +654,6 @@ func (m model) filterLabel() string {
 	return fmt.Sprintf("%s, filtered", mode)
 }
 
-func (m model) modeLabel() string {
-	if m.prMode {
-		return "PR Radar"
-	}
-	return "Worktrees"
-}
-
 func (m model) focusLabel() string {
 	if m.filtering {
 		return "filter"
@@ -535,248 +688,197 @@ func (m model) focusLabel() string {
 	return "details"
 }
 
+type keyHint struct {
+	Key    string
+	Action string
+}
+
+func renderKeyHints(hints []keyHint) string {
+	parts := make([]string, 0, len(hints))
+	for _, hint := range hints {
+		parts = append(parts, keyHintKeyStyle.Render(hint.Key)+" "+subtleStyle.Render(hint.Action))
+	}
+	return strings.Join(parts, mutedStyle.Render("  ·  "))
+}
+
+func renderModal(title string, body []string, hints []keyHint) string {
+	lines := []string{titleStyle.Render(title), ""}
+	lines = append(lines, body...)
+	if len(hints) > 0 {
+		lines = append(lines, "", renderKeyHints(hints))
+	}
+	return modalStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+func selectorLine(selected bool, label string, current bool) string {
+	cursor := "  "
+	style := subtleStyle
+	if selected {
+		cursor = icons.Pointer + " "
+		style = infoStyle.Bold(true)
+	}
+	line := style.Render(cursor + label)
+	if current {
+		line += " " + successStyle.Render(icons.OK+" current")
+	}
+	return line
+}
+
+var selectHints = []keyHint{{"j/k", "move"}, {"enter", "select"}, {"esc", "cancel"}}
+
 func renderNewWorktreeModal(m model) string {
-	message := lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Render("New Worktree"),
-		"",
+	body := []string{
 		"Create or open a branch for the active repository.",
-		m.newInput.View(),
 		"",
-		subtleStyle.Render("enter creates, esc cancels"),
-	)
-	return modalStyle.Render(message)
+		m.newInput.View(),
+	}
+	return renderModal("New Worktree", body, []keyHint{{"enter", "create"}, {"esc", "cancel"}})
 }
 
 func renderAgentSelectorModal(m model) string {
-	lines := []string{
-		titleStyle.Render("Default AI Agent"),
-		"",
-		"Choose which tool runs when pressing i.",
-		"",
-	}
-
+	body := []string{"Choose which tool runs when pressing i.", ""}
 	if len(m.cfg.App.Agents) == 0 {
-		lines = append(lines, errorStyle.Render("No agents configured"))
+		body = append(body, errorStyle.Render("No agents configured"))
 	} else {
 		for idx, agent := range m.cfg.App.Agents {
-			cursor := "  "
-			style := subtleStyle
-			if idx == m.agentCursor {
-				cursor = "> "
-				style = infoStyle.Copy().Bold(true)
-			}
-
-			current := ""
-			if agent.Name == m.cfg.App.DefaultAgent {
-				current = " current"
-			}
-
-			lines = append(lines, style.Render(fmt.Sprintf("%s%-10s %s%s", cursor, agent.Name, agent.Command, current)))
+			label := fmt.Sprintf("%-10s %s", agent.Name, agent.Command)
+			body = append(body, selectorLine(idx == m.agentCursor, label, agent.Name == m.cfg.App.DefaultAgent))
 		}
 	}
-
-	lines = append(lines,
-		"",
-		subtleStyle.Render(fmt.Sprintf("Config: %s", m.cfg.ConfigPath)),
-		subtleStyle.Render("enter selects, esc cancels"),
-	)
-
-	return modalStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+	body = append(body, "", mutedStyle.Render(fmt.Sprintf("Config: %s", m.cfg.ConfigPath)))
+	return renderModal("Default AI Agent", body, selectHints)
 }
 
 func renderEnterActionSelectorModal(m model) string {
-	lines := []string{
-		titleStyle.Render("Enter Action"),
-		"",
-		"Choose what enter does for the selected worktree.",
-		"",
-	}
-
+	body := []string{"Choose what enter does for the selected worktree.", ""}
 	currentAction := normalizedEnterAction(m.cfg.App.DefaultEnterAction)
 	for idx, option := range enterActionOptions {
-		cursor := "  "
-		style := subtleStyle
-		if idx == m.enterActionCursor {
-			cursor = "> "
-			style = infoStyle.Copy().Bold(true)
-		}
-
-		current := ""
-		if option.Action == currentAction {
-			current = " current"
-		}
-
-		lines = append(lines, style.Render(fmt.Sprintf("%s%-9s %s%s", cursor, option.Label, option.Description, current)))
+		label := fmt.Sprintf("%-9s %s", option.Label, option.Description)
+		body = append(body, selectorLine(idx == m.enterActionCursor, label, option.Action == currentAction))
 	}
-
-	lines = append(lines,
-		"",
-		subtleStyle.Render(fmt.Sprintf("Config: %s", m.cfg.ConfigPath)),
-		subtleStyle.Render("enter selects, esc cancels"),
-	)
-
-	return modalStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+	body = append(body, "", mutedStyle.Render(fmt.Sprintf("Config: %s", m.cfg.ConfigPath)))
+	return renderModal("Enter Action", body, selectHints)
 }
 
 func renderProfileSelectorModal(m model) string {
-	lines := []string{
-		titleStyle.Render("Repository Profile"),
-		"",
-		"Choose which repository profile to manage.",
-		"",
-	}
-
+	body := []string{"Choose which repository profile to manage.", ""}
 	if len(m.cfg.App.Profiles) == 0 {
-		lines = append(lines, errorStyle.Render("No profiles configured"))
+		body = append(body, errorStyle.Render("No profiles configured"))
 	} else {
 		for idx, profile := range m.cfg.App.Profiles {
-			cursor := "  "
-			style := subtleStyle
-			if idx == m.profileCursor {
-				cursor = "> "
-				style = infoStyle.Copy().Bold(true)
-			}
-
-			current := ""
-			if profile.Name == m.cfg.App.DefaultProfile {
-				current = " current"
-			}
-
-			lines = append(lines, style.Render(fmt.Sprintf("%s%-14s %s%s", cursor, profile.Name, profile.RepositoryPath, current)))
+			label := fmt.Sprintf("%-14s %s", profile.Name, profile.RepositoryPath)
+			body = append(body, selectorLine(idx == m.profileCursor, label, profile.Name == m.cfg.App.DefaultProfile))
 		}
 	}
-
-	lines = append(lines,
-		"",
-		subtleStyle.Render(fmt.Sprintf("Config: %s", m.cfg.ConfigPath)),
-		subtleStyle.Render("enter selects, esc cancels"),
-	)
-
-	return modalStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+	body = append(body, "", mutedStyle.Render(fmt.Sprintf("Config: %s", m.cfg.ConfigPath)))
+	return renderModal("Repository Profile", body, selectHints)
 }
 
 func renderPRUserSelectorModal(m model) string {
-	lines := []string{
-		titleStyle.Render("PR User Filter"),
-		"",
-		"Show PRs authored by, assigned to, or requesting this user.",
-		"",
-	}
-
+	body := []string{"Show PRs authored by, assigned to, or requesting this user.", ""}
 	if len(m.prUserOptions) == 0 {
-		lines = append(lines, mutedStyle.Render("No users discovered"))
+		body = append(body, mutedStyle.Render("No users discovered"))
 	} else {
 		for idx, user := range m.prUserOptions {
-			cursor := "  "
-			style := subtleStyle
-			if idx == m.prUserCursor {
-				cursor = "> "
-				style = infoStyle.Copy().Bold(true)
-			}
 			label := user
 			if idx > 0 {
 				label = "@" + user
 			}
-			current := ""
-			if (idx == 0 && m.prUserFilter == "") || strings.EqualFold(user, m.prUserFilter) {
-				current = " current"
-			}
-			lines = append(lines, style.Render(fmt.Sprintf("%s%s%s", cursor, label, current)))
+			current := (idx == 0 && m.prUserFilter == "") || strings.EqualFold(user, m.prUserFilter)
+			body = append(body, selectorLine(idx == m.prUserCursor, label, current))
 		}
 	}
-	lines = append(lines, "", subtleStyle.Render("enter selects, esc cancels"))
-	return modalStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+	return renderModal("PR User Filter", body, selectHints)
 }
 
 func renderPRQuestionModal(m model) string {
 	selected := m.selectedRemotePRForDetail()
-	title := "Ask Agent About PR"
 	context := "No PR selected"
 	if selected != nil {
 		context = fmt.Sprintf("PR #%d: %s", selected.Number, selected.Title)
 	}
-	message := lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Render(title),
-		"",
-		context,
-		fmt.Sprintf("Agent: %s", m.prAgentLabel()),
+	body := []string{
+		styledWrappedLine(context, lipgloss.NewStyle(), 58),
+		mutedStyle.Render("Agent: ") + subtleStyle.Render(m.prAgentLabel()),
 		m.prQuestionInput.View(),
-		"",
-		subtleStyle.Render("enter asks, esc cancels"),
-	)
-	return modalStyle.Render(message)
+	}
+	return renderModal("Ask Agent About PR", body, []keyHint{{"enter", "ask"}, {"esc", "cancel"}})
 }
 
 func renderPRApprovalModal(m model) string {
 	selected := m.selectedRemotePRForDetail()
-	title := "Approve Pull Request"
 	context := fmt.Sprintf("PR #%d", m.prApprovalPendingNumber)
 	if selected != nil && selected.Number == m.prApprovalPendingNumber {
 		context = fmt.Sprintf("PR #%d: %s", selected.Number, selected.Title)
 	}
 
-	lines := []string{
-		titleStyle.Render(title),
-		"",
+	body := []string{
 		styledWrappedLine(context, lipgloss.NewStyle(), 58),
 		"",
 		"Submit an approval review through GitHub CLI.",
 	}
 	if len(m.prApprovalWarnings) > 0 {
-		lines = append(lines, "", warnStyle.Render("Warnings:"))
+		body = append(body, "", warnStyle.Render("Warnings:"))
 		for _, warning := range m.prApprovalWarnings {
-			lines = append(lines, styledWrappedLine("  - "+warning, warnStyle, 58))
+			body = append(body, styledWrappedLine("  "+icons.Warn+" "+warning, warnStyle, 58))
 		}
 	}
-	lines = append(lines, "", subtleStyle.Render("enter approves, esc cancels"))
-	return modalStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+	return renderModal("Approve Pull Request", body, []keyHint{{"enter", "approve"}, {"esc", "cancel"}})
+}
+
+func helpKeyLine(key, action string) string {
+	return "  " + keyHintKeyStyle.Render(padCell(key, 8)) + " " + action
+}
+
+func helpSection(title string) string {
+	return infoStyle.Render(icons.Section + " " + title)
 }
 
 func renderHelpModal(m model) string {
 	lines := []string{
 		titleStyle.Render("Keybindings"),
 		"",
-		infoStyle.Render("Global"),
-		"  h        show or hide this help",
-		"  q/ctrl+c quit",
-		"  tab      switch table/details focus",
-		"  r        refresh current mode",
-		"  /        filter current mode",
-		"  esc      cancel input, clear filter, or close help",
-		"  s        switch repository profile",
-		"  I        setup profiles and agents",
-		"  m        choose default AI agent",
+		helpSection("Global"),
+		helpKeyLine("h", "show or hide this help"),
+		helpKeyLine("q/ctrl+c", "quit"),
+		helpKeyLine("tab", "switch table/details focus"),
+		helpKeyLine("r", "refresh current mode"),
+		helpKeyLine("/", "filter current mode"),
+		helpKeyLine("esc", "cancel input, clear filter, or close help"),
+		helpKeyLine("s", "switch repository profile"),
+		helpKeyLine("I", "setup profiles and agents"),
+		helpKeyLine("m", "choose default AI agent"),
 		"",
-		infoStyle.Render("Worktrees"),
-		"  j/k      move selection",
-		"  a        toggle managed/all worktrees",
-		"  n        create worktree",
-		"  d d      delete selected worktree",
-		"  o        open selected local PR",
-		"  enter    run selected Enter action",
-		"  e        choose Enter action",
-		"  v        open worktree in VS Code",
-		"  i        open worktree with agent in Ghostty",
-		"           terminal action opens worktree in Ghostty",
-		"  p        toggle local PR body in details",
+		helpSection("Worktrees"),
+		helpKeyLine("j/k", "move selection"),
+		helpKeyLine("a", "toggle managed/all worktrees"),
+		helpKeyLine("n", "create worktree"),
+		helpKeyLine("d d", "delete selected worktree"),
+		helpKeyLine("o", "open selected local PR"),
+		helpKeyLine("enter", "run selected Enter action"),
+		helpKeyLine("e", "choose Enter action"),
+		helpKeyLine("v", "open worktree in VS Code"),
+		helpKeyLine("i", "open worktree with agent in a new terminal tab"),
+		"           terminal action opens worktree in a new terminal tab",
+		helpKeyLine("p", "toggle local PR body in details"),
 		"",
-		infoStyle.Render("PR Radar"),
-		"  P        toggle PR Radar mode",
-		"  S        cycle state filter",
-		"  u        choose involved-user filter",
-		"  Y        toggle PRs authored by @me",
-		"  b        switch final column between title/branch",
-		"  f        show failed GitHub Actions in details",
-		"  enter    open full-screen PR diff",
-		"  esc      close full-screen PR diff",
-		"  A        approve selected PR",
-		"  c        ask configured agent about selected PR",
-		"  n        create worktree from selected PR branch",
-		"  o        open selected PR in browser",
+		helpSection("PR Radar"),
+		helpKeyLine("P", "toggle PR Radar mode"),
+		helpKeyLine("S", "cycle state filter"),
+		helpKeyLine("u", "choose involved-user filter"),
+		helpKeyLine("Y", "toggle PRs authored by @me"),
+		helpKeyLine("b", "switch final column between title/branch"),
+		helpKeyLine("f", "show failed GitHub Actions in details"),
+		helpKeyLine("enter", "open full-screen PR diff"),
+		helpKeyLine("esc", "close full-screen PR diff"),
+		helpKeyLine("A", "approve selected PR"),
+		helpKeyLine("c", "ask configured agent about selected PR"),
+		helpKeyLine("n", "create worktree from selected PR branch"),
+		helpKeyLine("o", "open selected PR in browser"),
 		"",
-		subtleStyle.Render("press h, enter, or esc to close"),
+		renderKeyHints([]keyHint{{"h/enter/esc", "close"}}),
 	}
-	return modalStyle.Copy().Width(max(72, min(92, m.width-8))).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+	return modalStyle.Width(max(72, min(92, m.width-8))).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
 func overlay(base, modal string, width, height int) string {

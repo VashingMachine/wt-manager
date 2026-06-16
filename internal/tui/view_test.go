@@ -76,7 +76,7 @@ func TestPRRadarTableViewLinesFitTableWidth(t *testing.T) {
 		}
 	}
 	view := ansi.Strip(m.tableView())
-	for _, want := range []string{"Checks", "Ready", "1 pass", "ready"} {
+	for _, want := range []string{"Checks", "Ready", icons.CheckPass + " 1", "ready"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("PR table view missing %q in %q", want, view)
 		}
@@ -119,7 +119,7 @@ func TestPRRadarTableSanitizesMultilineCells(t *testing.T) {
 	if strings.Contains(view, "second line\n") || strings.Contains(view, "\t") {
 		t.Fatalf("PR table contains unsanitized multiline cell: %q", view)
 	}
-	if !strings.Contains(view, "first line second line third line") {
+	if !strings.Contains(view, "first line second line") {
 		t.Fatalf("PR table missing sanitized title in %q", view)
 	}
 }
@@ -209,7 +209,7 @@ func TestRemotePRDetailResultRefreshesSelectedListRow(t *testing.T) {
 		t.Fatalf("visible PR row was not refreshed: %#v", got.visiblePRs[0].StatusCheckRollup)
 	}
 	view := ansi.Strip(got.tableView())
-	if !strings.Contains(view, "1 fail") || !strings.Contains(view, "blocked") {
+	if !strings.Contains(view, icons.CheckFail+" 1") || !strings.Contains(view, "blocked") {
 		t.Fatalf("PR table did not render refreshed detail fields: %q", view)
 	}
 }

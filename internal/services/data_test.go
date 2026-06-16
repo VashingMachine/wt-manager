@@ -725,33 +725,6 @@ func TestAppleScriptString(t *testing.T) {
 	}
 }
 
-func TestGhosttyTabScript(t *testing.T) {
-	script := ghosttyTabScript("cd '/tmp/worktree' && copilot")
-	for _, want := range []string{"tell application \"Ghostty\" to activate", "keystroke \"t\" using command down", "keystroke commandText", "key code 36"} {
-		if !strings.Contains(script, want) {
-			t.Fatalf("ghosttyTabScript() missing %q in %q", want, script)
-		}
-	}
-	if !strings.Contains(script, "copilot") {
-		t.Fatalf("ghosttyTabScript() should include selected agent command in %q", script)
-	}
-}
-
-func TestGhosttyTerminalArgs(t *testing.T) {
-	args := ghosttyTerminalArgs(Worktree{Path: "/tmp/worktree with space"})
-	joined := strings.Join(args, " ")
-	for _, want := range []string{"-na", "Ghostty.app", "--args", "--working-directory=/tmp/worktree with space"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("ghosttyTerminalArgs() missing %q in %#v", want, args)
-		}
-	}
-	for _, unwanted := range []string{"codex", "opencode", "claude", "copilot", "-e"} {
-		if strings.Contains(joined, unwanted) {
-			t.Fatalf("ghosttyTerminalArgs() should not include %q in %#v", unwanted, args)
-		}
-	}
-}
-
 func testGitRepo(t *testing.T) Config {
 	t.Helper()
 

@@ -30,7 +30,7 @@ It also includes PR Radar, a remote pull request view backed by GitHub CLI. PR R
 - Git
 - GitHub CLI (`gh`) for pull request lookup
 - VS Code CLI (`code`) if you want the `v` shortcut
-- Ghostty on macOS if you want the `i` shortcut for agent sessions
+- A supported terminal on macOS (Ghostty, Warp, or Terminal) if you want the `i` shortcut to open an agent in a new tab
 
 `gh` is optional for core worktree management. If it is missing, unauthenticated, or cannot access the configured repository, `wt-manager` still runs and simply disables PR lookup.
 
@@ -138,13 +138,13 @@ When you create a worktree, `wt-manager`:
 
 Missing or prunable worktree entries are surfaced in the UI, and Git's worktree prune operation is used when cleanup is needed.
 
-## Agent Sessions
+## Agents
 
-The `i` shortcut opens the selected worktree in Ghostty and runs the configured agent command. Built-in defaults are `codex`, `opencode`, `claude`, and `copilot`, and custom commands can be added during setup.
+The `i` shortcut opens the selected worktree in a new terminal tab and runs the configured agent command. Built-in defaults are `codex`, `opencode`, `claude`, and `copilot`, and custom commands can be added during setup.
 
-In worktree mode, `enter` runs the configured `defaultEnterAction`: `vscode`, `agent`, or `terminal`. Press `e` to change it from the TUI. The `terminal` action opens Ghostty in the selected worktree without running an agent command.
+In worktree mode, `enter` runs the configured `defaultEnterAction`: `vscode`, `agent`, or `terminal`. Press `e` to change it from the TUI. The `terminal` action opens a terminal tab in the selected worktree without running an agent command.
 
-On macOS, opening a new Ghostty tab uses UI automation. If macOS blocks the tab automation, grant Accessibility permission to your terminal or `wt-manager`.
+On macOS, opening a new terminal tab uses UI automation. If macOS blocks the tab automation, grant Accessibility permission to your terminal or `wt-manager`.
 
 ## PR Radar
 
