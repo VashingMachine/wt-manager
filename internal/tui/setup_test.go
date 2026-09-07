@@ -114,6 +114,10 @@ func TestSetupWizardSelectsCreatedProjectsFolderWhenTypingJ(t *testing.T) {
 	}
 
 	next, cmd := setup.Update(teaKey("enter"))
+	if cmd != nil || next.step != setupStepJira {
+		t.Fatalf("github review did not continue to JIRA setup: step=%v cmd=%v", next.step, cmd)
+	}
+	next, cmd = next.Update(teaKey("enter"))
 	if cmd == nil {
 		t.Fatalf("setup save command is nil, status = %s", next.status)
 	}
@@ -227,8 +231,12 @@ func TestCompleteSetupWritesConfigAndCreatesWorktreesDir(t *testing.T) {
 	setup.step = setupStepGitHub
 
 	next, cmd := setup.updateGitHubStep(teaKey("enter"))
+	if cmd != nil || next.step != setupStepJira {
+		t.Fatalf("github review did not continue to JIRA setup: step=%v cmd=%v", next.step, cmd)
+	}
+	next, cmd = next.updateJiraStep(teaKey("enter"))
 	if cmd == nil {
-		t.Fatalf("updateGitHubStep() cmd = nil, status = %s", next.status)
+		t.Fatalf("updateJiraStep() cmd = nil, status = %s", next.status)
 	}
 	msg := cmd()
 	result, ok := msg.(setupResult)

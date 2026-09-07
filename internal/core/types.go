@@ -1,6 +1,9 @@
 package core
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type Config struct {
 	HomeDir       string
@@ -29,11 +32,59 @@ const (
 )
 
 type RepositoryProfile struct {
-	Name           string `json:"name"`
-	RepositoryPath string `json:"repositoryPath"`
-	WorktreesDir   string `json:"worktreesDir"`
-	RemoteName     string `json:"remoteName"`
-	GitHubRepo     string `json:"githubRepo"`
+	Name           string      `json:"name"`
+	RepositoryPath string      `json:"repositoryPath"`
+	WorktreesDir   string      `json:"worktreesDir"`
+	RemoteName     string      `json:"remoteName"`
+	GitHubRepo     string      `json:"githubRepo"`
+	Jira           *JiraConfig `json:"jira,omitempty"`
+}
+
+// JiraBoard is a board resolved from a pasted board URL. ID/Name/Projects are
+// filled once by ResolveJiraBoard and then persisted, so the URL only has to be
+// parsed and looked up during setup.
+type JiraBoard struct {
+	URL      string   `json:"url"`
+	ID       int      `json:"id"`
+	Name     string   `json:"name"`
+	Projects []string `json:"projects"`
+}
+
+// JiraConfig is the per-repository JIRA setup written under a profile.
+type JiraConfig struct {
+	Site              string      `json:"site"`
+	Boards            []JiraBoard `json:"boards"`
+	DefaultBoard      string      `json:"defaultBoard"`
+	MineOnly          bool        `json:"mineOnly"`
+	SprintOnly        bool        `json:"sprintOnly"`
+	OpenOnly          bool        `json:"openOnly"`
+	FiltersConfigured bool        `json:"filtersConfigured,omitempty"`
+	Limit             int         `json:"limit"`
+}
+
+// Board returns the configured board with the given name, or nil.
+func (c *JiraConfig) Board(name string) *JiraBoard {
+	if c == nil {
+		return nil
+	}
+	for i := range c.Boards {
+		if c.Boards[i].Name == name {
+			return &c.Boards[i]
+		}
+	}
+	return nil
+}
+
+// ActiveBoard returns the board named by DefaultBoard, falling back to the
+// first configured board.
+func (c *JiraConfig) ActiveBoard() *JiraBoard {
+	if c == nil || len(c.Boards) == 0 {
+		return nil
+	}
+	if board := c.Board(c.DefaultBoard); board != nil {
+		return board
+	}
+	return &c.Boards[0]
 }
 
 type AgentTool struct {
@@ -165,6 +216,62 @@ type PullReview struct {
 	URL         string      `json:"url"`
 }
 
+// JiraUser identifies a JIRA account. Email is often absent depending on the
+// site's privacy settings, so DisplayName is the only reliably present field.
+type JiraUser struct {
+	AccountID   string
+	DisplayName string
+	Email       string
+}
+
+// Name is the best available human label for the user.
+func (u JiraUser) Name() string {
+	if u.DisplayName != "" {
+		return u.DisplayName
+	}
+	if u.Email != "" {
+		return u.Email
+	}
+	return u.AccountID
+}
+
+type TicketComment struct {
+	Author  string
+	Body    string
+	Created string
+}
+
+// Ticket is a JIRA work item. Description/Comments are only populated once the
+// detail fetch has run (Detail == true); Worktree/PR are local joins computed by
+// AttachTicketContext rather than anything JIRA returns.
+type Ticket struct {
+	Key            string
+	Summary        string
+	Type           string
+	Priority       string
+	Status         string
+	StatusCategory string
+	Assignee       JiraUser
+	Reporter       JiraUser
+	Labels         []string
+	URL            string
+	Description    string
+	Comments       []TicketComment
+	Detail         bool
+	Worktree       *Worktree
+	PR             *PullRequest
+	LoadError      string
+}
+
+// JIRA status category keys, used for colouring instead of status names so that
+// arbitrary project workflows render correctly.
+const (
+	StatusCategoryNew        = "new"
+	StatusCategoryInProgress = "indeterminate"
+	StatusCategoryDone       = "done"
+	TicketAssigneeSelf       = "@me"
+)
+
 type ConfigService interface {
 	DefaultConfig(forceSetup bool) (Config, error)
 	DefaultAppConfig() AppConfig
@@ -213,10 +320,32 @@ type OpenerService interface {
 	OpenTerminal(ctx context.Context, wt Worktree) error
 }
 
+type JiraService interface {
+	CheckAtlassianCLI(ctx context.Context) []string
+	JiraSite(ctx context.Context) (string, error)
+	ResolveJiraBoard(ctx context.Context, boardURLOrID string) (JiraBoard, error)
+	SearchJiraBoards(ctx context.Context, name string) ([]JiraBoard, error)
+	PeekTicketCache(cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool) ([]Ticket, time.Time, bool)
+	LoadTickets(ctx context.Context, cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool, refresh bool) ([]Ticket, string, error)
+	LoadTicketDetail(ctx context.Context, cfg Config, key string) (Ticket, error)
+	TransitionTicket(ctx context.Context, key string, status string) error
+	CommentTicket(ctx context.Context, key string, body string) error
+	AssignTicket(ctx context.Context, key string, assignee string) error
+	AttachTicketContext(tickets []Ticket, worktrees []Worktree, pullRequests []PullRequest) []Ticket
+	FilterTickets(tickets []Ticket, query string, status string, openOnly bool) []Ticket
+	TicketStatuses(tickets []Ticket) []string
+	TicketAssignees(tickets []Ticket) []JiraUser
+	TicketBranchName(ticket Ticket) string
+	TicketKeyFromBranch(branch string) string
+	BuildTicketChatPrompt(ticket Ticket, question string) string
+	InvalidateTicketCache(cfg Config, board JiraBoard) error
+}
+
 type Services interface {
 	ConfigService
 	WorktreeService
 	PullRequestService
 	AgentService
 	OpenerService
+	JiraService
 }

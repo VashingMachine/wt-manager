@@ -109,6 +109,7 @@ func TestNormalizeAppConfigDefaultEnterAction(t *testing.T) {
 			if err != nil {
 				t.Fatalf("normalizeAppConfig() error = %v", err)
 			}
+
 			if got.DefaultEnterAction != tc.want {
 				t.Fatalf("DefaultEnterAction = %q, want %q", got.DefaultEnterAction, tc.want)
 			}
@@ -116,6 +117,34 @@ func TestNormalizeAppConfigDefaultEnterAction(t *testing.T) {
 				t.Fatalf("changed = %v, want %v", changed, tc.changed)
 			}
 		})
+	}
+}
+
+func TestNormalizeAppConfigAddsDefaultJiraFilters(t *testing.T) {
+	app := AppConfig{
+		DefaultProfile: "app",
+		DefaultAgent:   "codex",
+		Agents:         []AgentTool{{Name: "codex", Command: "codex"}},
+		Profiles: []RepositoryProfile{{
+			Name:           "app",
+			RepositoryPath: "/tmp/app",
+			WorktreesDir:   "/tmp/worktrees",
+			RemoteName:     "origin",
+			Jira: &JiraConfig{
+				Boards: []JiraBoard{{ID: 123, Name: "App Board"}},
+			},
+		}},
+	}
+	normalized, changed, err := normalizeAppConfig(app)
+	if err != nil {
+		t.Fatalf("normalizeAppConfig() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("normalizeAppConfig() did not report JIRA filter migration")
+	}
+	jira := normalized.Profiles[0].Jira
+	if jira == nil || !jira.FiltersConfigured || !jira.MineOnly || !jira.SprintOnly || !jira.OpenOnly {
+		t.Fatalf("normalized JIRA filters = %#v", jira)
 	}
 }
 
@@ -775,6 +804,11 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=safe.bareRepository",
+		"GIT_CONFIG_VALUE_0=all",
+	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s failed in %s: %v\n%s", strings.Join(args, " "), dir, err, strings.TrimSpace(string(output)))

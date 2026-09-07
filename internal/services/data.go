@@ -172,6 +172,9 @@ func normalizeAppConfig(appConfig AppConfig) (AppConfig, bool, error) {
 			profile.RemoteName = "origin"
 			changed = true
 		}
+		if normalizeJiraConfig(profile) {
+			changed = true
+		}
 		if err := validateProfile(*profile); err != nil {
 			return AppConfig{}, false, err
 		}
@@ -193,6 +196,74 @@ func normalizeAppConfig(appConfig AppConfig) (AppConfig, bool, error) {
 	}
 
 	return appConfig, changed, nil
+}
+
+// normalizeJiraConfig fills in defaults for an opted-in JIRA block. It never
+// creates one: profiles without JIRA configured stay byte-identical on rewrite.
+func normalizeJiraConfig(profile *RepositoryProfile) bool {
+	jira := profile.Jira
+	if jira == nil {
+		return false
+	}
+
+	changed := false
+	if trimmed := strings.TrimSpace(jira.Site); trimmed != jira.Site {
+		jira.Site = trimmed
+		changed = true
+	}
+
+	boards := make([]core.JiraBoard, 0, len(jira.Boards))
+	seen := map[string]struct{}{}
+	for _, board := range jira.Boards {
+		board.Name = strings.TrimSpace(board.Name)
+		board.URL = strings.TrimSpace(board.URL)
+		if board.ID == 0 {
+			changed = true
+			continue
+		}
+		if board.Name == "" {
+			board.Name = fmt.Sprintf("board %d", board.ID)
+			changed = true
+		}
+		if _, ok := seen[board.Name]; ok {
+			changed = true
+			continue
+		}
+		seen[board.Name] = struct{}{}
+		boards = append(boards, board)
+	}
+	if len(boards) != len(jira.Boards) {
+		changed = true
+	}
+	jira.Boards = boards
+
+	jira.DefaultBoard = strings.TrimSpace(jira.DefaultBoard)
+	if jira.DefaultBoard != "" && jira.Board(jira.DefaultBoard) == nil {
+		jira.DefaultBoard = ""
+		changed = true
+	}
+	if jira.DefaultBoard == "" && len(jira.Boards) > 0 {
+		jira.DefaultBoard = jira.Boards[0].Name
+		changed = true
+	}
+	if jira.Limit <= 0 {
+		jira.Limit = jiraDefaultLimit
+		changed = true
+	}
+	if !jira.FiltersConfigured {
+		jira.MineOnly = true
+		jira.SprintOnly = true
+		jira.OpenOnly = true
+		jira.FiltersConfigured = true
+		changed = true
+	}
+
+	// Tickets default to "assigned to me"; without boards there is nothing to show.
+	if len(jira.Boards) == 0 {
+		profile.Jira = nil
+		return true
+	}
+	return changed
 }
 
 func normalizeEnterAction(action string) string {

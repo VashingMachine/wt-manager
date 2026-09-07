@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/VashingMachine/wt-manager/internal/core"
 )
 
 // iconSet holds every glyph the UI renders. All unicode glyphs must measure
@@ -37,6 +39,13 @@ type iconSet struct {
 	ReviewChanges  string
 	ReviewRequired string
 
+	Ticket       string
+	TicketDone   string
+	TicketActive string
+	Comment      string
+	Sprint       string
+	Link         string
+
 	OK            string
 	Err           string
 	Warn          string
@@ -53,6 +62,7 @@ var unicodeIcons = iconSet{
 	PROpen: "●", PRMerged: "◆", PRClosed: "✗", PRDraft: "◌",
 	CheckPass: "✓", CheckFail: "✗", CheckPending: "◐", CheckNone: "·",
 	ReviewApproved: "✓", ReviewChanges: "±", ReviewRequired: "○",
+	Ticket: "◇", TicketDone: "✓", TicketActive: "◈", Comment: "❞", Sprint: "⟳", Link: "⇢",
 	OK: "✓", Err: "✗", Warn: "⚠",
 	Section: "▸", Pointer: "▶", Dot: "·", SkeletonBlock: "░",
 }
@@ -64,6 +74,7 @@ var asciiIcons = iconSet{
 	PROpen: "o", PRMerged: "m", PRClosed: "x", PRDraft: ".",
 	CheckPass: "+", CheckFail: "x", CheckPending: "~", CheckNone: "-",
 	ReviewApproved: "+", ReviewChanges: "~", ReviewRequired: "o",
+	Ticket: "t", TicketDone: "+", TicketActive: "*", Comment: "\"", Sprint: "@", Link: ">",
 	OK: "+", Err: "x", Warn: "!",
 	Section: ">", Pointer: ">", Dot: "-", SkeletonBlock: "#",
 }
@@ -126,6 +137,17 @@ func prStateIcon(state string, draft bool) string {
 		return icons.PRClosed
 	default:
 		return icons.Dot
+	}
+}
+
+func ticketStatusIcon(ticket Ticket) string {
+	switch strings.ToLower(strings.TrimSpace(ticket.StatusCategory)) {
+	case core.StatusCategoryDone:
+		return icons.TicketDone
+	case core.StatusCategoryInProgress:
+		return icons.TicketActive
+	default:
+		return icons.Ticket
 	}
 }
 

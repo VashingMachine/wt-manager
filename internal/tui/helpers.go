@@ -53,6 +53,13 @@ func emptyDash(value string) string {
 	return value
 }
 
+func relativeAge(at time.Time) string {
+	if at.IsZero() {
+		return "unknown"
+	}
+	return shortDuration(time.Since(at)) + " ago"
+}
+
 func truncateRunes(text string, max int) string {
 	if max <= 0 {
 		return ""

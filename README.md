@@ -6,6 +6,8 @@ It gives you a compact dashboard for every worktree in a repository: branch, dir
 
 It also includes PR Radar, a remote pull request view backed by GitHub CLI. PR Radar lets you browse open, closed, and merged PRs for the active repository profile, filter them by user or text, inspect files/checks/comments/diffs, approve selected PRs, create a worktree from a PR branch, and ask a configured AI agent about the selected PR context.
 
+Profiles can optionally enable a third JIRA Tickets view backed by Atlassian CLI. It shows board tickets with their workflow status, matching local worktree, and matching GitHub pull request, and supports reading and updating the selected ticket without leaving the terminal.
+
 ## Highlights
 
 - Browse managed worktrees in a Bubble Tea terminal interface.
@@ -22,6 +24,9 @@ It also includes PR Radar, a remote pull request view backed by GitHub CLI. PR R
 - Inspect selected PR diffs in a full-terminal view with coloured Go and Python code.
 - Approve selected PRs through GitHub CLI after confirmation.
 - Ask a configured local AI agent about the selected remote PR using PR metadata, files, comments, and diff context.
+- Browse configured JIRA boards with assigned-to-me and active-sprint scopes.
+- Read JIRA descriptions and comments, open tickets in the browser, create ticket worktrees, transition status, comment, and assign users.
+- Paint cached ticket rows immediately and refresh them in the background.
 - Configure everything interactively on first run, including repository path, worktree folder, GitHub repo, and agent commands.
 
 ## Requirements
@@ -29,10 +34,18 @@ It also includes PR Radar, a remote pull request view backed by GitHub CLI. PR R
 - Go 1.26 or newer
 - Git
 - GitHub CLI (`gh`) for pull request lookup
+- Atlassian CLI (`acli`) for optional JIRA support
 - VS Code CLI (`code`) if you want the `v` shortcut
 - A supported terminal on macOS (Ghostty, Warp, or Terminal) if you want the `i` shortcut to open an agent in a new tab
 
 `gh` is optional for core worktree management. If it is missing, unauthenticated, or cannot access the configured repository, `wt-manager` still runs and simply disables PR lookup.
+
+JIRA is also optional. To enable it, install ACLI and authenticate its Jira app:
+
+```bash
+acli jira auth login
+acli jira auth status
+```
 
 ## Install
 
@@ -77,7 +90,24 @@ Example:
       "repositoryPath": "~/projects/app",
       "worktreesDir": "~/worktrees/app",
       "remoteName": "origin",
-      "githubRepo": "owner/app"
+      "githubRepo": "owner/app",
+      "jira": {
+        "site": "example.atlassian.net",
+        "boards": [
+          {
+            "url": "https://example.atlassian.net/jira/software/c/projects/APP/boards/123",
+            "id": 123,
+            "name": "App Board",
+            "projects": ["APP"]
+          }
+        ],
+        "defaultBoard": "App Board",
+        "mineOnly": true,
+        "sprintOnly": true,
+        "openOnly": true,
+        "filtersConfigured": true,
+        "limit": 100
+      }
     }
   ],
   "defaultAgent": "codex",
@@ -102,6 +132,7 @@ If `githubRepo` is empty, `wt-manager` tries to infer it from the configured rem
 | `tab` | Switch focus between table and details |
 | `r` | Refresh |
 | `P` | Toggle PR Radar mode |
+| `J` | Toggle JIRA Tickets mode |
 | `a` | Toggle between managed worktrees and all repository worktrees |
 | `/` | Filter by worktree name or branch |
 | `S` | Cycle PR Radar state filter |
@@ -124,6 +155,8 @@ If `githubRepo` is empty, `wt-manager` tries to infer it from the configured rem
 | `m` | Choose the default agent |
 | `d d` | Delete selected worktree |
 | `q`, `ctrl+c` | Quit |
+
+In JIRA Tickets mode, `f` opens the ticket filter dialog, `Y` toggles assigned-to-me/all tickets, `S` toggles active-sprint scope, `b` selects a configured board, `t` changes status, `C` comments, `A` assigns, `n` creates or reuses a ticket worktree, `o` opens the ticket in a browser, and `enter` opens the full-screen ticket reader.
 
 ## How Worktrees Are Created
 
@@ -166,3 +199,13 @@ In PR Radar:
 12. Press `c` to ask an agent about the selected PR.
 
 The `c` action prefers a configured `copilot` agent when present and otherwise falls back to the default agent. The selected command receives a prompt on stdin containing PR metadata, description, files, recent comments, and a truncated diff. Authentication for the agent remains owned by that local CLI.
+
+## JIRA Tickets
+
+Press `J` to toggle JIRA Tickets for the active repository profile. Run setup with `I`, paste a JIRA board link, and press enter once to resolve it and again to save. Multiple board links can be added before saving. ACLI authentication remains external to `wt-manager`; no Atlassian credentials are stored in the config.
+
+Tickets default to the current user, the active sprint, and open workflow categories. Press `f` to change these three filters in one dialog. The app caches each profile/board/scope list for five minutes, paints cached rows immediately, and refreshes in the background. A failed refresh keeps stale rows visible with a warning. Successful ticket mutations invalidate the affected board cache.
+
+Worktrees and PRs are matched by a JIRA key such as `APP-123` in the branch name, with PR titles used as a fallback. New ticket worktrees use `<KEY>-<summary-slug>` and reuse an existing matching worktree when possible.
+
+ACLI currently exposes a board's associated projects but not its private board filter. Non-sprint board loading therefore searches those projects; active-sprint mode uses the board's active sprint IDs and is scoped exactly.

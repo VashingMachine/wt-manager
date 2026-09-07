@@ -29,6 +29,7 @@ var (
 
 	badgeWorktreesStyle = lipgloss.NewStyle().Bold(true).Padding(0, 1).Foreground(lipgloss.Color("232")).Background(lipgloss.Color("81"))
 	badgePRRadarStyle   = lipgloss.NewStyle().Bold(true).Padding(0, 1).Foreground(lipgloss.Color("232")).Background(lipgloss.Color("171"))
+	badgeTicketsStyle   = lipgloss.NewStyle().Bold(true).Padding(0, 1).Foreground(lipgloss.Color("232")).Background(lipgloss.Color("42"))
 	chipStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Background(lipgloss.Color("237")).Padding(0, 1)
 	skeletonStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
 	keyHintKeyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true)

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VashingMachine/wt-manager/internal/core"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -17,11 +18,18 @@ func (m model) View() string {
 	if m.setup != nil {
 		return appStyle.Render(m.setup.View(m.width))
 	}
-	if m.prMode && m.prDiffMode {
+	if m.isPRMode() && m.prDiffMode {
 		view := m.fullScreenPRDiffView()
 		if m.confirmingPRApproval {
 			view = overlay(view, renderPRApprovalModal(m), m.width, m.height)
 		}
+		if m.showingHelp {
+			view = overlay(view, renderHelpModal(m), m.width, m.height)
+		}
+		return view
+	}
+	if m.isTicketMode() && m.ticketReadMode {
+		view := m.fullScreenTicketView()
 		if m.showingHelp {
 			view = overlay(view, renderHelpModal(m), m.width, m.height)
 		}
@@ -40,8 +48,10 @@ func (m model) View() string {
 	}
 
 	tableTitle := infoStyle.Render("Worktrees")
-	if m.prMode {
+	if m.isPRMode() {
 		tableTitle = infoStyle.Render("PR Radar")
+	} else if m.isTicketMode() {
+		tableTitle = infoStyle.Render("JIRA Tickets")
 	}
 	detailTitle := infoStyle.Render("Details")
 	tableContent := lipgloss.JoinVertical(lipgloss.Left, tableTitle, m.tableView())
@@ -90,6 +100,27 @@ func (m model) View() string {
 	if m.confirmingPRApproval {
 		view = overlay(view, renderPRApprovalModal(m), m.width, m.height)
 	}
+	if m.selectingTicketStatus {
+		view = overlay(view, renderTicketStatusModal(m), m.width, m.height)
+	}
+	if m.enteringTicketStatus {
+		view = overlay(view, renderTicketStatusInputModal(m), m.width, m.height)
+	}
+	if m.commentingTicket {
+		view = overlay(view, renderTicketCommentModal(m), m.width, m.height)
+	}
+	if m.selectingTicketAssignee {
+		view = overlay(view, renderTicketAssigneeModal(m), m.width, m.height)
+	}
+	if m.enteringTicketAssignee {
+		view = overlay(view, renderTicketAssigneeInputModal(m), m.width, m.height)
+	}
+	if m.selectingBoard {
+		view = overlay(view, renderBoardSelectorModal(m), m.width, m.height)
+	}
+	if m.selectingTicketFilters {
+		view = overlay(view, renderTicketFiltersModal(m), m.width, m.height)
+	}
 	if m.showingHelp {
 		view = overlay(view, renderHelpModal(m), m.width, m.height)
 	}
@@ -99,8 +130,10 @@ func (m model) View() string {
 
 func (m model) headerView() string {
 	badge := badgeWorktreesStyle.Render("WORKTREES")
-	if m.prMode {
+	if m.isPRMode() {
 		badge = badgePRRadarStyle.Render("PR RADAR")
+	} else if m.isTicketMode() {
+		badge = badgeTicketsStyle.Render("JIRA TICKETS")
 	}
 	chip := chipStyle.Render(icons.Dot + " " + m.cfg.ActiveProfile.Name)
 	title := lipgloss.JoinHorizontal(lipgloss.Center, titleStyle.Render("wt-manager"), "  ", badge, " ", chip)
@@ -167,8 +200,11 @@ func (m model) elapsedHint() string {
 }
 
 func (m model) quietStatusHint() string {
-	if m.prMode {
+	if m.isPRMode() {
 		return fmt.Sprintf("%s %d PRs · / filter · h help", icons.Dot, len(m.visiblePRs))
+	}
+	if m.isTicketMode() {
+		return fmt.Sprintf("%s %d tickets · / filter · h help", icons.Dot, len(m.visibleTickets))
 	}
 	return fmt.Sprintf("%s %d worktrees · / filter · h help", icons.Dot, len(m.visibleWorktrees))
 }
@@ -245,11 +281,34 @@ func (m model) fullScreenPRDiffView() string {
 	return lipgloss.NewStyle().Width(width).Height(max(1, m.height)).Render(lipgloss.JoinVertical(lipgloss.Left, header, m.detail.View(), footer))
 }
 
+func (m model) fullScreenTicketView() string {
+	selected := m.selectedTicketForDetail()
+	title := "JIRA Ticket"
+	meta := "No ticket selected"
+	if selected != nil {
+		title = fmt.Sprintf("%s %s", selected.Key, selected.Summary)
+		meta = fmt.Sprintf("%s | %s | %s", emptyDash(selected.Status), emptyDash(selected.Assignee.Name()), emptyDash(m.ticketBoard.Name))
+		if m.ticketDetailLoading {
+			meta += " | loading"
+		}
+	}
+	width := max(1, m.width)
+	header := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render(clampRunewidth(title, width)),
+		subtleStyle.Render(clampRunewidth(meta, width)),
+	)
+	footer := subtleStyle.Render(clampRunewidth("esc close | j/k scroll | o open in browser | q quit", width))
+	return lipgloss.NewStyle().Width(width).Height(max(1, m.height)).Render(lipgloss.JoinVertical(lipgloss.Left, header, m.detail.View(), footer))
+}
+
 func (m model) tableView() string {
 	columns := m.activeColumns()
 	rows := make([][]string, 0, len(m.visibleWorktrees))
-	if m.prMode {
+	if m.isPRMode() {
 		return m.prTableView(columns)
+	}
+	if m.isTicketMode() {
+		return m.ticketTableView(columns)
 	}
 	loadingLine := ""
 	if len(m.visibleWorktrees) == 0 {
@@ -286,6 +345,42 @@ func (m model) tableView() string {
 		lines = append(lines, strings.Repeat(" ", m.table.Width()))
 	}
 
+	return strings.Join(lines, "\n")
+}
+
+func (m model) ticketTableView(columns []table.Column) string {
+	rows := make([][]string, 0, len(m.visibleTickets))
+	loadingLine := ""
+	if len(m.visibleTickets) == 0 {
+		if m.loading {
+			loadingLine = tableCellStyle.Render(m.spinner.View() + " " + subtleStyle.Render("Loading JIRA tickets..."))
+		} else {
+			loadingLine = tableCellStyle.Render(mutedStyle.Render(m.emptyTicketsMessage()))
+		}
+	} else {
+		compact := m.table.Width() <= 70
+		start, end := visibleRowRange(m.table.Cursor(), len(m.visibleTickets), m.table.Height())
+		for _, ticket := range m.visibleTickets[start:end] {
+			rows = append(rows, m.ticketRowCells(ticket, compact))
+		}
+	}
+	lines := []string{renderTableHeader(columns)}
+	if loadingLine != "" {
+		lines = append(lines, loadingLine)
+	}
+	start, _ := visibleRowRange(m.table.Cursor(), len(m.visibleTickets), m.table.Height())
+	for idx, row := range rows {
+		absoluteIndex := start + idx
+		selected := len(m.visibleTickets) > 0 && absoluteIndex == m.table.Cursor()
+		var ticket *Ticket
+		if absoluteIndex < len(m.visibleTickets) {
+			ticket = &m.visibleTickets[absoluteIndex]
+		}
+		lines = append(lines, renderTicketTableRow(columns, row, ticket, selected, m.focusTable))
+	}
+	for len(lines)-1 < m.table.Height() {
+		lines = append(lines, strings.Repeat(" ", m.table.Width()))
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -467,6 +562,41 @@ func renderPRTableRow(columns []table.Column, row []string, pr *RemotePullReques
 	return rowLineStyle(strings.Join(cells, ""), selected, focused, false)
 }
 
+func renderTicketTableRow(columns []table.Column, row []string, ticket *Ticket, selected, focused bool) string {
+	cells := make([]string, 0, len(columns))
+	for idx, column := range columns {
+		value := ""
+		if idx < len(row) {
+			value = rowCellValue(row[idx], idx, selected)
+		}
+		value = runewidth.Truncate(value, column.Width, "…")
+		cell := padCellForColumn(value, column)
+		if ticket == nil {
+			cell = mutedStyle.Render(cell)
+		} else {
+			switch column.Title {
+			case "Status":
+				switch strings.ToLower(ticket.StatusCategory) {
+				case "done":
+					cell = successStyle.Render(cell)
+				case "indeterminate":
+					cell = warnStyle.Render(cell)
+				default:
+					cell = infoStyle.Render(cell)
+				}
+			case "PR":
+				cell = prCellStyle(ticket.PR).Render(cell)
+			case "Worktree", "WT":
+				if ticket.Worktree == nil {
+					cell = mutedStyle.Render(cell)
+				}
+			}
+		}
+		cells = append(cells, tableCellStyle.Render(cell))
+	}
+	return rowLineStyle(strings.Join(cells, ""), selected, focused, false)
+}
+
 func stylePRTableCell(cell, title string, pr *RemotePullRequest) string {
 	switch title {
 	case "State":
@@ -623,7 +753,28 @@ func singleLineCell(value string) string {
 }
 
 func (m model) filterLabel() string {
-	if m.prMode {
+	if m.isTicketMode() {
+		parts := []string{"board=" + emptyDash(m.ticketBoard.Name)}
+		if m.ticketMineOnly {
+			parts = append(parts, "assignee=me")
+		} else {
+			parts = append(parts, "assignee=all")
+		}
+		if m.ticketSprintOnly {
+			parts = append(parts, "active sprint")
+		}
+		if m.ticketOpenOnly {
+			parts = append(parts, "open only")
+		}
+		if m.ticketStatusFilter != "" {
+			parts = append(parts, "status="+m.ticketStatusFilter)
+		}
+		if m.filterQuery != "" {
+			parts = append(parts, "filtered")
+		}
+		return strings.Join(parts, ", ")
+	}
+	if m.isPRMode() {
 		parts := []string{}
 		state := m.prStateFilter
 		if state == "" {
@@ -678,6 +829,24 @@ func (m model) focusLabel() string {
 	}
 	if m.confirmingPRApproval {
 		return "PR approval"
+	}
+	if m.selectingTicketStatus || m.enteringTicketStatus {
+		return "ticket status"
+	}
+	if m.commentingTicket {
+		return "ticket comment"
+	}
+	if m.selectingTicketAssignee || m.enteringTicketAssignee {
+		return "ticket assignee"
+	}
+	if m.selectingBoard {
+		return "board selector"
+	}
+	if m.selectingTicketFilters {
+		return "ticket filters"
+	}
+	if m.ticketReadMode {
+		return "ticket reader"
 	}
 	if m.setup != nil {
 		return "setup"
@@ -826,6 +995,82 @@ func renderPRApprovalModal(m model) string {
 	return renderModal("Approve Pull Request", body, []keyHint{{"enter", "approve"}, {"esc", "cancel"}})
 }
 
+func renderTicketStatusModal(m model) string {
+	selected := m.selectedTicket()
+	body := []string{"Choose a target status.", ""}
+	if selected != nil {
+		body[0] = fmt.Sprintf("Change %s from %s.", selected.Key, emptyDash(selected.Status))
+	}
+	for idx, status := range m.ticketStatusOptions {
+		current := selected != nil && strings.EqualFold(status, selected.Status)
+		body = append(body, selectorLine(idx == m.ticketStatusCursor, status, current))
+	}
+	return renderModal("JIRA Status", body, []keyHint{{"j/k", "move"}, {"enter", "select"}, {"e", "type status"}, {"esc", "cancel"}})
+}
+
+func renderTicketStatusInputModal(m model) string {
+	return renderModal("JIRA Status", []string{"Enter the exact target workflow status.", "", m.ticketStatusInput.View()}, []keyHint{{"enter", "change"}, {"esc", "cancel"}})
+}
+
+func renderTicketCommentModal(m model) string {
+	selected := m.selectedTicket()
+	context := "Comment on selected ticket"
+	if selected != nil {
+		context = "Comment on " + selected.Key
+	}
+	return renderModal("JIRA Comment", []string{context, "", m.ticketCommentInput.View()}, []keyHint{{"enter", "submit"}, {"esc", "cancel"}})
+}
+
+func renderTicketAssigneeModal(m model) string {
+	body := []string{"Choose an assignee.", ""}
+	for idx, user := range m.ticketAssigneeOptions {
+		label := user.Name()
+		if user.AccountID != "" && user.AccountID != core.TicketAssigneeSelf && user.AccountID != customTicketAssigneeLabel {
+			label += "  " + user.AccountID
+		}
+		body = append(body, selectorLine(idx == m.ticketAssigneeCursor, label, false))
+	}
+	return renderModal("JIRA Assignee", body, selectHints)
+}
+
+func renderTicketAssigneeInputModal(m model) string {
+	return renderModal("JIRA Assignee", []string{"Enter @me, an email address, or an account ID.", "", m.ticketAssigneeInput.View()}, []keyHint{{"enter", "assign"}, {"esc", "cancel"}})
+}
+
+func renderBoardSelectorModal(m model) string {
+	body := []string{"Choose the configured JIRA board.", ""}
+	if jira := m.cfg.ActiveProfile.Jira; jira != nil {
+		for idx, board := range jira.Boards {
+			label := board.Name
+			if len(board.Projects) > 0 {
+				label += "  [" + strings.Join(board.Projects, ", ") + "]"
+			}
+			body = append(body, selectorLine(idx == m.boardCursor, label, board.Name == m.ticketBoard.Name))
+		}
+	}
+	return renderModal("JIRA Board", body, selectHints)
+}
+
+func renderTicketFiltersModal(m model) string {
+	options := []struct {
+		label   string
+		checked bool
+	}{
+		{label: "Only me", checked: m.ticketFilterMineOnly},
+		{label: "Current sprint", checked: m.ticketFilterSprintOnly},
+		{label: "Open (not closed)", checked: m.ticketFilterOpenOnly},
+	}
+	body := []string{"Choose which tickets to display.", ""}
+	for idx, option := range options {
+		check := "[ ]"
+		if option.checked {
+			check = "[x]"
+		}
+		body = append(body, selectorLine(idx == m.ticketFilterCursor, check+" "+option.label, false))
+	}
+	return renderModal("JIRA Ticket Filters", body, []keyHint{{"j/k", "move"}, {"space", "toggle"}, {"enter", "apply"}, {"esc", "cancel"}})
+}
+
 func helpKeyLine(key, action string) string {
 	return "  " + keyHintKeyStyle.Render(padCell(key, 8)) + " " + action
 }
@@ -875,6 +1120,20 @@ func renderHelpModal(m model) string {
 		helpKeyLine("c", "ask configured agent about selected PR"),
 		helpKeyLine("n", "create worktree from selected PR branch"),
 		helpKeyLine("o", "open selected PR in browser"),
+		"",
+		helpSection("JIRA Tickets"),
+		helpKeyLine("J", "toggle JIRA Tickets mode"),
+		helpKeyLine("j/k", "move selection and load ticket details"),
+		helpKeyLine("enter", "open full-screen ticket reader"),
+		helpKeyLine("f", "configure ticket filters"),
+		helpKeyLine("Y", "toggle assigned-to-me/all tickets"),
+		helpKeyLine("S", "toggle active-sprint scope"),
+		helpKeyLine("b", "choose configured board"),
+		helpKeyLine("t", "change selected ticket status"),
+		helpKeyLine("C", "comment on selected ticket"),
+		helpKeyLine("A", "assign selected ticket"),
+		helpKeyLine("n", "create or reuse ticket worktree"),
+		helpKeyLine("o", "open selected ticket in browser"),
 		"",
 		renderKeyHints([]keyHint{{"h/enter/esc", "close"}}),
 	}

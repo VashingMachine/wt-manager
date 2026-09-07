@@ -63,7 +63,7 @@ func TestDetailViewContentWrapsToWidth(t *testing.T) {
 
 func TestPRRadarTableViewLinesFitTableWidth(t *testing.T) {
 	m := layoutTestModel(110, 30)
-	m.prMode = true
+	m.mode = modePRs
 	m.remotePRs = []RemotePullRequest{layoutTestRemotePR()}
 	m.visiblePRs = m.remotePRs
 	m.table.SetColumns(m.activeColumns())
@@ -85,7 +85,7 @@ func TestPRRadarTableViewLinesFitTableWidth(t *testing.T) {
 
 func TestPRRadarBranchViewShowsBranchColumn(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	m.prMode = true
+	m.mode = modePRs
 	m.prShowBranch = true
 	m.remotePRs = []RemotePullRequest{layoutTestRemotePR()}
 	m.visiblePRs = m.remotePRs
@@ -105,7 +105,7 @@ func TestPRRadarBranchViewShowsBranchColumn(t *testing.T) {
 
 func TestPRRadarTableSanitizesMultilineCells(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	m.prMode = true
+	m.mode = modePRs
 	pr := layoutTestRemotePR()
 	pr.Title = "first line\nsecond line\tthird line"
 	m.remotePRs = []RemotePullRequest{pr}
@@ -126,7 +126,7 @@ func TestPRRadarTableSanitizesMultilineCells(t *testing.T) {
 
 func TestTogglePRRadarDoesNotPanicWithExistingRows(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	m.prMode = true
+	m.mode = modePRs
 	m.remotePRs = []RemotePullRequest{layoutTestRemotePR()}
 	m.visiblePRs = m.remotePRs
 	m.table.SetRows(nil)
@@ -138,7 +138,7 @@ func TestTogglePRRadarDoesNotPanicWithExistingRows(t *testing.T) {
 
 func TestToggleFromPRRadarRefreshesWorktrees(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	m.prMode = true
+	m.mode = modePRs
 	m.remotePRs = []RemotePullRequest{layoutTestRemotePR()}
 	m.visiblePRs = m.remotePRs
 	m.table.SetRows(nil)
@@ -147,7 +147,7 @@ func TestToggleFromPRRadarRefreshesWorktrees(t *testing.T) {
 
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
 	got := next.(model)
-	if got.prMode {
+	if got.isPRMode() {
 		t.Fatal("PR Radar mode stayed enabled")
 	}
 	if !got.loading {
@@ -160,7 +160,7 @@ func TestToggleFromPRRadarRefreshesWorktrees(t *testing.T) {
 
 func TestStaleRemotePRDetailResultIsIgnored(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	m.prMode = true
+	m.mode = modePRs
 	first := layoutTestRemotePR()
 	second := layoutTestRemotePR()
 	second.Number = 432
@@ -186,7 +186,7 @@ func TestStaleRemotePRDetailResultIsIgnored(t *testing.T) {
 
 func TestRemotePRDetailResultRefreshesSelectedListRow(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	m.prMode = true
+	m.mode = modePRs
 	pr := layoutTestRemotePR()
 	pr.StatusCheckRollup = []StatusCheck{{Name: "tests", Status: "queued"}}
 	m.remotePRs = []RemotePullRequest{pr}
@@ -330,7 +330,7 @@ func TestRemotePRDetailDiffModeWrapsToWidth(t *testing.T) {
 
 func TestEnterPRDiffUsesFullScreenView(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	m.prMode = true
+	m.mode = modePRs
 	pr := layoutTestRemotePR()
 	pr.Diff = strings.Join([]string{
 		"diff --git a/auth/session.go b/auth/session.go",
@@ -376,7 +376,7 @@ func TestEnterPRDiffUsesFullScreenView(t *testing.T) {
 
 func TestEscExitsFullScreenPRDiffWithoutClearingFilters(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	m.prMode = true
+	m.mode = modePRs
 	m.prDiffMode = true
 	m.filterQuery = "auth"
 	m.filterInput.SetValue("auth")
@@ -392,7 +392,7 @@ func TestEscExitsFullScreenPRDiffWithoutClearingFilters(t *testing.T) {
 	if got.prDiffMode {
 		t.Fatal("esc did not exit full-screen PR diff mode")
 	}
-	if !got.prMode {
+	if !got.isPRMode() {
 		t.Fatal("esc left PR Radar mode")
 	}
 	if got.filterQuery != "auth" {
@@ -402,7 +402,7 @@ func TestEscExitsFullScreenPRDiffWithoutClearingFilters(t *testing.T) {
 
 func TestFullScreenPRDiffKeepsApprovalAndOpenPRActions(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	m.prMode = true
+	m.mode = modePRs
 	m.prDiffMode = true
 	pr := layoutTestRemotePR()
 	m.remotePRs = []RemotePullRequest{pr}
@@ -430,7 +430,7 @@ func TestFullScreenPRDiffKeepsApprovalAndOpenPRActions(t *testing.T) {
 
 func TestPRApprovalModalWarningsAndCancel(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	m.prMode = true
+	m.mode = modePRs
 	pr := layoutTestRemotePR()
 	pr.IsDraft = true
 	pr.ReviewDecision = "CHANGES_REQUESTED"
@@ -468,7 +468,7 @@ func TestPRApprovalModalWarningsAndCancel(t *testing.T) {
 
 func TestPRApprovalResultRefreshesSelectedDetail(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	m.prMode = true
+	m.mode = modePRs
 	pr := layoutTestRemotePR()
 	m.remotePRs = []RemotePullRequest{pr}
 	m.visiblePRs = m.remotePRs
@@ -525,7 +525,7 @@ func layoutTestWorktree() Worktree {
 		Title:       "STEEL-3631: Remove needless TE logs",
 		URL:         "https://github.com/owner/app/pull/2136",
 		State:       "OPEN",
-		Body:        "## Issue\nhttps://lumen.atlassian.net/browse/STEEL-3631\n\n## Changes\n" + strings.Repeat("Remove unnecessary task executor log output. ", 12),
+		Body:        "## Issue\nhttps://example.atlassian.net/browse/STEEL-3631\n\n## Changes\n" + strings.Repeat("Remove unnecessary task executor log output. ", 12),
 	}
 	pr.Author.Login = "VashingMachine"
 	pr.Author.Name = "Dariusz Kwiatkowski"

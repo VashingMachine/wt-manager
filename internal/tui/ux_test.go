@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func TestSpinnerTicksWhilePRDetailLoading(t *testing.T) {
 
 func TestPRRadarEmptyStateMessage(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	m.prMode = true
+	m.mode = modePRs
 	m.table.SetColumns(m.activeColumns())
 	m.rebuildRows()
 
@@ -163,7 +164,7 @@ func TestTableShowsInlineLoadingRow(t *testing.T) {
 		t.Fatalf("loading table missing inline loading row: %q", view)
 	}
 
-	m.prMode = true
+	m.mode = modePRs
 	m.table.SetColumns(m.activeColumns())
 	view = ansi.Strip(m.tableView())
 	if !strings.Contains(view, "Loading remote PRs...") {
@@ -194,6 +195,119 @@ func TestDeleteArmTickKeepsCountingThenExpires(t *testing.T) {
 	}
 	if got.statusMessage != "Delete confirmation expired" {
 		t.Fatalf("statusMessage = %q", got.statusMessage)
+	}
+}
+
+func TestDeleteRemovesWorktreeBeforeDeleteCommandCompletes(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	worktrees := []Worktree{
+		{Name: "first", Path: "/tmp/first"},
+		{Name: "second", Path: "/tmp/second"},
+		{Name: "third", Path: "/tmp/third"},
+	}
+	m.allWorktrees = worktrees
+	m.visibleWorktrees = append([]Worktree(nil), worktrees...)
+	m.rebuildRows()
+	m.table.SetCursor(1)
+	m.rememberSelection()
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	armed := next.(model)
+	next, cmd := armed.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	got := next.(model)
+
+	if cmd == nil {
+		t.Fatal("confirmed delete returned no command")
+	}
+	if len(got.visibleWorktrees) != 2 {
+		t.Fatalf("visible worktrees = %d, want 2 before delete command completes", len(got.visibleWorktrees))
+	}
+	if got.selectedPath != "/tmp/first" || got.table.Cursor() != 0 {
+		t.Fatalf("selection = %q at %d, want /tmp/first at 0", got.selectedPath, got.table.Cursor())
+	}
+}
+
+func TestFailedDeleteRestoresWorktreeAndSelection(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	worktrees := []Worktree{
+		{Name: "first", Path: "/tmp/first"},
+		{Name: "second", Path: "/tmp/second"},
+		{Name: "third", Path: "/tmp/third"},
+	}
+	m.allWorktrees = worktrees
+	m.visibleWorktrees = append([]Worktree(nil), worktrees...)
+	m.rebuildRows()
+	m.table.SetCursor(1)
+	m.rememberSelection()
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	next, _ = next.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	next, _ = next.(model).Update(deleteResult{
+		Path: "/tmp/second",
+		Name: "second",
+		Err:  errors.New("worktree is locked"),
+	})
+	got := next.(model)
+
+	if len(got.visibleWorktrees) != 3 {
+		t.Fatalf("visible worktrees = %d, want restored list of 3", len(got.visibleWorktrees))
+	}
+	if got.selectedPath != "/tmp/second" || got.table.Cursor() != 1 {
+		t.Fatalf("selection = %q at %d, want /tmp/second at 1", got.selectedPath, got.table.Cursor())
+	}
+	if !got.statusError || !strings.Contains(got.statusMessage, "worktree is locked") {
+		t.Fatalf("expected delete error status, got message=%q error=%v", got.statusMessage, got.statusError)
+	}
+}
+
+func TestRefreshRestoresWorktreeWhenDeleteCannotBeConfirmed(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	worktrees := []Worktree{
+		{Name: "first", Path: "/tmp/first"},
+		{Name: "second", Path: "/tmp/second"},
+		{Name: "third", Path: "/tmp/third"},
+	}
+	m.allWorktrees = worktrees
+	m.visibleWorktrees = append([]Worktree(nil), worktrees...)
+	m.rebuildRows()
+	m.table.SetCursor(1)
+	m.rememberSelection()
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	next, _ = next.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	next, _ = next.(model).Update(deleteResult{Path: "/tmp/second", Name: "second"})
+	next, _ = next.(model).Update(loadResult{Worktrees: worktrees})
+	got := next.(model)
+
+	if len(got.visibleWorktrees) != 3 {
+		t.Fatalf("visible worktrees = %d, want restored list of 3", len(got.visibleWorktrees))
+	}
+	if got.selectedPath != "/tmp/second" || got.table.Cursor() != 1 {
+		t.Fatalf("selection = %q at %d, want /tmp/second at 1", got.selectedPath, got.table.Cursor())
+	}
+	if !got.statusError || !strings.Contains(got.statusMessage, "could not be confirmed") {
+		t.Fatalf("expected delete verification error, got message=%q error=%v", got.statusMessage, got.statusError)
+	}
+}
+
+func TestRefreshPreservesSelectionWhenWorktreesAreUnchanged(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	worktrees := []Worktree{
+		{Name: "first", Path: "/tmp/first"},
+		{Name: "second", Path: "/tmp/second"},
+		{Name: "third", Path: "/tmp/third"},
+	}
+	m.allWorktrees = worktrees
+	m.visibleWorktrees = append([]Worktree(nil), worktrees...)
+	m.rebuildRows()
+	m.table.SetCursor(2)
+	m.rememberSelection()
+
+	next, _ := m.Update(loadResult{Worktrees: worktrees})
+	got := next.(model)
+
+	if got.selectedPath != "/tmp/third" || got.selectedIndex != 2 || got.table.Cursor() != 2 {
+		t.Fatalf("selection changed after unchanged refresh: path=%q index=%d cursor=%d", got.selectedPath, got.selectedIndex, got.table.Cursor())
 	}
 }
 

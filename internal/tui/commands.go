@@ -25,6 +25,34 @@ type remotePRListResult struct {
 	Err          error
 }
 
+type ticketListResult struct {
+	Tickets   []Ticket
+	Worktrees []Worktree
+	Warning   string
+	Err       error
+}
+
+type ticketDetailResult struct {
+	Key       string
+	RequestID int
+	Ticket    Ticket
+	Err       error
+}
+
+type ticketMutationResult struct {
+	Key     string
+	Action  string
+	Message string
+	Err     error
+}
+
+type ticketWorktreeResult struct {
+	Key      string
+	Worktree Worktree
+	Existing bool
+	Err      error
+}
+
 func loadWorktreesCmd(services core.WorktreeService, cfg Config, showAll bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
@@ -59,6 +87,127 @@ func loadRemotePullRequestDetailCmd(services core.PullRequestService, ctx contex
 
 		pullRequest, err := services.LoadRemotePullRequestDetail(ctx, cfg, number)
 		return remotePRDetailResult{Number: number, RequestID: requestID, PullRequest: pullRequest, Err: err}
+	}
+}
+
+func loadTicketsCmd(services core.Services, cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool, refresh bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+		defer cancel()
+
+		tickets, warning, err := services.LoadTickets(ctx, cfg, board, mineOnly, sprintOnly, refresh)
+		if err != nil {
+			return ticketListResult{Err: err}
+		}
+
+		worktrees, worktreeWarning, worktreeErr := services.CollectWorktrees(ctx, cfg, true)
+		if worktreeErr != nil {
+			if warning == "" {
+				warning = fmt.Sprintf("worktree refresh failed: %v", worktreeErr)
+			}
+		} else if worktreeWarning != "" && warning == "" {
+			warning = worktreeWarning
+		}
+
+		pullRequests := []PullRequest{}
+		if remotePRs, remoteErr := services.LoadRemotePullRequests(ctx, cfg); remoteErr == nil {
+			for _, pr := range remotePRs {
+				converted := PullRequest{
+					HeadRefName: pr.HeadRefName,
+					Number:      pr.Number,
+					Title:       pr.Title,
+					URL:         pr.URL,
+					State:       pr.State,
+					Body:        pr.Body,
+				}
+				converted.Author.Login = pr.Author.Login
+				converted.Author.Name = pr.Author.Name
+				pullRequests = append(pullRequests, converted)
+			}
+		} else {
+			for _, wt := range worktrees {
+				if wt.PR != nil {
+					pullRequests = append(pullRequests, *wt.PR)
+				}
+			}
+			if warning == "" {
+				warning = fmt.Sprintf("PR matching refresh failed: %v", remoteErr)
+			}
+		}
+
+		return ticketListResult{
+			Tickets:   services.AttachTicketContext(tickets, worktrees, pullRequests),
+			Worktrees: worktrees,
+			Warning:   warning,
+		}
+	}
+}
+
+func loadTicketDetailCmd(services core.JiraService, ctx context.Context, cfg Config, key string, requestID int) tea.Cmd {
+	return func() tea.Msg {
+		ticket, err := services.LoadTicketDetail(ctx, cfg, key)
+		return ticketDetailResult{Key: key, RequestID: requestID, Ticket: ticket, Err: err}
+	}
+}
+
+func transitionTicketCmd(services core.JiraService, cfg Config, board JiraBoard, key string, status string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+		defer cancel()
+		if err := services.TransitionTicket(ctx, key, status); err != nil {
+			return ticketMutationResult{Key: key, Action: "transition", Err: err}
+		}
+		if err := services.InvalidateTicketCache(cfg, board); err != nil {
+			return ticketMutationResult{Key: key, Action: "transition", Err: fmt.Errorf("status changed but cache invalidation failed: %w", err)}
+		}
+		return ticketMutationResult{Key: key, Action: "transition", Message: fmt.Sprintf("Changed %s to %s", key, status)}
+	}
+}
+
+func commentTicketCmd(services core.JiraService, cfg Config, board JiraBoard, key string, body string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+		defer cancel()
+		if err := services.CommentTicket(ctx, key, body); err != nil {
+			return ticketMutationResult{Key: key, Action: "comment", Err: err}
+		}
+		if err := services.InvalidateTicketCache(cfg, board); err != nil {
+			return ticketMutationResult{Key: key, Action: "comment", Err: fmt.Errorf("comment added but cache invalidation failed: %w", err)}
+		}
+		return ticketMutationResult{Key: key, Action: "comment", Message: fmt.Sprintf("Commented on %s", key)}
+	}
+}
+
+func assignTicketCmd(services core.JiraService, cfg Config, board JiraBoard, key string, assignee string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+		defer cancel()
+		if err := services.AssignTicket(ctx, key, assignee); err != nil {
+			return ticketMutationResult{Key: key, Action: "assign", Err: err}
+		}
+		if err := services.InvalidateTicketCache(cfg, board); err != nil {
+			return ticketMutationResult{Key: key, Action: "assign", Err: fmt.Errorf("assignment changed but cache invalidation failed: %w", err)}
+		}
+		return ticketMutationResult{Key: key, Action: "assign", Message: fmt.Sprintf("Assigned %s to %s", key, assignee)}
+	}
+}
+
+func ensureTicketWorktreeCmd(services core.Services, cfg Config, ticket Ticket) tea.Cmd {
+	return func() tea.Msg {
+		if ticket.Worktree != nil && !ticket.Worktree.Missing && !ticket.Worktree.Prunable {
+			return ticketWorktreeResult{Key: ticket.Key, Worktree: *ticket.Worktree, Existing: true}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+		defer cancel()
+		branch := services.TicketBranchName(ticket)
+		path := services.CreateWorktreePath(cfg, branch)
+		existing, err := services.CreateWorktree(ctx, cfg, branch, path)
+		return ticketWorktreeResult{
+			Key:      ticket.Key,
+			Worktree: Worktree{Name: branch, Branch: branch, Path: path, Managed: true},
+			Existing: existing,
+			Err:      err,
+		}
 	}
 }
 
@@ -161,10 +310,14 @@ func createWorktreeCmd(services core.WorktreeService, cfg Config, name string) t
 }
 
 func openBrowserCmd(services core.OpenerService, url string) tea.Cmd {
+	return openBrowserMessageCmd(services, url, "Opened PR in browser")
+}
+
+func openBrowserMessageCmd(services core.OpenerService, url string, message string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		return actionResult{Message: "Opened PR in browser", Err: services.OpenBrowser(ctx, url)}
+		return actionResult{Message: message, Err: services.OpenBrowser(ctx, url)}
 	}
 }
 

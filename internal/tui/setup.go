@@ -28,6 +28,7 @@ const (
 	setupStepCustomName
 	setupStepCustomCommand
 	setupStepGitHub
+	setupStepJira
 )
 
 type setupResult struct {
@@ -48,10 +49,12 @@ type setupModel struct {
 	profileInput   textinput.Model
 	customName     textinput.Model
 	customCommand  textinput.Model
+	jiraBoardInput textinput.Model
 	agentOptions   []setupAgentOption
 	agentCursor    int
 	repoPath       string
 	worktreesDir   string
+	jiraConfig     *JiraConfig
 	warnings       []string
 	status         string
 }
@@ -122,11 +125,26 @@ func newSetupModel(cfg Config, startup bool, services core.Services) setupModel 
 	customCommand.CharLimit = 180
 	customCommand.Width = 64
 
+	jiraBoardInput := textinput.New()
+	jiraBoardInput.Prompt = "board URL or ID: "
+	jiraBoardInput.Placeholder = "https://site.atlassian.net/jira/software/c/projects/KEY/boards/123"
+	jiraBoardInput.CharLimit = 300
+	jiraBoardInput.Width = 76
+
 	step := setupStepProfile
 	if repoPath == "" {
 		step = setupStepRepo
 	}
 	focusSetupInput(step, &profileInput, &customName, &customCommand)
+
+	var jiraConfig *JiraConfig
+	activeRepo := services.CanonicalPath(services.ExpandPath(cfg.ActiveProfile.RepositoryPath, cfg.HomeDir))
+	selectedRepo := services.CanonicalPath(services.ExpandPath(repoPath, cfg.HomeDir))
+	if cfg.ActiveProfile.Jira != nil && activeRepo != "" && activeRepo == selectedRepo {
+		copyConfig := *cfg.ActiveProfile.Jira
+		copyConfig.Boards = append([]JiraBoard(nil), cfg.ActiveProfile.Jira.Boards...)
+		jiraConfig = &copyConfig
+	}
 
 	seeds := setupDirectorySeeds(services, cfg.HomeDir, repoPath)
 	repoPicker := newDirectoryPicker(services, cfg.HomeDir, seeds, defaultRepo)
@@ -147,9 +165,11 @@ func newSetupModel(cfg Config, startup bool, services core.Services) setupModel 
 		profileInput:   profileInput,
 		customName:     customName,
 		customCommand:  customCommand,
+		jiraBoardInput: jiraBoardInput,
 		agentOptions:   detectSetupAgents(services, existingAgents, cfg.App.DefaultAgent, exec.LookPath),
 		repoPath:       repoPath,
 		worktreesDir:   worktreesDir,
+		jiraConfig:     jiraConfig,
 		status:         cfg.SetupReason,
 	}
 }
@@ -200,6 +220,8 @@ func (s setupModel) Update(msg tea.Msg) (setupModel, tea.Cmd) {
 		return s.updateCustomCommandStep(key)
 	case setupStepGitHub:
 		return s.updateGitHubStep(key)
+	case setupStepJira:
+		return s.updateJiraStep(key)
 	}
 	return s, nil
 }
@@ -365,28 +387,93 @@ func (s setupModel) updateCustomCommandStep(key tea.KeyMsg) (setupModel, tea.Cmd
 func (s setupModel) updateGitHubStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
 	switch key.String() {
 	case "enter":
-		cfg, warnings, err := completeSetupConfig(s)
-		if err != nil {
-			s.status = err.Error()
-			return s, nil
-		}
-		if err := os.MkdirAll(s.services.ExpandPath(s.worktreesDir, s.cfg.HomeDir), 0o755); err != nil {
-			s.status = fmt.Sprintf("Create worktrees folder failed: %v", err)
-			return s, nil
-		}
-		if err := s.services.WriteAppConfig(cfg.ConfigPath, cfg.App); err != nil {
-			s.status = fmt.Sprintf("Save config failed: %v", err)
-			return s, nil
-		}
-		cfg.SetupNeeded = false
-		cfg.SetupReason = ""
-		message := fmt.Sprintf("Configured profile %s", cfg.ActiveProfile.Name)
-		if len(warnings) > 0 {
-			message += ": " + strings.Join(warnings, " | ")
-		}
-		return s, func() tea.Msg { return setupResult{Config: cfg, Message: message, Startup: s.startup} }
+		s.step = setupStepJira
+		s.jiraBoardInput.SetValue("")
+		s.jiraBoardInput.Focus()
+		s.status = "Configure JIRA boards, or press enter with an empty input to continue"
+		return s, nil
 	}
 	return s, nil
+}
+
+func (s setupModel) updateJiraStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
+	switch key.String() {
+	case "ctrl+x":
+		s.jiraConfig = nil
+		s.jiraBoardInput.SetValue("")
+		s.status = "JIRA disabled for this profile; press enter to save"
+		return s, nil
+	case "enter":
+		input := strings.TrimSpace(s.jiraBoardInput.Value())
+		if input == "" {
+			return s.finishSetup()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		board, err := s.services.ResolveJiraBoard(ctx, input)
+		if err != nil {
+			s.status = fmt.Sprintf("Resolve JIRA board failed: %v", err)
+			return s, nil
+		}
+		if s.jiraConfig == nil {
+			site, err := s.services.JiraSite(ctx)
+			if err != nil {
+				s.status = fmt.Sprintf("Determine JIRA site failed: %v", err)
+				return s, nil
+			}
+			s.jiraConfig = &JiraConfig{
+				Site:              site,
+				MineOnly:          true,
+				SprintOnly:        true,
+				OpenOnly:          true,
+				FiltersConfigured: true,
+				Limit:             100,
+			}
+		}
+		replaced := false
+		for idx := range s.jiraConfig.Boards {
+			if s.jiraConfig.Boards[idx].ID == board.ID {
+				s.jiraConfig.Boards[idx] = board
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			s.jiraConfig.Boards = append(s.jiraConfig.Boards, board)
+		}
+		if s.jiraConfig.DefaultBoard == "" {
+			s.jiraConfig.DefaultBoard = board.Name
+		}
+		s.jiraBoardInput.SetValue("")
+		s.status = fmt.Sprintf("Added JIRA board %s; paste another board or press enter to save", board.Name)
+		return s, nil
+	}
+	var cmd tea.Cmd
+	s.jiraBoardInput, cmd = s.jiraBoardInput.Update(key)
+	return s, cmd
+}
+
+func (s setupModel) finishSetup() (setupModel, tea.Cmd) {
+	cfg, warnings, err := completeSetupConfig(s)
+	if err != nil {
+		s.status = err.Error()
+		return s, nil
+	}
+	if err := os.MkdirAll(s.services.ExpandPath(s.worktreesDir, s.cfg.HomeDir), 0o755); err != nil {
+		s.status = fmt.Sprintf("Create worktrees folder failed: %v", err)
+		return s, nil
+	}
+	if err := s.services.WriteAppConfig(cfg.ConfigPath, cfg.App); err != nil {
+		s.status = fmt.Sprintf("Save config failed: %v", err)
+		return s, nil
+	}
+	cfg.SetupNeeded = false
+	cfg.SetupReason = ""
+	message := fmt.Sprintf("Configured profile %s", cfg.ActiveProfile.Name)
+	if len(warnings) > 0 {
+		message += ": " + strings.Join(warnings, " | ")
+	}
+	return s, func() tea.Msg { return setupResult{Config: cfg, Message: message, Startup: s.startup} }
 }
 
 func (s setupModel) View(width int) string {
@@ -457,8 +544,19 @@ func (s setupModel) View(width int) string {
 				lines = append(lines, warnStyle.Render("Worktrees folder will be created on save."))
 			}
 			lines = append(lines, subtleStyle.Render("GitHub CLI will be checked on save; failures are warnings only."))
-			lines = append(lines, "", subtleStyle.Render("enter saves, esc cancels"))
+			lines = append(lines, "", subtleStyle.Render("enter continues to optional JIRA setup, esc cancels"))
 		}
+	case setupStepJira:
+		lines = append(lines, infoStyle.Render("JIRA (optional)"), "Paste one or more board links. Board projects are resolved through ACLI.", "")
+		if s.jiraConfig != nil && len(s.jiraConfig.Boards) > 0 {
+			for _, board := range s.jiraConfig.Boards {
+				lines = append(lines, successStyle.Render(fmt.Sprintf("%s %s [%s]", icons.OK, board.Name, strings.Join(board.Projects, ", "))))
+			}
+			lines = append(lines, "")
+		} else {
+			lines = append(lines, mutedStyle.Render("No JIRA boards configured."), "")
+		}
+		lines = append(lines, s.jiraBoardInput.View(), "", subtleStyle.Render("enter resolves a typed board; enter again on empty input saves; ctrl+x disables JIRA"))
 	}
 
 	return setupCardStyle(width).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
@@ -751,7 +849,11 @@ func completeSetupConfig(s setupModel) (Config, []string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return cfg, s.services.CheckGitHubCLI(ctx, cfg.RepoSlug), nil
+	warnings := s.services.CheckGitHubCLI(ctx, cfg.RepoSlug)
+	if cfg.ActiveProfile.Jira != nil {
+		warnings = append(warnings, s.services.CheckAtlassianCLI(ctx)...)
+	}
+	return cfg, warnings, nil
 }
 
 func buildSetupConfig(s setupModel) (Config, error) {
@@ -779,6 +881,17 @@ func buildSetupConfig(s setupModel) (Config, error) {
 		RepositoryPath: s.services.CompactPath(s.repoPath, s.cfg.HomeDir),
 		WorktreesDir:   s.services.CompactPath(worktreesDir, s.cfg.HomeDir),
 		RemoteName:     "origin",
+	}
+	if s.jiraConfig != nil && len(s.jiraConfig.Boards) > 0 {
+		copyConfig := *s.jiraConfig
+		copyConfig.Boards = append([]JiraBoard(nil), s.jiraConfig.Boards...)
+		if copyConfig.DefaultBoard == "" {
+			copyConfig.DefaultBoard = copyConfig.Boards[0].Name
+		}
+		if copyConfig.Limit <= 0 {
+			copyConfig.Limit = 100
+		}
+		profile.Jira = &copyConfig
 	}
 	profile.GitHubRepo = s.services.InferGitHubRepo(ctx, s.services.ResolveProfilePaths(profile, s.cfg.HomeDir))
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"time"
 )
 
 type Service struct{}
@@ -160,4 +161,76 @@ func (s *Service) OpenAgent(ctx context.Context, wt Worktree, agent AgentTool) e
 
 func (s *Service) OpenTerminal(ctx context.Context, wt Worktree) error {
 	return openWorktreeTerminal(ctx, wt)
+}
+
+func (s *Service) CheckAtlassianCLI(ctx context.Context) []string {
+	return checkAtlassianCLI(ctx)
+}
+
+func (s *Service) JiraSite(ctx context.Context) (string, error) {
+	return jiraSite(ctx)
+}
+
+func (s *Service) ResolveJiraBoard(ctx context.Context, boardURLOrID string) (JiraBoard, error) {
+	return resolveJiraBoard(ctx, boardURLOrID)
+}
+
+func (s *Service) SearchJiraBoards(ctx context.Context, name string) ([]JiraBoard, error) {
+	return searchJiraBoards(ctx, name)
+}
+
+func (s *Service) PeekTicketCache(cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool) ([]Ticket, time.Time, bool) {
+	return peekTicketCache(cfg, board, mineOnly, sprintOnly)
+}
+
+func (s *Service) LoadTickets(ctx context.Context, cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool, refresh bool) ([]Ticket, string, error) {
+	return loadTickets(ctx, cfg, board, mineOnly, sprintOnly, refresh)
+}
+
+func (s *Service) LoadTicketDetail(ctx context.Context, cfg Config, key string) (Ticket, error) {
+	return loadTicketDetail(ctx, cfg, key)
+}
+
+func (s *Service) TransitionTicket(ctx context.Context, key string, status string) error {
+	return transitionTicket(ctx, key, status)
+}
+
+func (s *Service) CommentTicket(ctx context.Context, key string, body string) error {
+	return commentTicket(ctx, key, body)
+}
+
+func (s *Service) AssignTicket(ctx context.Context, key string, assignee string) error {
+	return assignTicket(ctx, key, assignee)
+}
+
+func (s *Service) AttachTicketContext(tickets []Ticket, worktrees []Worktree, pullRequests []PullRequest) []Ticket {
+	return attachTicketContext(tickets, worktrees, pullRequests)
+}
+
+func (s *Service) FilterTickets(tickets []Ticket, query string, status string, openOnly bool) []Ticket {
+	return filterTickets(tickets, query, status, openOnly)
+}
+
+func (s *Service) TicketStatuses(tickets []Ticket) []string {
+	return ticketStatuses(tickets)
+}
+
+func (s *Service) TicketAssignees(tickets []Ticket) []JiraUser {
+	return ticketAssignees(tickets)
+}
+
+func (s *Service) TicketBranchName(ticket Ticket) string {
+	return ticketBranchName(ticket)
+}
+
+func (s *Service) TicketKeyFromBranch(branch string) string {
+	return ticketKeyFromBranch(branch)
+}
+
+func (s *Service) BuildTicketChatPrompt(ticket Ticket, question string) string {
+	return buildTicketChatPrompt(ticket, question)
+}
+
+func (s *Service) InvalidateTicketCache(cfg Config, board JiraBoard) error {
+	return invalidateTicketCache(cfg, board)
 }
