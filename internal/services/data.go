@@ -1016,6 +1016,17 @@ func collectWorktrees(ctx context.Context, cfg Config, showAll bool) ([]Worktree
 	return filtered, strings.Join(warnings, " | "), nil
 }
 
+// collectTicketWorktrees only gathers the local fields needed for ticket
+// matching. Status, commits, and PRs are not displayed in ticket worktree cells.
+func collectTicketWorktrees(ctx context.Context, cfg Config) ([]Worktree, string, error) {
+	worktrees, err := discoverWorktrees(ctx, cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	sortWorktrees(worktrees)
+	return worktrees, "", nil
+}
+
 func discoverWorktrees(ctx context.Context, cfg Config) ([]Worktree, error) {
 	repoPath := cfg.ActiveProfile.RepositoryPath
 	output, err := runCommand(ctx, repoPath, "git", "-C", repoPath, "worktree", "list", "--porcelain")
@@ -1236,20 +1247,9 @@ func loadCommitInfo(ctx context.Context, repoPath string) (CommitInfo, error) {
 }
 
 func loadPullRequestIndex(ctx context.Context, cfg Config) (map[string]*PullRequest, string) {
-	if cfg.RepoSlug == "" {
-		return nil, ""
-	}
-	if _, err := exec.LookPath("gh"); err != nil {
-		return nil, "PR lookup unavailable: gh not found"
-	}
-	output, err := runCommand(ctx, cfg.ActiveProfile.RepositoryPath, "gh", "pr", "list", "--repo", cfg.RepoSlug, "--state", "all", "--limit", "200", "--json", "headRefName,number,title,url,state,body,author")
+	prs, err := loadPullRequestsForTickets(ctx, cfg)
 	if err != nil {
 		return nil, "PR lookup unavailable: gh auth or repo access failed"
-	}
-
-	var prs []PullRequest
-	if err := json.Unmarshal([]byte(output), &prs); err != nil {
-		return nil, "PR lookup unavailable: gh returned invalid JSON"
 	}
 
 	index := make(map[string]*PullRequest, len(prs))
@@ -1263,6 +1263,24 @@ func loadPullRequestIndex(ctx context.Context, cfg Config) (map[string]*PullRequ
 	}
 
 	return index, ""
+}
+
+func loadPullRequestsForTickets(ctx context.Context, cfg Config) ([]PullRequest, error) {
+	if cfg.RepoSlug == "" {
+		return nil, errors.New("GitHub repository is not configured")
+	}
+	if _, err := exec.LookPath("gh"); err != nil {
+		return nil, errors.New("gh not found; run setup after installing GitHub CLI")
+	}
+	output, err := runCommand(ctx, cfg.ActiveProfile.RepositoryPath, "gh", "pr", "list", "--repo", cfg.RepoSlug, "--state", "all", "--limit", "200", "--json", "headRefName,number,title,url,state,body,author")
+	if err != nil {
+		return nil, err
+	}
+	var prs []PullRequest
+	if err := json.Unmarshal([]byte(output), &prs); err != nil {
+		return nil, fmt.Errorf("gh returned invalid PR JSON: %w", err)
+	}
+	return prs, nil
 }
 
 func removeWorktree(ctx context.Context, cfg Config, wt Worktree) error {

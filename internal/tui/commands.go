@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/VashingMachine/wt-manager/internal/core"
@@ -95,12 +96,36 @@ func loadTicketsCmd(services core.Services, cfg Config, board JiraBoard, mineOnl
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
 
-		tickets, warning, err := services.LoadTickets(ctx, cfg, board, mineOnly, sprintOnly, refresh)
-		if err != nil {
-			return ticketListResult{Err: err}
+		var (
+			tickets         []Ticket
+			warning         string
+			ticketErr       error
+			worktrees       []Worktree
+			worktreeWarning string
+			worktreeErr     error
+			pullRequests    []PullRequest
+			pullRequestErr  error
+			wg              sync.WaitGroup
+		)
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			tickets, warning, ticketErr = services.LoadTickets(ctx, cfg, board, mineOnly, sprintOnly, refresh)
+		}()
+		go func() {
+			defer wg.Done()
+			worktrees, worktreeWarning, worktreeErr = services.CollectTicketWorktrees(ctx, cfg)
+		}()
+		go func() {
+			defer wg.Done()
+			pullRequests, pullRequestErr = services.LoadPullRequestsForTickets(ctx, cfg)
+		}()
+		wg.Wait()
+
+		if ticketErr != nil {
+			return ticketListResult{Err: ticketErr}
 		}
 
-		worktrees, worktreeWarning, worktreeErr := services.CollectWorktrees(ctx, cfg, true)
 		if worktreeErr != nil {
 			if warning == "" {
 				warning = fmt.Sprintf("worktree refresh failed: %v", worktreeErr)
@@ -109,29 +134,9 @@ func loadTicketsCmd(services core.Services, cfg Config, board JiraBoard, mineOnl
 			warning = worktreeWarning
 		}
 
-		pullRequests := []PullRequest{}
-		if remotePRs, remoteErr := services.LoadRemotePullRequests(ctx, cfg); remoteErr == nil {
-			for _, pr := range remotePRs {
-				converted := PullRequest{
-					HeadRefName: pr.HeadRefName,
-					Number:      pr.Number,
-					Title:       pr.Title,
-					URL:         pr.URL,
-					State:       pr.State,
-					Body:        pr.Body,
-				}
-				converted.Author.Login = pr.Author.Login
-				converted.Author.Name = pr.Author.Name
-				pullRequests = append(pullRequests, converted)
-			}
-		} else {
-			for _, wt := range worktrees {
-				if wt.PR != nil {
-					pullRequests = append(pullRequests, *wt.PR)
-				}
-			}
+		if pullRequestErr != nil {
 			if warning == "" {
-				warning = fmt.Sprintf("PR matching refresh failed: %v", remoteErr)
+				warning = fmt.Sprintf("PR matching refresh failed: %v", pullRequestErr)
 			}
 		}
 

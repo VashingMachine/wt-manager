@@ -99,6 +99,10 @@ func (s *Service) CollectWorktrees(ctx context.Context, cfg Config, showAll bool
 	return collectWorktrees(ctx, cfg, showAll)
 }
 
+func (s *Service) CollectTicketWorktrees(ctx context.Context, cfg Config) ([]Worktree, string, error) {
+	return collectTicketWorktrees(ctx, cfg)
+}
+
 func (s *Service) CreateWorktree(ctx context.Context, cfg Config, branch string, path string) (bool, error) {
 	return createWorktree(ctx, cfg, branch, path)
 }
@@ -117,6 +121,10 @@ func (s *Service) CreateWorktreePath(cfg Config, name string) string {
 
 func (s *Service) LoadRemotePullRequests(ctx context.Context, cfg Config) ([]RemotePullRequest, error) {
 	return loadRemotePullRequests(ctx, cfg)
+}
+
+func (s *Service) LoadPullRequestsForTickets(ctx context.Context, cfg Config) ([]PullRequest, error) {
+	return loadPullRequestsForTickets(ctx, cfg)
 }
 
 func (s *Service) LoadGitHubCurrentUser(ctx context.Context, cfg Config) (string, error) {

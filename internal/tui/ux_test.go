@@ -227,6 +227,64 @@ func TestDeleteRemovesWorktreeBeforeDeleteCommandCompletes(t *testing.T) {
 	}
 }
 
+// Assures that multiple optimistic deletions can run together and refresh only once they all finish.
+func TestDeleteQueuesMultipleWorktreesAndRefreshesAfterLastCompletion(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	m.allWorktrees = []Worktree{
+		{Name: "first", Path: "/tmp/first"},
+		{Name: "second", Path: "/tmp/second"},
+		{Name: "third", Path: "/tmp/third"},
+		{Name: "fourth", Path: "/tmp/fourth"},
+	}
+	m.visibleWorktrees = append([]Worktree(nil), m.allWorktrees...)
+	m.rebuildRows()
+	m.table.SetCursor(1)
+	m.rememberSelection()
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	next, firstDeleteCmd := next.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	firstDeleted := next.(model)
+	if firstDeleteCmd == nil || len(firstDeleted.visibleWorktrees) != 3 {
+		t.Fatalf("first deletion was not queued: cmd=%v rows=%d", firstDeleteCmd, len(firstDeleted.visibleWorktrees))
+	}
+
+	firstDeleted.table.SetCursor(1)
+	firstDeleted.rememberSelection()
+	next, _ = firstDeleted.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	next, secondDeleteCmd := next.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	secondDeleted := next.(model)
+	if secondDeleteCmd == nil || len(secondDeleted.visibleWorktrees) != 2 {
+		t.Fatalf("second deletion was not queued: cmd=%v rows=%d", secondDeleteCmd, len(secondDeleted.visibleWorktrees))
+	}
+
+	next, refreshCmd := secondDeleted.Update(deleteResult{Path: "/tmp/second", Name: "second"})
+	firstCompleted := next.(model)
+	if refreshCmd != nil {
+		t.Fatal("refresh started before all queued deletions completed")
+	}
+	if !firstCompleted.loading || len(firstCompleted.pendingDeletes) != 2 {
+		t.Fatalf("first completion did not retain queued deletion state: loading=%v pending=%d", firstCompleted.loading, len(firstCompleted.pendingDeletes))
+	}
+
+	next, refreshCmd = firstCompleted.Update(deleteResult{Path: "/tmp/third", Name: "third"})
+	allCompleted := next.(model)
+	if refreshCmd == nil {
+		t.Fatal("last deletion completion did not schedule a refresh")
+	}
+	if len(allCompleted.pendingDeletes) != 2 {
+		t.Fatalf("completed deletions were discarded before refresh: pending=%d", len(allCompleted.pendingDeletes))
+	}
+
+	next, _ = allCompleted.Update(loadResult{Worktrees: []Worktree{
+		{Name: "first", Path: "/tmp/first"},
+		{Name: "fourth", Path: "/tmp/fourth"},
+	}})
+	got := next.(model)
+	if len(got.pendingDeletes) != 0 || len(got.visibleWorktrees) != 2 {
+		t.Fatalf("refresh did not clear completed deletions: pending=%d rows=%d", len(got.pendingDeletes), len(got.visibleWorktrees))
+	}
+}
+
 func TestFailedDeleteRestoresWorktreeAndSelection(t *testing.T) {
 	m := layoutTestModel(120, 30)
 	worktrees := []Worktree{
@@ -308,6 +366,80 @@ func TestRefreshPreservesSelectionWhenWorktreesAreUnchanged(t *testing.T) {
 
 	if got.selectedPath != "/tmp/third" || got.selectedIndex != 2 || got.table.Cursor() != 2 {
 		t.Fatalf("selection changed after unchanged refresh: path=%q index=%d cursor=%d", got.selectedPath, got.selectedIndex, got.table.Cursor())
+	}
+}
+
+// Assures that pressing r restores the same worktree selection when it remains in the results.
+func TestRefreshRestoresSelectedWorktreeAfterRefreshKey(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	worktrees := []Worktree{
+		{Name: "first", Path: "/tmp/first"},
+		{Name: "second", Path: "/tmp/second"},
+		{Name: "third", Path: "/tmp/third"},
+	}
+	m.allWorktrees = worktrees
+	m.visibleWorktrees = append([]Worktree(nil), worktrees...)
+	m.rebuildRows()
+	m.table.SetCursor(1)
+
+	next, refreshCmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	refreshed := next.(model)
+	if refreshCmd == nil {
+		t.Fatal("r did not start a worktree refresh")
+	}
+	next, _ = refreshed.Update(loadResult{Worktrees: worktrees})
+	got := next.(model)
+
+	if got.selectedPath != "/tmp/second" || got.selectedIndex != 1 || got.table.Cursor() != 1 {
+		t.Fatalf("selection changed after refresh: path=%q index=%d cursor=%d", got.selectedPath, got.selectedIndex, got.table.Cursor())
+	}
+}
+
+// Assures that refresh selects the next row when the selected worktree no longer exists.
+func TestRefreshSelectsNextWorktreeWhenSelectedWorktreeIsRemoved(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	m.allWorktrees = []Worktree{
+		{Name: "first", Path: "/tmp/first"},
+		{Name: "second", Path: "/tmp/second"},
+		{Name: "third", Path: "/tmp/third"},
+	}
+	m.visibleWorktrees = append([]Worktree(nil), m.allWorktrees...)
+	m.rebuildRows()
+	m.table.SetCursor(1)
+	m.rememberSelection()
+
+	next, _ := m.Update(loadResult{Worktrees: []Worktree{
+		{Name: "first", Path: "/tmp/first"},
+		{Name: "third", Path: "/tmp/third"},
+	}})
+	got := next.(model)
+
+	if got.selectedPath != "/tmp/third" || got.selectedIndex != 1 || got.table.Cursor() != 1 {
+		t.Fatalf("selection after removed row: path=%q index=%d cursor=%d", got.selectedPath, got.selectedIndex, got.table.Cursor())
+	}
+}
+
+// Assures that refresh selects the preceding row when the removed worktree was the last row.
+func TestRefreshSelectsPreviousWorktreeWhenLastWorktreeIsRemoved(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	m.allWorktrees = []Worktree{
+		{Name: "first", Path: "/tmp/first"},
+		{Name: "second", Path: "/tmp/second"},
+		{Name: "third", Path: "/tmp/third"},
+	}
+	m.visibleWorktrees = append([]Worktree(nil), m.allWorktrees...)
+	m.rebuildRows()
+	m.table.SetCursor(2)
+	m.rememberSelection()
+
+	next, _ := m.Update(loadResult{Worktrees: []Worktree{
+		{Name: "first", Path: "/tmp/first"},
+		{Name: "second", Path: "/tmp/second"},
+	}})
+	got := next.(model)
+
+	if got.selectedPath != "/tmp/second" || got.selectedIndex != 1 || got.table.Cursor() != 1 {
+		t.Fatalf("selection after removed last row: path=%q index=%d cursor=%d", got.selectedPath, got.selectedIndex, got.table.Cursor())
 	}
 }
 

@@ -293,6 +293,7 @@ type ConfigService interface {
 
 type WorktreeService interface {
 	CollectWorktrees(ctx context.Context, cfg Config, showAll bool) ([]Worktree, string, error)
+	CollectTicketWorktrees(ctx context.Context, cfg Config) ([]Worktree, string, error)
 	CreateWorktree(ctx context.Context, cfg Config, branch string, path string) (bool, error)
 	RemoveWorktree(ctx context.Context, cfg Config, wt Worktree) error
 	EnsurePullRequestWorktree(ctx context.Context, cfg Config, pullRequest RemotePullRequest) (Worktree, bool, error)
@@ -301,6 +302,7 @@ type WorktreeService interface {
 
 type PullRequestService interface {
 	LoadRemotePullRequests(ctx context.Context, cfg Config) ([]RemotePullRequest, error)
+	LoadPullRequestsForTickets(ctx context.Context, cfg Config) ([]PullRequest, error)
 	LoadGitHubCurrentUser(ctx context.Context, cfg Config) (string, error)
 	LoadRemotePullRequestDetail(ctx context.Context, cfg Config, number int) (RemotePullRequest, error)
 	ApproveRemotePullRequest(ctx context.Context, cfg Config, number int) error

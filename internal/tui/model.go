@@ -293,7 +293,8 @@ type model struct {
 	deleteArmedPath                string
 	deleteArmedName                string
 	deleteArmedAt                  time.Time
-	pendingDelete                  *pendingDelete
+	pendingDeletes                 map[string]pendingDelete
+	pendingWorktreePath            string
 	selectedPath                   string
 	selectedIndex                  int
 	filterQuery                    string
@@ -482,22 +483,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.rememberSelection()
-		deleteCouldNotBeConfirmed := false
-		var unconfirmedDelete pendingDelete
-		if m.pendingDelete != nil && m.pendingDelete.Completed && worktreeExists(msg.Worktrees, m.pendingDelete.Worktree.Path) {
-			deleteCouldNotBeConfirmed = true
-			unconfirmedDelete = *m.pendingDelete
-			m.selectedPath = unconfirmedDelete.Worktree.Path
-			m.selectedIndex = unconfirmedDelete.Index
-			m.pendingDelete = nil
+		if m.pendingWorktreePath != "" {
+			m.selectedPath = m.pendingWorktreePath
+			m.selectedIndex = 0
 		}
-
 		m.allWorktrees = msg.Worktrees
-		if m.pendingDelete != nil {
-			m.allWorktrees = withoutWorktree(m.allWorktrees, m.pendingDelete.Worktree.Path)
-			if m.pendingDelete.Completed {
-				m.pendingDelete = nil
+		var unconfirmedDeletes []pendingDelete
+		for path, deletion := range m.pendingDeletes {
+			if deletion.Completed {
+				if worktreeExists(msg.Worktrees, path) {
+					unconfirmedDeletes = append(unconfirmedDeletes, deletion)
+					m.selectedPath = deletion.Worktree.Path
+					m.selectedIndex = deletion.Index
+				}
+				delete(m.pendingDeletes, path)
+				continue
 			}
+			m.allWorktrees = withoutWorktree(m.allWorktrees, path)
 		}
 		m.statusError = false
 		if msg.Warning != "" {
@@ -506,8 +508,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMessage = m.loadSummary()
 		}
 		m.applyFilter()
-		if deleteCouldNotBeConfirmed {
-			m.statusMessage = fmt.Sprintf("Delete could not be confirmed for %s; it was restored", unconfirmedDelete.Worktree.Name)
+		m.pendingWorktreePath = ""
+		if len(unconfirmedDeletes) > 0 {
+			m.statusMessage = fmt.Sprintf("Delete could not be confirmed for %s; it was restored", unconfirmedDeletes[0].Worktree.Name)
 			m.statusError = true
 		}
 		return m, nil
@@ -625,6 +628,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.selectedTicketKey = msg.Key
+		m.pendingWorktreePath = msg.Worktree.Path
 		if msg.Existing {
 			m.statusMessage = fmt.Sprintf("Selected existing worktree %s. Refreshing tickets...", msg.Worktree.Name)
 		} else {
@@ -726,19 +730,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clearDeleteArm()
 		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, msg.Message+". Loading worktrees..."))
 	case deleteResult:
-		m.loading = false
 		if msg.Err != nil {
 			m.restorePendingDelete(msg.Path)
 			m.statusMessage = fmt.Sprintf("Delete failed for %s: %v", msg.Name, msg.Err)
 			m.statusError = true
+		} else {
+			m.completePendingDelete(msg.Path)
+			m.statusMessage = fmt.Sprintf("Deleted %s", msg.Name)
+			m.statusError = false
+		}
+		m.clearDeleteArm()
+		if m.hasPendingDeleteInFlight() {
+			m.loading = true
+			if msg.Err == nil {
+				m.statusMessage += ". Waiting for remaining deletions..."
+			}
 			return m, nil
 		}
-
-		m.clearDeleteArm()
-		if m.pendingDelete != nil && m.pendingDelete.Worktree.Path == msg.Path {
-			m.pendingDelete.Completed = true
+		if msg.Err != nil && !m.hasCompletedPendingDelete() {
+			m.loading = false
+			return m, nil
 		}
-		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, fmt.Sprintf("Deleted %s. Refreshing...", msg.Name)))
+		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, m.statusMessage+". Refreshing..."))
 	case createResult:
 		m.loading = false
 		if msg.Err != nil {
@@ -1254,11 +1267,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusError = true
 				return m, nil
 			}
-			if m.pendingDelete != nil {
-				m.statusMessage = fmt.Sprintf("Deleting %s is still in progress", m.pendingDelete.Worktree.Name)
-				m.statusError = true
-				return m, nil
-			}
 			selected := m.selectedWorktree()
 			if selected == nil {
 				return m, nil
@@ -1274,7 +1282,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				wt := *selected
 				m.rememberSelection()
 				m.clearDeleteArm()
-				m.pendingDelete = &pendingDelete{Worktree: wt, Index: m.worktreeIndex(wt.Path)}
+				if m.pendingDeletes == nil {
+					m.pendingDeletes = make(map[string]pendingDelete)
+				}
+				m.pendingDeletes[wt.Path] = pendingDelete{Worktree: wt, Index: m.worktreeIndex(wt.Path)}
 				m.optimisticRemove(wt.Path)
 				return m, tea.Batch(removeWorktreeCmd(m.services, m.cfg, wt), m.startLoading(loadingMutation, fmt.Sprintf("Deleting %s...", wt.Name)))
 			}
@@ -1750,12 +1761,11 @@ func (m *model) optimisticRemove(path string) {
 }
 
 func (m *model) restorePendingDelete(path string) {
-	if m.pendingDelete == nil || m.pendingDelete.Worktree.Path != path {
+	deleted, ok := m.pendingDeletes[path]
+	if !ok {
 		return
 	}
-
-	deleted := *m.pendingDelete
-	m.pendingDelete = nil
+	delete(m.pendingDeletes, path)
 	if !worktreeExists(m.allWorktrees, deleted.Worktree.Path) {
 		index := min(max(deleted.Index, 0), len(m.allWorktrees))
 		m.allWorktrees = append(m.allWorktrees, Worktree{})
@@ -1765,6 +1775,33 @@ func (m *model) restorePendingDelete(path string) {
 	m.selectedPath = deleted.Worktree.Path
 	m.selectedIndex = deleted.Index
 	m.applyFilter()
+}
+
+func (m *model) completePendingDelete(path string) {
+	deletion, ok := m.pendingDeletes[path]
+	if !ok {
+		return
+	}
+	deletion.Completed = true
+	m.pendingDeletes[path] = deletion
+}
+
+func (m model) hasPendingDeleteInFlight() bool {
+	for _, deletion := range m.pendingDeletes {
+		if !deletion.Completed {
+			return true
+		}
+	}
+	return false
+}
+
+func (m model) hasCompletedPendingDelete() bool {
+	for _, deletion := range m.pendingDeletes {
+		if deletion.Completed {
+			return true
+		}
+	}
+	return false
 }
 
 func (m model) worktreeIndex(path string) int {
@@ -2086,7 +2123,9 @@ func (m *model) selectByPath() {
 		}
 	}
 
-	fallback := min(max(m.selectedIndex-1, 0), len(m.visibleWorktrees)-1)
+	// Prefer the item that shifted into the removed row's position; when the
+	// removed item was last, fall back to the preceding item instead.
+	fallback := min(max(m.selectedIndex, 0), len(m.visibleWorktrees)-1)
 	m.table.SetCursor(fallback)
 	m.selectedIndex = fallback
 	m.selectedPath = m.visibleWorktrees[fallback].Path

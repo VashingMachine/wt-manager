@@ -1,13 +1,112 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/VashingMachine/wt-manager/internal/core"
 	"github.com/VashingMachine/wt-manager/internal/services"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
+
+type ticketLoadSpyServices struct {
+	core.Services
+	started chan string
+	release <-chan struct{}
+}
+
+func (s *ticketLoadSpyServices) wait(ctx context.Context, operation string) {
+	s.started <- operation
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+	}
+}
+
+func (s *ticketLoadSpyServices) LoadTickets(ctx context.Context, cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool, refresh bool) ([]Ticket, string, error) {
+	s.wait(ctx, "tickets")
+	return []Ticket{{Key: "APP-1"}}, "", nil
+}
+
+func (s *ticketLoadSpyServices) CollectWorktrees(ctx context.Context, cfg Config, showAll bool) ([]Worktree, string, error) {
+	s.wait(ctx, "worktrees")
+	return []Worktree{{Name: "APP-1", Branch: "APP-1", Path: "/tmp/app-1"}}, "", nil
+}
+
+func (s *ticketLoadSpyServices) CollectTicketWorktrees(ctx context.Context, cfg Config) ([]Worktree, string, error) {
+	s.wait(ctx, "worktrees")
+	return []Worktree{{Name: "APP-1", Branch: "APP-1", Path: "/tmp/app-1"}}, "", nil
+}
+
+func (s *ticketLoadSpyServices) LoadPullRequestsForTickets(ctx context.Context, cfg Config) ([]PullRequest, error) {
+	s.wait(ctx, "pull requests")
+	return []PullRequest{{Number: 1, HeadRefName: "APP-1"}}, nil
+}
+
+// Assures that ticket loading does not serialize independent Jira, worktree, and PR requests.
+func TestTicketLoadFetchesIndependentContextConcurrently(t *testing.T) {
+	release := make(chan struct{})
+	spy := &ticketLoadSpyServices{
+		Services: services.NewService(),
+		started:  make(chan string, 3),
+		release:  release,
+	}
+	result := make(chan tea.Msg, 1)
+	go func() {
+		result <- loadTicketsCmd(spy, Config{}, JiraBoard{ID: 1}, true, true, true)()
+	}()
+	defer func() {
+		close(release)
+		<-result
+	}()
+
+	started := map[string]bool{}
+	timeout := time.After(time.Second)
+	for len(started) < 3 {
+		select {
+		case operation := <-spy.started:
+			started[operation] = true
+		case <-timeout:
+			t.Fatalf("only %d independent ticket-load operations started before the others completed: %v", len(started), started)
+		}
+	}
+}
+
+// Assures that a worktree created from a ticket remains selected after returning to Worktrees.
+func TestTicketWorktreeCreationSelectsWorktreeWhenLeavingTickets(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	m.mode = modeTickets
+	m.tickets = []Ticket{{Key: "APP-1", Summary: "Create worktree"}}
+	m.visibleTickets = m.tickets
+	m.allWorktrees = []Worktree{{Name: "previous", Path: "/tmp/previous"}}
+	m.visibleWorktrees = append([]Worktree(nil), m.allWorktrees...)
+	m.table.SetColumns(m.activeColumns())
+	m.rebuildRows()
+	m.table.SetCursor(0)
+
+	next, _ := m.Update(ticketWorktreeResult{
+		Key:      "APP-1",
+		Worktree: Worktree{Name: "APP-1-create-worktree", Branch: "APP-1-create-worktree", Path: "/tmp/app-1"},
+	})
+	created := next.(model)
+	next, _ = created.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("J")})
+	switched := next.(model)
+	if !switched.isWorktreeMode() {
+		t.Fatal("J did not switch from tickets to worktrees")
+	}
+
+	next, _ = switched.Update(loadResult{Worktrees: []Worktree{
+		{Name: "other", Path: "/tmp/other"},
+		{Name: "APP-1-create-worktree", Branch: "APP-1-create-worktree", Path: "/tmp/app-1"},
+	}})
+	got := next.(model)
+	if got.selectedPath != "/tmp/app-1" || got.table.Cursor() != 1 {
+		t.Fatalf("created worktree was not selected: path=%q cursor=%d", got.selectedPath, got.table.Cursor())
+	}
+}
 
 func TestTicketModeRendersJoinedContext(t *testing.T) {
 	m := layoutTestModel(150, 32)
