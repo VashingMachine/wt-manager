@@ -15,9 +15,11 @@ const refreshTimeout = 45 * time.Second
 const prDetailFetchDelay = 200 * time.Millisecond
 
 type loadResult struct {
-	Worktrees []Worktree
-	Warning   string
-	Err       error
+	Worktrees      []Worktree
+	Warning        string
+	Err            error
+	RepositoryPath string
+	ShowAll        bool
 }
 
 type remotePRListResult struct {
@@ -60,7 +62,7 @@ func loadWorktreesCmd(services core.WorktreeService, cfg Config, showAll bool) t
 		defer cancel()
 
 		worktrees, warning, err := services.CollectWorktrees(ctx, cfg, showAll)
-		return loadResult{Worktrees: worktrees, Warning: warning, Err: err}
+		return loadResult{Worktrees: worktrees, Warning: warning, Err: err, RepositoryPath: cfg.ActiveProfile.RepositoryPath, ShowAll: showAll}
 	}
 }
 
@@ -236,7 +238,7 @@ func approveRemotePullRequestCmd(services core.PullRequestService, cfg Config, n
 	}
 }
 
-func openPRWorktreeInVSCodeCmd(worktrees core.WorktreeService, opener core.OpenerService, cfg Config, pullRequest RemotePullRequest) tea.Cmd {
+func openPRWorktreeInEditorCmd(worktrees core.WorktreeService, opener core.OpenerService, cfg Config, pullRequest RemotePullRequest, editor core.EditorTool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
@@ -245,10 +247,10 @@ func openPRWorktreeInVSCodeCmd(worktrees core.WorktreeService, opener core.Opene
 		if err != nil {
 			return openPRWorktreeResult{Err: err}
 		}
-		if err := opener.OpenVSCodeWorktree(ctx, wt); err != nil {
+		if err := opener.OpenEditorWorktree(ctx, wt, editor); err != nil {
 			return openPRWorktreeResult{Err: err}
 		}
-		return openPRWorktreeResult{Message: fmt.Sprintf("Opened PR #%d worktree in VS Code", pullRequest.Number)}
+		return openPRWorktreeResult{Message: fmt.Sprintf("Opened PR #%d worktree in %s", pullRequest.Number, editor.Name)}
 	}
 }
 
@@ -265,33 +267,6 @@ func openPRWorktreeAgentCmd(worktrees core.WorktreeService, opener core.OpenerSe
 			return openPRWorktreeResult{Err: err}
 		}
 		return openPRWorktreeResult{Message: fmt.Sprintf("Opened %s for PR #%d worktree", agent.Name, pullRequest.Number)}
-	}
-}
-
-func saveAppConfigCmd(services core.ConfigService, cfg Config) tea.Cmd {
-	return func() tea.Msg {
-		if err := services.WriteAppConfig(cfg.ConfigPath, cfg.App); err != nil {
-			return actionResult{Err: fmt.Errorf("save config failed: %w", err)}
-		}
-		return actionResult{Message: fmt.Sprintf("Saved config %s", cfg.ConfigPath)}
-	}
-}
-
-func saveAgentConfigCmd(services core.ConfigService, cfg Config) tea.Cmd {
-	return func() tea.Msg {
-		if err := services.WriteAppConfig(cfg.ConfigPath, cfg.App); err != nil {
-			return actionResult{Err: fmt.Errorf("save config failed: %w", err)}
-		}
-		return actionResult{Message: fmt.Sprintf("Default AI agent set to %s", cfg.App.DefaultAgent)}
-	}
-}
-
-func saveEnterActionConfigCmd(services core.ConfigService, cfg Config, label string) tea.Cmd {
-	return func() tea.Msg {
-		if err := services.WriteAppConfig(cfg.ConfigPath, cfg.App); err != nil {
-			return actionResult{Err: fmt.Errorf("save config failed: %w", err)}
-		}
-		return actionResult{Message: fmt.Sprintf("Default Enter action set to %s", label)}
 	}
 }
 
@@ -326,12 +301,12 @@ func openBrowserMessageCmd(services core.OpenerService, url string, message stri
 	}
 }
 
-func openVSCodeWorktreeCmd(services core.OpenerService, wt Worktree) tea.Cmd {
+func openEditorWorktreeCmd(services core.OpenerService, wt Worktree, editor core.EditorTool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := services.OpenVSCodeWorktree(ctx, wt); err == nil {
-			return actionResult{Message: fmt.Sprintf("Opened %s in VS Code", wt.Name)}
+		if err := services.OpenEditorWorktree(ctx, wt, editor); err == nil {
+			return actionResult{Message: fmt.Sprintf("Opened %s in %s", wt.Name, editor.Name)}
 		} else {
 			return actionResult{Err: err}
 		}

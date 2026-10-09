@@ -45,7 +45,7 @@ var runCmux = func(ctx context.Context, dir string, args ...string) (string, err
 	cmd.Dir = dir
 	// Legacy verb aliases print a deprecation notice that would corrupt JSON output.
 	cmd.Env = append(os.Environ(), "CMUX_QUIET=1")
-	output, err := cmd.CombinedOutput()
+	output, err := loggedCombinedOutput(ctx, cmd)
 	if err != nil {
 		if trimmed := strings.TrimSpace(string(output)); trimmed != "" {
 			return "", fmt.Errorf("%w: %s", err, trimmed)

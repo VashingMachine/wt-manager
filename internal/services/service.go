@@ -7,7 +7,9 @@ import (
 	"time"
 )
 
-type Service struct{}
+type Service struct {
+	sessionLog executionLog
+}
 
 func NewService() *Service {
 	return &Service{}
@@ -58,14 +60,17 @@ func (s *Service) InferRepoFromCWD() (string, bool) {
 }
 
 func (s *Service) RepoRootFromDir(ctx context.Context, dir string) (string, bool) {
+	ctx = s.commandContext(ctx)
 	return repoRootFromDir(ctx, dir)
 }
 
 func (s *Service) ProfileFromRepo(ctx context.Context, homeDir string, repoPath string) RepositoryProfile {
+	ctx = s.commandContext(ctx)
 	return profileFromRepo(ctx, homeDir, repoPath)
 }
 
 func (s *Service) InferGitHubRepo(ctx context.Context, profile RepositoryProfile) string {
+	ctx = s.commandContext(ctx)
 	return inferGitHubRepo(ctx, profile)
 }
 
@@ -74,6 +79,7 @@ func (s *Service) WriteAppConfig(configPath string, appConfig AppConfig) error {
 }
 
 func (s *Service) CheckGitHubCLI(ctx context.Context, repoSlug string) []string {
+	ctx = s.commandContext(ctx)
 	return checkGitHubCLI(ctx, repoSlug)
 }
 
@@ -96,22 +102,27 @@ func checkGitHubCLI(ctx context.Context, repoSlug string) []string {
 }
 
 func (s *Service) CollectWorktrees(ctx context.Context, cfg Config, showAll bool) ([]Worktree, string, error) {
+	ctx = s.commandContext(ctx)
 	return collectWorktrees(ctx, cfg, showAll)
 }
 
 func (s *Service) CollectTicketWorktrees(ctx context.Context, cfg Config) ([]Worktree, string, error) {
+	ctx = s.commandContext(ctx)
 	return collectTicketWorktrees(ctx, cfg)
 }
 
 func (s *Service) CreateWorktree(ctx context.Context, cfg Config, branch string, path string) (bool, error) {
+	ctx = s.commandContext(ctx)
 	return createWorktree(ctx, cfg, branch, path)
 }
 
 func (s *Service) RemoveWorktree(ctx context.Context, cfg Config, wt Worktree) error {
+	ctx = s.commandContext(ctx)
 	return removeWorktree(ctx, cfg, wt)
 }
 
 func (s *Service) EnsurePullRequestWorktree(ctx context.Context, cfg Config, pullRequest RemotePullRequest) (Worktree, bool, error) {
+	ctx = s.commandContext(ctx)
 	return ensurePullRequestWorktree(ctx, cfg, pullRequest)
 }
 
@@ -120,22 +131,27 @@ func (s *Service) CreateWorktreePath(cfg Config, name string) string {
 }
 
 func (s *Service) LoadRemotePullRequests(ctx context.Context, cfg Config) ([]RemotePullRequest, error) {
+	ctx = s.commandContext(ctx)
 	return loadRemotePullRequests(ctx, cfg)
 }
 
 func (s *Service) LoadPullRequestsForTickets(ctx context.Context, cfg Config) ([]PullRequest, error) {
+	ctx = s.commandContext(ctx)
 	return loadPullRequestsForTickets(ctx, cfg)
 }
 
 func (s *Service) LoadGitHubCurrentUser(ctx context.Context, cfg Config) (string, error) {
+	ctx = s.commandContext(ctx)
 	return loadGitHubCurrentUser(ctx, cfg)
 }
 
 func (s *Service) LoadRemotePullRequestDetail(ctx context.Context, cfg Config, number int) (RemotePullRequest, error) {
+	ctx = s.commandContext(ctx)
 	return loadRemotePullRequestDetail(ctx, cfg, number)
 }
 
 func (s *Service) ApproveRemotePullRequest(ctx context.Context, cfg Config, number int) error {
+	ctx = s.commandContext(ctx)
 	return approveRemotePullRequest(ctx, cfg, number)
 }
 
@@ -152,42 +168,57 @@ func (s *Service) BuildPullRequestChatPrompt(pr RemotePullRequest, question stri
 }
 
 func (s *Service) RunAgentWithPrompt(ctx context.Context, dir string, command string, prompt string) (string, error) {
+	ctx = s.commandContext(ctx)
 	return runAgentWithPrompt(ctx, dir, command, prompt)
 }
 
 func (s *Service) OpenBrowser(ctx context.Context, url string) error {
+	ctx = s.commandContext(ctx)
 	return openBrowser(ctx, url)
 }
 
 func (s *Service) OpenVSCodeWorktree(ctx context.Context, wt Worktree) error {
+	ctx = s.commandContext(ctx)
 	return openVSCodeWorktree(ctx, wt)
 }
 
+func (s *Service) OpenEditorWorktree(ctx context.Context, wt Worktree, editor EditorTool) error {
+	ctx = s.commandContext(ctx)
+	return openEditorWorktree(ctx, wt, editor)
+}
+
 func (s *Service) OpenAgent(ctx context.Context, wt Worktree, agent AgentTool) error {
+	ctx = s.commandContext(ctx)
 	return openWorktreeAgent(ctx, wt, agent)
 }
 
 func (s *Service) OpenTerminal(ctx context.Context, wt Worktree) error {
+	ctx = s.commandContext(ctx)
 	return openWorktreeTerminal(ctx, wt)
 }
 
 func (s *Service) Notify(ctx context.Context, title string, body string) error {
+	ctx = s.commandContext(ctx)
 	return notifyCmux(ctx, title, body)
 }
 
 func (s *Service) CheckAtlassianCLI(ctx context.Context) []string {
+	ctx = s.commandContext(ctx)
 	return checkAtlassianCLI(ctx)
 }
 
 func (s *Service) JiraSite(ctx context.Context) (string, error) {
+	ctx = s.commandContext(ctx)
 	return jiraSite(ctx)
 }
 
 func (s *Service) ResolveJiraBoard(ctx context.Context, boardURLOrID string) (JiraBoard, error) {
+	ctx = s.commandContext(ctx)
 	return resolveJiraBoard(ctx, boardURLOrID)
 }
 
 func (s *Service) SearchJiraBoards(ctx context.Context, name string) ([]JiraBoard, error) {
+	ctx = s.commandContext(ctx)
 	return searchJiraBoards(ctx, name)
 }
 
@@ -196,22 +227,27 @@ func (s *Service) PeekTicketCache(cfg Config, board JiraBoard, mineOnly bool, sp
 }
 
 func (s *Service) LoadTickets(ctx context.Context, cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool, refresh bool) ([]Ticket, string, error) {
+	ctx = s.commandContext(ctx)
 	return loadTickets(ctx, cfg, board, mineOnly, sprintOnly, refresh)
 }
 
 func (s *Service) LoadTicketDetail(ctx context.Context, cfg Config, key string) (Ticket, error) {
+	ctx = s.commandContext(ctx)
 	return loadTicketDetail(ctx, cfg, key)
 }
 
 func (s *Service) TransitionTicket(ctx context.Context, key string, status string) error {
+	ctx = s.commandContext(ctx)
 	return transitionTicket(ctx, key, status)
 }
 
 func (s *Service) CommentTicket(ctx context.Context, key string, body string) error {
+	ctx = s.commandContext(ctx)
 	return commentTicket(ctx, key, body)
 }
 
 func (s *Service) AssignTicket(ctx context.Context, key string, assignee string) error {
+	ctx = s.commandContext(ctx)
 	return assignTicket(ctx, key, assignee)
 }
 

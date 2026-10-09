@@ -1,0 +1,60 @@
+package services
+
+import (
+	"context"
+	"fmt"
+	"runtime"
+	"strings"
+)
+
+func normalizeEditorTool(editor EditorTool) (EditorTool, error) {
+	editor.Name = strings.TrimSpace(editor.Name)
+	editor.Command = strings.TrimSpace(editor.Command)
+	if editor.Name == "" && editor.Command == "" {
+		return EditorTool{Name: "VS Code", Command: "code"}, nil
+	}
+	if editor.Command == "" {
+		return EditorTool{}, fmt.Errorf("editor %q command is required", editor.Name)
+	}
+	if editor.Name == "" {
+		switch editor.Command {
+		case "code":
+			editor.Name = "VS Code"
+		case "idea":
+			editor.Name = "IntelliJ IDEA"
+		case "cursor":
+			editor.Name = "Cursor"
+		default:
+			editor.Name = editor.Command
+		}
+	}
+	return editor, nil
+}
+
+func openEditorWorktree(ctx context.Context, wt Worktree, editor EditorTool) error {
+	editor, err := normalizeEditorTool(editor)
+	if err != nil {
+		return err
+	}
+	if editor.Command == "code" {
+		err = openVSCodeWorktree(ctx, wt)
+	} else {
+		// Commands may include editor flags or a quoted executable path. The
+		// worktree remains a single literal argument even with shell punctuation.
+		_, err = runCommand(ctx, "", "/bin/sh", "-c", editor.Command+" "+shellQuote(wt.Path))
+		if err != nil && editor.Command == "idea" && runtime.GOOS == "darwin" {
+			// Toolbox scripts can outlive the installation they point to. Let
+			// Launch Services find the currently installed application instead.
+			_, fallbackErr := runCommand(ctx, "", "open", "-a", "IntelliJ IDEA", wt.Path)
+			if fallbackErr == nil {
+				err = nil
+			} else {
+				err = fmt.Errorf("idea launcher failed: %w; macOS application fallback failed: %w", err, fallbackErr)
+			}
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("open %s: %w", editor.Name, err)
+	}
+	return nil
+}

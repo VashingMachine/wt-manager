@@ -25,6 +25,7 @@ type Config = core.Config
 type AppConfig = core.AppConfig
 type RepositoryProfile = core.RepositoryProfile
 type AgentTool = core.AgentTool
+type EditorTool = core.EditorTool
 type Worktree = core.Worktree
 type RepoStatus = core.RepoStatus
 type CommitInfo = core.CommitInfo
@@ -98,6 +99,7 @@ func defaultAppConfig() AppConfig {
 	return AppConfig{
 		DefaultAgent:       "codex",
 		DefaultEnterAction: core.EnterActionVSCode,
+		Editor:             EditorTool{Name: "VS Code", Command: "code"},
 		Agents: []AgentTool{
 			{Name: "codex", Command: "codex"},
 			{Name: "opencode", Command: "opencode"},
@@ -143,6 +145,14 @@ func loadOrCreateAppConfig(homeDir string) (AppConfig, string, error) {
 func normalizeAppConfig(appConfig AppConfig) (AppConfig, bool, error) {
 	changed := false
 	defaults := defaultAppConfig()
+	editor, err := normalizeEditorTool(appConfig.Editor)
+	if err != nil {
+		return AppConfig{}, false, err
+	}
+	if editor != appConfig.Editor {
+		appConfig.Editor = editor
+		changed = true
+	}
 	if normalized := normalizeEnterAction(appConfig.DefaultEnterAction); normalized != appConfig.DefaultEnterAction {
 		appConfig.DefaultEnterAction = normalized
 		changed = true
@@ -980,7 +990,7 @@ func runAgentWithPrompt(ctx context.Context, dir string, command string, prompt 
 		cmd.Dir = dir
 	}
 	cmd.Stdin = strings.NewReader(prompt)
-	output, err := cmd.CombinedOutput()
+	output, err := loggedCombinedOutput(ctx, cmd)
 	if err != nil {
 		trimmed := strings.TrimSpace(string(output))
 		if trimmed == "" {
@@ -1472,7 +1482,7 @@ func runCommand(ctx context.Context, dir string, name string, args ...string) (s
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	output, err := cmd.CombinedOutput()
+	output, err := loggedCombinedOutput(ctx, cmd)
 	if err != nil {
 		trimmed := strings.TrimSpace(string(output))
 		if trimmed == "" {

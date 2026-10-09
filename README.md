@@ -16,7 +16,9 @@ Profiles can optionally enable a third JIRA Tickets view backed by Atlassian CLI
 - Create worktrees from existing local branches, remote branches, or new branches.
 - Delete worktrees with a double-press confirmation.
 - Configure what `enter` does for selected worktrees.
-- Open the selected worktree in VS Code.
+- Search commands, settings, profiles, and worktrees from a colorful command palette.
+- Inspect full execution output and errors in a scrollable session log viewer.
+- Open the selected worktree in your configured editor or IDE.
 - Open the selected PR in your browser.
 - Open the selected worktree in a new Ghostty tab with a configured AI coding agent.
 - Detect when it runs inside [cmux](https://cmux.com) and open worktrees as cmux workspaces, with PR and JIRA pages in cmux browser splits.
@@ -36,7 +38,7 @@ Profiles can optionally enable a third JIRA Tickets view backed by Atlassian CLI
 - Git
 - GitHub CLI (`gh`) for pull request lookup
 - Atlassian CLI (`acli`) for optional JIRA support
-- VS Code CLI (`code`) if you want the `v` shortcut
+- Your editor's launcher (`code`, `idea`, `cursor`, `zed`, etc.) if you want the `v` shortcut
 - A supported terminal on macOS (cmux, Ghostty, Warp, or Terminal) if you want the `i` shortcut to open an agent in a new tab
 
 `gh` is optional for core worktree management. If it is missing, unauthenticated, or cannot access the configured repository, `wt-manager` still runs and simply disables PR lookup.
@@ -118,7 +120,8 @@ Example:
     { "name": "claude", "command": "claude" },
     { "name": "copilot", "command": "copilot" }
   ],
-  "defaultEnterAction": "vscode"
+  "defaultEnterAction": "vscode",
+  "editor": { "name": "VS Code", "command": "code" }
 }
 ```
 
@@ -128,6 +131,7 @@ If `githubRepo` is empty, `wt-manager` tries to infer it from the configured rem
 
 | Key | Action |
 | --- | --- |
+| `ctrl+p` / mapped `⌘P` | Open the searchable command palette |
 | `j` / `k`, arrows | Move selection |
 | `h` | Show keybinding help |
 | `tab` | Switch focus between table and details |
@@ -151,13 +155,35 @@ If `githubRepo` is empty, `wt-manager` tries to infer it from the configured rem
 | `p` | Toggle full PR description |
 | `o` | Open selected PR in browser |
 | `c` | Ask configured agent about the selected remote PR |
-| `v` | Open selected worktree in VS Code, or create/reuse selected PR worktree in PR Radar first |
+| `v` | Open selected worktree in the configured editor, or create/reuse selected PR worktree in PR Radar first |
 | `i` | Open selected worktree in a new terminal tab (or cmux workspace) with the configured agent, or create/reuse selected PR worktree in PR Radar first |
 | `m` | Choose the default agent |
 | `d d` | Delete selected worktree |
 | `q`, `ctrl+c` | Quit |
 
 In JIRA Tickets mode, `f` opens the ticket filter dialog, `Y` toggles assigned-to-me/all tickets, `S` toggles active-sprint scope, `b` selects a configured board, `t` changes status, `C` comments, `A` assigns, `n` creates or reuses a ticket worktree, `o` opens the ticket in a browser, and `enter` opens the full-screen ticket reader.
+
+## Command Palette
+
+Press **Ctrl+P**, type a command, setting, profile, or worktree name, then use the arrow keys and Enter to select a result. Escape closes the palette. Search is case-insensitive, supports abbreviated command names, and matches worktree branches and paths. The palette searches all worktrees in the active repository, including ones hidden by the current table filter or managed-only scope. Selecting a worktree brings it into focus; pressing `v` then opens it in your editor.
+
+The palette includes the actions for the current view, quick choices for the default agent, editor and Enter action, and direct profile switching. Deletion and PR approval retain their existing confirmation steps. It is also available from full-screen PR diffs and ticket readers. Finish or cancel an existing text input or confirmation before opening it.
+
+Search **logs** and run **View session logs** to investigate command execution. The viewer opens at the latest output, wraps long lines, and supports arrows or `j`/`k`, Page Up/Down, and Home/End. Press `r` to refresh or Escape to return to your previous view. Commands, working directories, timestamps, complete stdout/stderr, and errors are recorded in a private temporary `wt-manager-*.log` file; its path appears in the viewer. Each app session gets a separate file, retained after exit for investigation until temporary storage is cleaned up.
+
+For **⌘P on macOS**, configure your terminal to send Ctrl+P (the byte `0x10`, often written `\x10`) when ⌘P is pressed. Command shortcuts are handled by the terminal itself and are not delivered as Command-modified keys by the current terminal input library. Ctrl+P works directly without that mapping.
+
+## Editor / IDE
+
+Open the command palette and search **Configure editor** to select VS Code, IntelliJ IDEA, Cursor, Zed, PyCharm, WebStorm, or **Custom command**. You can also search an IDE name to apply its preset directly. Changes are saved in `~/.wt-manager.json` and apply to `v`, the editor Enter action, and editor actions in PR Radar and JIRA Tickets.
+
+For IntelliJ IDEA, the `idea` preset uses its command-line launcher. On macOS, if the launcher is missing or fails (including a stale JetBrains Toolbox script), it falls back to opening the installed **IntelliJ IDEA** application. You can also use a custom macOS app command:
+
+```json
+"editor": { "name": "IntelliJ IDEA", "command": "open -a 'IntelliJ IDEA'" }
+```
+
+Custom commands may include flags or a quoted executable path, such as `code --new-window` or `"/path/to/my IDE" --project`. The selected worktree path is appended automatically as one quoted argument. CLI launchers must be available on `PATH`. Existing configurations default to VS Code; the legacy `"defaultEnterAction": "vscode"` value now opens the configured editor.
 
 ## How Worktrees Are Created
 
@@ -170,7 +196,7 @@ When you create a worktree, `wt-manager`:
 3. Creates a new branch from the remote default branch when possible.
 4. Falls back to the current repository state when no remote default branch is available.
 
-New worktrees appear in the dashboard immediately while Git creates them. A failed creation removes the temporary row and shows the error. Opening VS Code, a terminal, or an agent for a worktree still being created waits until that creation succeeds.
+New worktrees appear in the dashboard immediately while Git creates them. A failed creation removes the temporary row and shows the error. Opening an editor, a terminal, or an agent for a worktree still being created waits until that creation succeeds.
 
 Missing or prunable worktree entries are surfaced in the UI, and Git's worktree prune operation is used when cleanup is needed.
 
@@ -184,7 +210,7 @@ In worktree mode, `enter` runs the configured `defaultEnterAction`: `vscode`, `a
 
 When `wt-manager` runs inside a cmux terminal (detected from `CMUX_WORKSPACE_ID` / `CMUX_SURFACE_ID`, since cmux reports `TERM_PROGRAM=ghostty`), it drives cmux through its `cmux` CLI instead of UI automation:
 
-- `i`, and `enter` when `defaultEnterAction` is `agent` or `terminal`, create a focused cmux workspace named after the worktree and rooted at its path. The `agent` action opens an agent tab plus a shell tab in one pane; `terminal` opens only the shell tab. If a workspace for that worktree already exists it is selected instead. `vscode` still opens VS Code.
+- `i`, and `enter` when `defaultEnterAction` is `agent` or `terminal`, create a focused cmux workspace named after the worktree and rooted at its path. The `agent` action opens an agent tab plus a shell tab in one pane; `terminal` opens only the shell tab. If a workspace for that worktree already exists it is selected instead. `vscode` opens the configured editor.
 - The new workspace gets the worktree's PR linked in the cmux sidebar (`cmux pr`) and a `jira` status pill when the branch name contains a ticket key.
 - `o` on a PR or JIRA ticket opens the page in a cmux browser split next to `wt-manager`; later opens reuse that split.
 - Approving a PR posts a cmux notification.
@@ -208,7 +234,7 @@ In PR Radar:
 7. Press `enter` to open a full-screen coloured diff view, then `esc` to return to the PR list.
 8. Press `A` to approve the selected PR after a confirmation prompt. Draft PRs, non-open PRs, failing or pending checks, and requested changes are shown as warnings, but you can still confirm.
 9. Press `n` to create a local worktree from the selected PR branch.
-10. Press `v` to create or reuse a PR worktree and open it in VS Code.
+10. Press `v` to create or reuse a PR worktree and open it in the configured editor.
 11. Press `i` to create or reuse a PR worktree and open it with the configured agent.
 12. Press `c` to ask an agent about the selected PR.
 

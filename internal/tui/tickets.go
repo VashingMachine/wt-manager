@@ -305,7 +305,7 @@ func (m model) updateTicketFilters(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.applyTicketFilter()
 		m.statusMessage = m.ticketFilterSummary()
 		m.statusError = false
-		return m, saveAppConfigCmd(m.services, m.cfg)
+		return m, m.persistConfig("Saved config " + m.cfg.ConfigPath)
 	}
 	return m, nil
 }
@@ -523,7 +523,7 @@ func (m model) updateBoardSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectingBoard = false
 		m.persistTicketScope()
 		returnModel, cmd, _ := m.reloadTicketsAfterScopeChange("board")
-		return returnModel, tea.Batch(cmd, saveAppConfigCmd(m.services, m.cfg))
+		return returnModel, tea.Batch(cmd, m.persistConfig("Saved config "+m.cfg.ConfigPath))
 	}
 	return m, nil
 }
@@ -564,7 +564,7 @@ func (m model) reloadTicketsAfterScopeChange(what string) (tea.Model, tea.Cmd, b
 	}
 	m.applyTicketFilter()
 	_ = what
-	return m, tea.Batch(m.loadTicketsCmd(false), saveAppConfigCmd(m.services, m.cfg), m.startLoading(loadingTickets, m.ticketLoadingMessage())), true
+	return m, tea.Batch(m.loadTicketsCmd(false), m.persistConfig("Saved config "+m.cfg.ConfigPath), m.startLoading(loadingTickets, m.ticketLoadingMessage())), true
 }
 
 // persistTicketScope keeps the mine/sprint toggles across restarts by writing

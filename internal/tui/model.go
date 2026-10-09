@@ -85,6 +85,7 @@ type openPRWorktreeResult struct {
 }
 
 type keyMap struct {
+	Palette       key.Binding
 	Up            key.Binding
 	Down          key.Binding
 	Focus         key.Binding
@@ -152,13 +153,14 @@ type enterActionOption struct {
 }
 
 var enterActionOptions = []enterActionOption{
-	{Action: core.EnterActionVSCode, Label: "VS Code", Description: "Open in VS Code"},
+	{Action: core.EnterActionVSCode, Label: "Editor", Description: "Open in the configured editor"},
 	{Action: core.EnterActionAgent, Label: "Agent", Description: "Open with default agent in a terminal tab"},
 	{Action: core.EnterActionTerminal, Label: "Terminal", Description: "Open terminal in worktree"},
 }
 
 func defaultKeys() keyMap {
 	return keyMap{
+		Palette:       key.NewBinding(key.WithKeys("ctrl+p"), key.WithHelp("ctrl+p", "commands")),
 		Up:            key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("k/up", "move")),
 		Down:          key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("j/down", "move")),
 		Focus:         key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "switch pane")),
@@ -184,7 +186,7 @@ func defaultKeys() keyMap {
 		Filter:        key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 		ToggleBody:    key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "toggle PR body")),
 		OpenPR:        key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open PR in browser")),
-		OpenCode:      key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "open VS Code")),
+		OpenCode:      key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "open editor")),
 		OpenAgent:     key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "open agent")),
 		EnterAction:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "enter action")),
 		AgentMenu:     key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "select agent")),
@@ -197,21 +199,38 @@ func defaultKeys() keyMap {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.HelpPage, k.Refresh, k.PRRadar, k.TicketMode, k.Filter, k.PRDiff, k.OpenPR, k.Quit}
+	return []key.Binding{k.Palette, k.HelpPage, k.Refresh, k.PRRadar, k.TicketMode, k.Filter, k.PRDiff, k.OpenPR, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Up, k.Down, k.Focus, k.HelpPage, k.Refresh, k.ToggleAll, k.PRRadar, k.TicketMode, k.Filter}, {k.StateFilter, k.SprintOnly, k.BoardMenu, k.SetStatus, k.WriteNote, k.AssignSelf, k.UserFilter, k.MineFilter, k.BranchView, k.FailedGHA, k.TicketFilters, k.PRDiff, k.ApprovePR, k.AskPR, k.New, k.ProfileMenu, k.Setup, k.ToggleBody, k.OpenPR, k.OpenCode, k.OpenAgent, k.EnterAction, k.AgentMenu, k.Delete, k.Quit}}
+	return [][]key.Binding{{k.Palette, k.Up, k.Down, k.Focus, k.HelpPage, k.Refresh, k.ToggleAll, k.PRRadar, k.TicketMode, k.Filter}, {k.StateFilter, k.SprintOnly, k.BoardMenu, k.SetStatus, k.WriteNote, k.AssignSelf, k.UserFilter, k.MineFilter, k.BranchView, k.FailedGHA, k.TicketFilters, k.PRDiff, k.ApprovePR, k.AskPR, k.New, k.ProfileMenu, k.Setup, k.ToggleBody, k.OpenPR, k.OpenCode, k.OpenAgent, k.EnterAction, k.AgentMenu, k.Delete, k.Quit}}
 }
 
 type model struct {
 	services                       core.Services
+	configSaveState                *configSaveState
 	cfg                            Config
 	keys                           keyMap
 	help                           help.Model
 	table                          table.Model
 	detail                         viewport.Model
 	filterInput                    textinput.Model
+	paletteOpen                    bool
+	paletteInput                   textinput.Model
+	paletteCursor                  int
+	paletteWorktrees               []Worktree
+	paletteRequest                 int
+	logsOpen                       bool
+	logsViewport                   viewport.Model
+	logsPath                       string
+	logsContent                    string
+	logsRequest                    int
+	selectingEditor                bool
+	editorCursor                   int
+	editingEditor                  bool
+	editorNameInput                textinput.Model
+	editorCommandInput             textinput.Model
+	editorField                    int
 	newInput                       textinput.Model
 	setup                          *setupModel
 	spinner                        spinner.Model
@@ -334,6 +353,25 @@ func NewModel(cfg Config, services core.Services) model {
 	filterInput.CharLimit = 120
 	filterInput.Width = 36
 
+	paletteInput := textinput.New()
+	paletteInput.Prompt = "› "
+	paletteInput.Placeholder = "Search commands, settings, worktrees…"
+	paletteInput.CharLimit = 180
+	paletteInput.Width = 64
+	paletteInput.PromptStyle = infoStyle.Bold(true)
+	paletteInput.TextStyle = titleStyle
+
+	editorNameInput := textinput.New()
+	editorNameInput.Prompt = "name: "
+	editorNameInput.Placeholder = "My IDE"
+	editorNameInput.CharLimit = 80
+	editorNameInput.Width = 48
+	editorCommandInput := textinput.New()
+	editorCommandInput.Prompt = "command: "
+	editorCommandInput.Placeholder = "idea, cursor, or a custom command"
+	editorCommandInput.CharLimit = 500
+	editorCommandInput.Width = 48
+
 	newInput := textinput.New()
 	newInput.Prompt = "branch/worktree: "
 	newInput.Placeholder = "feature/my-worktree"
@@ -373,12 +411,16 @@ func NewModel(cfg Config, services core.Services) model {
 
 	m := model{
 		services:            services,
+		configSaveState:     &configSaveState{},
 		cfg:                 cfg,
 		keys:                defaultKeys(),
 		help:                h,
 		table:               tbl,
 		detail:              vp,
 		filterInput:         filterInput,
+		paletteInput:        paletteInput,
+		editorNameInput:     editorNameInput,
+		editorCommandInput:  editorCommandInput,
 		newInput:            newInput,
 		prQuestionInput:     prQuestionInput,
 		ticketStatusInput:   ticketStatusInput,
@@ -469,6 +511,16 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	if updated, ok := next.(model); ok && updated.statusMessage != "" && (updated.statusMessage != m.statusMessage || updated.statusError != m.statusError) {
+		if logger, ok := m.services.(interface{ RecordSessionEvent(string, bool) }); ok {
+			logger.RecordSessionEvent(updated.statusMessage, updated.statusError)
+		}
+	}
+	return next, cmd
+}
+
+func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.ready = true
@@ -476,6 +528,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.resize()
 		m.updateDetailContent()
+		if m.logsOpen {
+			m.resizeSessionLogs()
+		}
+		return m, nil
+	case sessionLogsResult:
+		if !m.logsOpen || msg.Request != m.logsRequest {
+			return m, nil
+		}
+		m.logsPath, m.logsContent = msg.Path, msg.Content
+		if msg.Err != nil {
+			m.logsContent = "Could not read session logs:\n" + msg.Err.Error()
+		} else if strings.TrimSpace(m.logsContent) == "" {
+			m.logsContent = "No commands have been executed in this session yet."
+		}
+		m.resizeSessionLogs()
+		m.logsViewport.GotoBottom()
+		return m, nil
+	case paletteWorktreesResult:
+		if !m.paletteOpen || msg.Request != m.paletteRequest || msg.RepositoryPath != m.cfg.ActiveProfile.RepositoryPath {
+			return m, nil
+		}
+		if msg.Err == nil {
+			m.paletteWorktrees = msg.Worktrees
+			m.paletteCursor = min(m.paletteCursor, max(0, len(m.paletteMatches())-1))
+		}
 		return m, nil
 	case spinner.TickMsg:
 		if !m.isBusy() {
@@ -485,6 +562,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 	case loadResult:
+		if msg.RepositoryPath != "" && (msg.RepositoryPath != m.cfg.ActiveProfile.RepositoryPath || msg.ShowAll != m.showAll) {
+			return m, nil
+		}
 		m.loading = false
 		if msg.Err != nil {
 			m.statusMessage = fmt.Sprintf("Refresh failed: %v", msg.Err)
@@ -871,12 +951,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.setTransientStatus(msg.Message)
 	case tea.KeyMsg:
+		if m.paletteOpen {
+			return m.updateCommandPalette(msg)
+		}
 		if m.setup != nil {
 			setup := *m.setup
 			var cmd tea.Cmd
 			setup, cmd = setup.Update(msg)
 			m.setup = &setup
 			return m, cmd
+		}
+		if m.editingEditor {
+			return m.updateEditorInput(msg)
+		}
+		if m.selectingEditor {
+			return m.updateEditorSelector(msg)
+		}
+		if key.Matches(msg, m.keys.Palette) && !m.hasTextOrConfirmationModal() {
+			return m.openCommandPalette()
+		}
+		if m.logsOpen {
+			return m.updateSessionLogs(msg)
 		}
 
 		if m.selectingAgent {
@@ -1246,7 +1341,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.deferPendingWorktreeAction(m.services.CreateWorktreePath(m.cfg, selected.HeadRefName), core.EnterActionVSCode) {
 					return m, nil
 				}
-				return m, tea.Batch(openPRWorktreeInVSCodeCmd(m.services, m.services, m.cfg, *selected), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for VS Code...", selected.Number)))
+				return m, tea.Batch(openPRWorktreeInEditorCmd(m.services, m.services, m.cfg, *selected, m.configuredEditor()), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for %s...", selected.Number, m.configuredEditor().Name)))
 			}
 			selected := m.selectedWorktree()
 			if selected == nil {
@@ -1393,6 +1488,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if m.paletteOpen {
+		var cmd tea.Cmd
+		m.paletteInput, cmd = m.paletteInput.Update(msg)
+		return m, cmd
+	}
+	if m.editingEditor {
+		return m.updateEditorInputMessage(msg)
+	}
 	if m.focusTable {
 		before := m.table.Cursor()
 		var cmd tea.Cmd
@@ -1620,7 +1723,7 @@ func (m model) updateEnterActionSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectingEnterAction = false
 		m.statusMessage = fmt.Sprintf("Saving default Enter action %s...", option.Label)
 		m.statusError = false
-		return m, saveEnterActionConfigCmd(m.services, m.cfg, option.Label)
+		return m, m.persistConfig("Default Enter action set to " + m.configuredEnterActionLabel())
 	}
 
 	return m, nil
@@ -1655,7 +1758,7 @@ func (m model) updateAgentSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectingAgent = false
 		m.statusMessage = fmt.Sprintf("Saving default AI agent %s...", m.cfg.App.DefaultAgent)
 		m.statusError = false
-		return m, saveAgentConfigCmd(m.services, m.cfg)
+		return m, m.persistConfig("Default AI agent set to " + m.cfg.App.DefaultAgent)
 	}
 
 	return m, nil
@@ -1690,6 +1793,11 @@ func (m model) updateProfileSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		resolved := m.services.ResolveProfilePaths(profile, m.cfg.HomeDir)
 		m.cfg.App.DefaultProfile = profile.Name
 		m.cfg.ActiveProfile = resolved
+		m.allWorktrees = nil
+		m.visibleWorktrees = nil
+		m.paletteWorktrees = nil
+		m.pendingWorktreePath = ""
+		m.table.SetRows(nil)
 		m.cfg.RepoSlug = resolved.GitHubRepo
 		if m.cfg.RepoSlug == "" {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -1732,7 +1840,7 @@ func (m model) updateProfileSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedPath = ""
 		m.selectedIndex = 0
 		m.clearDeleteArm()
-		return m, tea.Batch(saveAppConfigCmd(m.services, m.cfg), loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, fmt.Sprintf("Switching to %s...", profile.Name)))
+		return m, tea.Batch(m.persistConfig("Saved config "+m.cfg.ConfigPath), loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, fmt.Sprintf("Switching to %s...", profile.Name)))
 	}
 
 	return m, nil
@@ -2120,6 +2228,14 @@ func (m *model) resize() {
 	m.table.SetRows(nil)
 	m.table.SetColumns(m.activeColumns())
 	m.rebuildRows()
+	switch m.mode {
+	case modePRs:
+		m.selectPRByNumber()
+	case modeTickets:
+		m.selectTicketByKey()
+	default:
+		m.selectByPath()
+	}
 	m.updateDetailContent()
 }
 
@@ -2230,7 +2346,7 @@ func (m model) openWorktreeWithAction(wt Worktree, action string) (tea.Model, te
 	case core.EnterActionTerminal:
 		return m, openTerminalWorktreeCmd(m.services, wt)
 	default:
-		return m, openVSCodeWorktreeCmd(m.services, wt)
+		return m, openEditorWorktreeCmd(m.services, wt, m.configuredEditor())
 	}
 }
 
@@ -2425,6 +2541,7 @@ func (m *model) updateDetailContent() {
 }
 
 func (m *model) moveSelection(delta int) {
+	m.pendingWorktreePath = ""
 	if len(m.visibleWorktrees) == 0 {
 		return
 	}

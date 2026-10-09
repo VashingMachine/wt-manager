@@ -23,6 +23,7 @@ type AppConfig struct {
 	DefaultAgent       string              `json:"defaultAgent"`
 	Agents             []AgentTool         `json:"agents"`
 	DefaultEnterAction string              `json:"defaultEnterAction"`
+	Editor             EditorTool          `json:"editor"`
 }
 
 const (
@@ -88,6 +89,11 @@ func (c *JiraConfig) ActiveBoard() *JiraBoard {
 }
 
 type AgentTool struct {
+	Name    string `json:"name"`
+	Command string `json:"command"`
+}
+
+type EditorTool struct {
 	Name    string `json:"name"`
 	Command string `json:"command"`
 }
@@ -318,6 +324,7 @@ type AgentService interface {
 type OpenerService interface {
 	OpenBrowser(ctx context.Context, url string) error
 	OpenVSCodeWorktree(ctx context.Context, wt Worktree) error
+	OpenEditorWorktree(ctx context.Context, wt Worktree, editor EditorTool) error
 	OpenAgent(ctx context.Context, wt Worktree, agent AgentTool) error
 	OpenTerminal(ctx context.Context, wt Worktree) error
 	// Notify posts a notification in the terminal host; it is a no-op outside cmux.

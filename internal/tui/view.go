@@ -18,6 +18,18 @@ func (m model) View() string {
 	if m.setup != nil {
 		return appStyle.Render(m.setup.View(m.width))
 	}
+	if m.paletteOpen {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, renderCommandPaletteModal(m))
+	}
+	if m.logsOpen {
+		return m.sessionLogsView()
+	}
+	if m.selectingEditor {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, renderEditorSelectorModal(m))
+	}
+	if m.editingEditor {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, renderEditorInputModal(m))
+	}
 	if m.isPRMode() && m.prDiffMode {
 		view := m.fullScreenPRDiffView()
 		if m.confirmingPRApproval {
@@ -156,7 +168,7 @@ func (m model) headerMetaLine(usable int) string {
 		parts := []string{
 			mutedStyle.Render("repo ") + subtleStyle.Render(repoPath),
 			mutedStyle.Render("agent ") + subtleStyle.Render(emptyDash(m.cfg.App.DefaultAgent)),
-			mutedStyle.Render("enter ") + subtleStyle.Render(enterActionLabel(m.cfg.App.DefaultEnterAction)),
+			mutedStyle.Render("enter ") + subtleStyle.Render(m.configuredEnterActionLabel()),
 			mutedStyle.Render("focus ") + subtleStyle.Render(m.focusLabel()),
 		}
 		if label := m.filterLabel(); label != "" {
@@ -176,7 +188,7 @@ func (m model) headerMetaLine(usable int) string {
 		line = build(repo)
 	}
 	if lipgloss.Width(line) > usable {
-		plain := fmt.Sprintf("repo %s · agent %s · enter %s · focus %s", repo, emptyDash(m.cfg.App.DefaultAgent), enterActionLabel(m.cfg.App.DefaultEnterAction), m.focusLabel())
+		plain := fmt.Sprintf("repo %s · agent %s · enter %s · focus %s", repo, emptyDash(m.cfg.App.DefaultAgent), m.configuredEnterActionLabel(), m.focusLabel())
 		line = subtleStyle.Render(clampRunewidth(plain, usable))
 	}
 	return line
@@ -201,12 +213,12 @@ func (m model) elapsedHint() string {
 
 func (m model) quietStatusHint() string {
 	if m.isPRMode() {
-		return fmt.Sprintf("%s %d PRs · / filter · h help", icons.Dot, len(m.visiblePRs))
+		return fmt.Sprintf("%s %d PRs · ctrl+p commands · / filter", icons.Dot, len(m.visiblePRs))
 	}
 	if m.isTicketMode() {
-		return fmt.Sprintf("%s %d tickets · / filter · h help", icons.Dot, len(m.visibleTickets))
+		return fmt.Sprintf("%s %d tickets · ctrl+p commands · / filter", icons.Dot, len(m.visibleTickets))
 	}
-	return fmt.Sprintf("%s %d worktrees · / filter · h help", icons.Dot, len(m.visibleWorktrees))
+	return fmt.Sprintf("%s %d worktrees · ctrl+p commands · / filter", icons.Dot, len(m.visibleWorktrees))
 }
 
 func isSuccessStatus(message string) bool {
@@ -806,6 +818,12 @@ func (m model) filterLabel() string {
 }
 
 func (m model) focusLabel() string {
+	if m.paletteOpen {
+		return "command palette"
+	}
+	if m.selectingEditor || m.editingEditor {
+		return "editor settings"
+	}
 	if m.filtering {
 		return "filter"
 	}
@@ -922,7 +940,11 @@ func renderEnterActionSelectorModal(m model) string {
 	body := []string{"Choose what enter does for the selected worktree.", ""}
 	currentAction := normalizedEnterAction(m.cfg.App.DefaultEnterAction)
 	for idx, option := range enterActionOptions {
-		label := fmt.Sprintf("%-9s %s", option.Label, option.Description)
+		name := option.Label
+		if option.Action == core.EnterActionVSCode {
+			name = m.configuredEditor().Name
+		}
+		label := fmt.Sprintf("%-9s %s", name, option.Description)
 		body = append(body, selectorLine(idx == m.enterActionCursor, label, option.Action == currentAction))
 	}
 	body = append(body, "", mutedStyle.Render(fmt.Sprintf("Config: %s", m.cfg.ConfigPath)))
@@ -1084,6 +1106,7 @@ func renderHelpModal(m model) string {
 		titleStyle.Render("Keybindings"),
 		"",
 		helpSection("Global"),
+		helpKeyLine("ctrl+p", "command palette (map ⌘P in your terminal)"),
 		helpKeyLine("h", "show or hide this help"),
 		helpKeyLine("q/ctrl+c", "quit"),
 		helpKeyLine("tab", "switch table/details focus"),
@@ -1102,7 +1125,7 @@ func renderHelpModal(m model) string {
 		helpKeyLine("o", "open selected local PR"),
 		helpKeyLine("enter", "run selected Enter action"),
 		helpKeyLine("e", "choose Enter action"),
-		helpKeyLine("v", "open worktree in VS Code"),
+		helpKeyLine("v", "open worktree in "+m.configuredEditor().Name),
 		helpKeyLine("i", "open worktree with agent in a new terminal tab"),
 		"           terminal action opens worktree in a new terminal tab",
 		helpKeyLine("p", "toggle local PR body in details"),

@@ -20,7 +20,7 @@ func newEnterActionSpyServices() *enterActionSpyServices {
 	return &enterActionSpyServices{Services: services.NewService()}
 }
 
-func (s *enterActionSpyServices) OpenVSCodeWorktree(ctx context.Context, wt Worktree) error {
+func (s *enterActionSpyServices) OpenEditorWorktree(ctx context.Context, wt Worktree, editor core.EditorTool) error {
 	s.opened = core.EnterActionVSCode
 	return nil
 }
