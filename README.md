@@ -19,6 +19,7 @@ Profiles can optionally enable a third JIRA Tickets view backed by Atlassian CLI
 - Open the selected worktree in VS Code.
 - Open the selected PR in your browser.
 - Open the selected worktree in a new Ghostty tab with a configured AI coding agent.
+- Detect when it runs inside [cmux](https://cmux.com) and open worktrees as cmux workspaces, with PR and JIRA pages in cmux browser splits.
 - Browse remote repository PRs without creating local worktrees first.
 - Filter remote PRs by state, text, and involved GitHub users.
 - Inspect selected PR diffs in a full-terminal view with coloured Go and Python code.
@@ -36,7 +37,7 @@ Profiles can optionally enable a third JIRA Tickets view backed by Atlassian CLI
 - GitHub CLI (`gh`) for pull request lookup
 - Atlassian CLI (`acli`) for optional JIRA support
 - VS Code CLI (`code`) if you want the `v` shortcut
-- A supported terminal on macOS (Ghostty, Warp, or Terminal) if you want the `i` shortcut to open an agent in a new tab
+- A supported terminal on macOS (cmux, Ghostty, Warp, or Terminal) if you want the `i` shortcut to open an agent in a new tab
 
 `gh` is optional for core worktree management. If it is missing, unauthenticated, or cannot access the configured repository, `wt-manager` still runs and simply disables PR lookup.
 
@@ -151,7 +152,7 @@ If `githubRepo` is empty, `wt-manager` tries to infer it from the configured rem
 | `o` | Open selected PR in browser |
 | `c` | Ask configured agent about the selected remote PR |
 | `v` | Open selected worktree in VS Code, or create/reuse selected PR worktree in PR Radar first |
-| `i` | Open selected worktree in Ghostty with the configured agent, or create/reuse selected PR worktree in PR Radar first |
+| `i` | Open selected worktree in a new terminal tab (or cmux workspace) with the configured agent, or create/reuse selected PR worktree in PR Radar first |
 | `m` | Choose the default agent |
 | `d d` | Delete selected worktree |
 | `q`, `ctrl+c` | Quit |
@@ -169,6 +170,8 @@ When you create a worktree, `wt-manager`:
 3. Creates a new branch from the remote default branch when possible.
 4. Falls back to the current repository state when no remote default branch is available.
 
+New worktrees appear in the dashboard immediately while Git creates them. A failed creation removes the temporary row and shows the error. Opening VS Code, a terminal, or an agent for a worktree still being created waits until that creation succeeds.
+
 Missing or prunable worktree entries are surfaced in the UI, and Git's worktree prune operation is used when cleanup is needed.
 
 ## Agents
@@ -177,7 +180,18 @@ The `i` shortcut opens the selected worktree in a new terminal tab and runs the 
 
 In worktree mode, `enter` runs the configured `defaultEnterAction`: `vscode`, `agent`, or `terminal`. Press `e` to change it from the TUI. The `terminal` action opens a terminal tab in the selected worktree without running an agent command.
 
-On macOS, opening a new terminal tab uses UI automation. If macOS blocks the tab automation, grant Accessibility permission to your terminal or `wt-manager`.
+### cmux
+
+When `wt-manager` runs inside a cmux terminal (detected from `CMUX_WORKSPACE_ID` / `CMUX_SURFACE_ID`, since cmux reports `TERM_PROGRAM=ghostty`), it drives cmux through its `cmux` CLI instead of UI automation:
+
+- `i`, and `enter` when `defaultEnterAction` is `agent` or `terminal`, create a focused cmux workspace named after the worktree and rooted at its path. The `agent` action opens an agent tab plus a shell tab in one pane; `terminal` opens only the shell tab. If a workspace for that worktree already exists it is selected instead. `vscode` still opens VS Code.
+- The new workspace gets the worktree's PR linked in the cmux sidebar (`cmux pr`) and a `jira` status pill when the branch name contains a ticket key.
+- `o` on a PR or JIRA ticket opens the page in a cmux browser split next to `wt-manager`; later opens reuse that split.
+- Approving a PR posts a cmux notification.
+
+If the `cmux` CLI is not on `PATH`, the bundled `/Applications/cmux.app/Contents/Resources/bin/cmux` is used. cmux's socket must allow the process (default "cmux processes only" mode works because `wt-manager` runs inside cmux).
+
+On macOS, opening a new terminal tab in other terminals uses UI automation. If macOS blocks the tab automation, grant Accessibility permission to your terminal or `wt-manager`.
 
 ## PR Radar
 

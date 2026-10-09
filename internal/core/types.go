@@ -320,6 +320,8 @@ type OpenerService interface {
 	OpenVSCodeWorktree(ctx context.Context, wt Worktree) error
 	OpenAgent(ctx context.Context, wt Worktree, agent AgentTool) error
 	OpenTerminal(ctx context.Context, wt Worktree) error
+	// Notify posts a notification in the terminal host; it is a no-op outside cmux.
+	Notify(ctx context.Context, title string, body string) error
 }
 
 type JiraService interface {

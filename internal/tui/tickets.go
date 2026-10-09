@@ -40,11 +40,18 @@ func (m model) switchMode(target viewMode) (tea.Model, tea.Cmd) {
 	m.cancelPRDetailLoad()
 	m.cancelTicketDetailLoad()
 
+	var selectedTicketWorktree *Worktree
 	switch m.mode {
 	case modePRs:
 		m.rememberPRSelection()
 	case modeTickets:
 		m.rememberTicketSelection()
+		if target == modeWorktrees {
+			if selected := m.selectedTicket(); selected != nil && selected.Worktree != nil && !selected.Worktree.Missing && !selected.Worktree.Prunable {
+				worktree := *selected.Worktree
+				selectedTicketWorktree = &worktree
+			}
+		}
 	default:
 		m.rememberSelection()
 	}
@@ -71,7 +78,30 @@ func (m model) switchMode(target viewMode) (tea.Model, tea.Cmd) {
 	m.table.SetCursor(0)
 	m.table.SetRows(nil)
 	m.table.SetColumns(m.activeColumns())
-	m.rebuildRows()
+	if selectedTicketWorktree != nil {
+		m.pendingWorktreePath = selectedTicketWorktree.Path
+		m.selectedPath = selectedTicketWorktree.Path
+		m.selectedIndex = 0
+	}
+	if target == modeWorktrees {
+		if !m.showAll {
+			worktrees := make([]Worktree, 0, len(m.allWorktrees))
+			for _, worktree := range m.allWorktrees {
+				if worktree.Managed || (selectedTicketWorktree != nil && worktree.Path == selectedTicketWorktree.Path) {
+					worktrees = append(worktrees, worktree)
+				}
+			}
+			m.allWorktrees = worktrees
+		}
+		m.applyFilter()
+		if selectedTicketWorktree != nil && !worktreeExists(m.visibleWorktrees, selectedTicketWorktree.Path) {
+			m.filterQuery = ""
+			m.filterInput.SetValue("")
+			m.applyFilter()
+		}
+	} else {
+		m.rebuildRows()
+	}
 	m.updateDetailContent()
 	m.statusError = false
 
@@ -83,6 +113,33 @@ func (m model) switchMode(target viewMode) (tea.Model, tea.Cmd) {
 	default:
 		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, "Refreshing worktrees..."))
 	}
+}
+
+func (m model) startTicketWorktreeCreation(ticket Ticket, action string) (tea.Model, tea.Cmd) {
+	if ticket.Worktree != nil && !ticket.Worktree.Missing && !ticket.Worktree.Prunable {
+		if action != "" {
+			return m.openWorktreeWithAction(*ticket.Worktree, action)
+		}
+		m.selectedTicketKey = ticket.Key
+		m.pendingWorktreePath = ticket.Worktree.Path
+		m.statusMessage = fmt.Sprintf("Selected existing worktree %s. Refreshing tickets...", ticket.Worktree.Name)
+		return m, tea.Batch(m.loadTicketsCmd(false), m.startLoading(loadingTickets, m.statusMessage))
+	}
+	branch := m.services.TicketBranchName(ticket)
+	worktree := Worktree{
+		Name:    branch,
+		Branch:  branch,
+		Path:    m.services.CreateWorktreePath(m.cfg, branch),
+		Managed: true,
+	}
+	m.beginWorktreeCreation(worktree, ticket.Key)
+	if action != "" {
+		m.deferPendingWorktreeAction(worktree.Path, action)
+	}
+	return m, tea.Batch(
+		ensureTicketWorktreeCmd(m.services, m.cfg, ticket),
+		m.startLoading(loadingMutation, fmt.Sprintf("Preparing worktree for %s...", ticket.Key)),
+	)
 }
 
 // enterTicketMode paints whatever is on disk before touching the network, so
@@ -701,6 +758,39 @@ func (m *model) mergeTicketDetail(detail Ticket) {
 	}
 	m.rebuildRows()
 	m.selectTicketByKey()
+}
+
+func (m *model) setTicketWorktree(key string, worktree *Worktree) {
+	for index := range m.tickets {
+		if m.tickets[index].Key == key {
+			m.tickets[index].Worktree = worktree
+		}
+	}
+	for index := range m.visibleTickets {
+		if m.visibleTickets[index].Key == key {
+			m.visibleTickets[index].Worktree = worktree
+		}
+	}
+	if m.ticketDetail != nil && m.ticketDetail.Key == key {
+		m.ticketDetail.Worktree = worktree
+	}
+}
+
+func (m *model) clearTicketWorktree(key string, path string) {
+	clear := func(ticket *Ticket) {
+		if ticket.Key == key && ticket.Worktree != nil && ticket.Worktree.Path == path {
+			ticket.Worktree = nil
+		}
+	}
+	for index := range m.tickets {
+		clear(&m.tickets[index])
+	}
+	for index := range m.visibleTickets {
+		clear(&m.visibleTickets[index])
+	}
+	if m.ticketDetail != nil {
+		clear(m.ticketDetail)
+	}
 }
 
 // --- filtering and rows ------------------------------------------------------

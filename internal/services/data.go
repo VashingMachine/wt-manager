@@ -1428,6 +1428,11 @@ func createWorktreePath(cfg Config, name string) string {
 }
 
 func openBrowser(ctx context.Context, url string) error {
+	if inCmux(os.Getenv) {
+		if err := openURLInCmux(ctx, url); err == nil {
+			return nil
+		}
+	}
 	cmdName := "open"
 	args := []string{url}
 	if runtime.GOOS == "linux" {

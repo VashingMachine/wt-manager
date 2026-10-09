@@ -31,6 +31,15 @@ type pendingDelete struct {
 	Completed bool
 }
 
+type pendingCreation struct {
+	Worktree       Worktree
+	TicketKey      string
+	PreviousPath   string
+	PreviousIndex  int
+	Completed      bool
+	DeferredAction string
+}
+
 type createResult struct {
 	Path     string
 	Name     string
@@ -294,6 +303,7 @@ type model struct {
 	deleteArmedName                string
 	deleteArmedAt                  time.Time
 	pendingDeletes                 map[string]pendingDelete
+	pendingCreations               map[string]pendingCreation
 	pendingWorktreePath            string
 	selectedPath                   string
 	selectedIndex                  int
@@ -501,6 +511,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.allWorktrees = withoutWorktree(m.allWorktrees, path)
 		}
+		var unconfirmedCreations []pendingCreation
+		for path, creation := range m.pendingCreations {
+			if worktreeExists(msg.Worktrees, path) {
+				delete(m.pendingCreations, path)
+				continue
+			}
+			if creation.Completed {
+				unconfirmedCreations = append(unconfirmedCreations, creation)
+				m.rollbackPendingCreation(path)
+				continue
+			}
+			if !worktreeExists(m.allWorktrees, path) {
+				m.allWorktrees = append(m.allWorktrees, creation.Worktree)
+			}
+		}
 		m.statusError = false
 		if msg.Warning != "" {
 			m.statusMessage = msg.Warning
@@ -511,6 +536,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingWorktreePath = ""
 		if len(unconfirmedDeletes) > 0 {
 			m.statusMessage = fmt.Sprintf("Delete could not be confirmed for %s; it was restored", unconfirmedDeletes[0].Worktree.Name)
+			m.statusError = true
+		}
+		if len(unconfirmedCreations) > 0 {
+			m.statusMessage = fmt.Sprintf("Create could not be confirmed for %s; it was removed", unconfirmedCreations[0].Worktree.Name)
 			m.statusError = true
 		}
 		return m, nil
@@ -573,6 +602,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.tickets = msg.Tickets
 		m.allWorktrees = msg.Worktrees
+		m.reconcilePendingCreations()
 		m.ticketCacheLabel = ""
 		m.ticketWarning = msg.Warning
 		if msg.Warning != "" {
@@ -623,16 +653,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ticketWorktreeResult:
 		m.loading = false
 		if msg.Err != nil {
+			m.rollbackPendingCreation(msg.Worktree.Path)
 			m.statusMessage = fmt.Sprintf("Create worktree failed for %s: %v", msg.Key, msg.Err)
 			m.statusError = true
-			return m, nil
+			if m.hasPendingCreationInFlight() {
+				m.loading = true
+				return m, nil
+			}
+			if !m.hasCompletedPendingCreation() {
+				return m, nil
+			}
 		}
-		m.selectedTicketKey = msg.Key
-		m.pendingWorktreePath = msg.Worktree.Path
-		if msg.Existing {
-			m.statusMessage = fmt.Sprintf("Selected existing worktree %s. Refreshing tickets...", msg.Worktree.Name)
-		} else {
-			m.statusMessage = fmt.Sprintf("Created worktree %s. Refreshing tickets...", msg.Worktree.Name)
+		action := ""
+		if msg.Err == nil {
+			m.selectedTicketKey = msg.Key
+			m.pendingWorktreePath = msg.Worktree.Path
+			action = m.completePendingCreation(msg.Worktree.Path)
+			if msg.Existing {
+				m.statusMessage = fmt.Sprintf("Selected existing worktree %s. Refreshing tickets...", msg.Worktree.Name)
+			} else {
+				m.statusMessage = fmt.Sprintf("Created worktree %s. Refreshing tickets...", msg.Worktree.Name)
+			}
+		}
+		if action != "" {
+			_, cmd := m.openWorktreeWithAction(msg.Worktree, action)
+			if m.hasPendingCreationInFlight() {
+				m.loading = true
+				return m, cmd
+			}
+			return m, tea.Batch(cmd, m.loadTicketsCmd(false), m.startLoading(loadingTickets, m.statusMessage))
+		}
+		if m.hasPendingCreationInFlight() {
+			m.loading = true
+			m.statusMessage += ". Waiting for remaining creations..."
+			return m, nil
 		}
 		return m, tea.Batch(m.loadTicketsCmd(false), m.startLoading(loadingTickets, m.statusMessage))
 	case askPRResult:
@@ -660,10 +714,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusMessage = fmt.Sprintf("Approved PR #%d. Refreshing details...", msg.Number)
 		m.statusError = false
+		notify := notifyCmd(m.services, "PR approved", fmt.Sprintf("Approved PR #%d", msg.Number))
 		if m.isPRMode() && msg.Number == m.selectedPRNumber {
-			return m.startPRDetailLoad(msg.Number)
+			next, cmd := m.startPRDetailLoad(msg.Number)
+			return next, tea.Batch(cmd, notify)
 		}
-		return m, nil
+		return m, notify
 	case openPRWorktreeResult:
 		m.loading = false
 		if msg.Err != nil {
@@ -755,15 +811,42 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case createResult:
 		m.loading = false
 		if msg.Err != nil {
+			m.rollbackPendingCreation(msg.Path)
 			m.statusMessage = fmt.Sprintf("Create failed for %s: %v", msg.Name, msg.Err)
 			m.statusError = true
-			return m, nil
+			if m.hasPendingCreationInFlight() {
+				m.loading = true
+				return m, nil
+			}
+			if !m.hasCompletedPendingCreation() {
+				return m, nil
+			}
 		}
 
-		m.selectedPath = msg.Path
-		message := fmt.Sprintf("Created %s. Refreshing...", msg.Name)
-		if msg.Existing {
-			message = fmt.Sprintf("Selected existing worktree %s. Refreshing...", msg.Name)
+		action := ""
+		message := m.statusMessage
+		if msg.Err == nil {
+			m.selectedPath = msg.Path
+			action = m.completePendingCreation(msg.Path)
+			message = fmt.Sprintf("Created %s. Refreshing...", msg.Name)
+			if msg.Existing {
+				message = fmt.Sprintf("Selected existing worktree %s. Refreshing...", msg.Name)
+			}
+		}
+		if action != "" {
+			if pending, ok := m.pendingCreations[msg.Path]; ok {
+				_, cmd := m.openWorktreeWithAction(pending.Worktree, action)
+				if m.hasPendingCreationInFlight() {
+					m.loading = true
+					return m, cmd
+				}
+				return m, tea.Batch(cmd, loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, message))
+			}
+		}
+		if m.hasPendingCreationInFlight() {
+			m.loading = true
+			m.statusMessage = message + ". Waiting for remaining creations..."
+			return m, nil
 		}
 		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, message))
 	case deleteArmTick:
@@ -1148,8 +1231,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if selected == nil {
 					return m, nil
 				}
-				if selected.Worktree == nil {
-					return m, tea.Batch(ensureTicketWorktreeCmd(m.services, m.cfg, *selected), m.startLoading(loadingMutation, fmt.Sprintf("Preparing worktree for %s...", selected.Key)))
+				if selected.Worktree == nil || selected.Worktree.Missing || selected.Worktree.Prunable {
+					return m.startTicketWorktreeCreation(*selected, core.EnterActionVSCode)
 				}
 				return m.openWorktreeWithAction(*selected.Worktree, core.EnterActionVSCode)
 			}
@@ -1158,6 +1241,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if selected == nil {
 					m.statusMessage = "Select a remote PR first"
 					m.statusError = true
+					return m, nil
+				}
+				if m.deferPendingWorktreeAction(m.services.CreateWorktreePath(m.cfg, selected.HeadRefName), core.EnterActionVSCode) {
 					return m, nil
 				}
 				return m, tea.Batch(openPRWorktreeInVSCodeCmd(m.services, m.services, m.cfg, *selected), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for VS Code...", selected.Number)))
@@ -1174,8 +1260,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if selected == nil {
 					return m, nil
 				}
-				if selected.Worktree == nil {
-					return m, tea.Batch(ensureTicketWorktreeCmd(m.services, m.cfg, *selected), m.startLoading(loadingMutation, fmt.Sprintf("Preparing worktree for %s...", selected.Key)))
+				if selected.Worktree == nil || selected.Worktree.Missing || selected.Worktree.Prunable {
+					return m.startTicketWorktreeCreation(*selected, core.EnterActionAgent)
 				}
 				return m.openWorktreeWithAction(*selected.Worktree, core.EnterActionAgent)
 			}
@@ -1184,6 +1270,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if selected == nil {
 					m.statusMessage = "Select a remote PR first"
 					m.statusError = true
+					return m, nil
+				}
+				if m.deferPendingWorktreeAction(m.services.CreateWorktreePath(m.cfg, selected.HeadRefName), core.EnterActionAgent) {
 					return m, nil
 				}
 				agent := m.defaultAgent()
@@ -1241,7 +1330,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusError = true
 					return m, nil
 				}
-				return m, tea.Batch(ensureTicketWorktreeCmd(m.services, m.cfg, *selected), m.startLoading(loadingMutation, fmt.Sprintf("Preparing worktree for %s...", selected.Key)))
+				return m.startTicketWorktreeCreation(*selected, "")
 			}
 			if m.isPRMode() {
 				selected := m.selectedRemotePRForDetail()
@@ -1251,7 +1340,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				branch := selected.HeadRefName
-				m.selectedPath = m.services.CreateWorktreePath(m.cfg, branch)
+				m.beginWorktreeCreation(Worktree{
+					Name:    branch,
+					Branch:  branch,
+					Path:    m.services.CreateWorktreePath(m.cfg, branch),
+					Managed: true,
+				}, "")
 				return m, tea.Batch(createWorktreeCmd(m.services, m.cfg, branch), m.startLoading(loadingMutation, fmt.Sprintf("Creating worktree for PR #%d (%s)...", selected.Number, branch)))
 			}
 			m.creatingWorktree = true
@@ -1347,7 +1441,12 @@ func (m model) updateNewWorktree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		m.creatingWorktree = false
 		m.newInput.Blur()
-		m.selectedPath = m.services.CreateWorktreePath(m.cfg, name)
+		m.beginWorktreeCreation(Worktree{
+			Name:    name,
+			Branch:  name,
+			Path:    m.services.CreateWorktreePath(m.cfg, name),
+			Managed: true,
+		}, "")
 		return m, tea.Batch(createWorktreeCmd(m.services, m.cfg, name), m.startLoading(loadingMutation, fmt.Sprintf("Creating %s...", name)))
 	}
 
@@ -1760,6 +1859,110 @@ func (m *model) optimisticRemove(path string) {
 	m.applyFilter()
 }
 
+func (m *model) beginWorktreeCreation(worktree Worktree, ticketKey string) {
+	if m.pendingCreations == nil {
+		m.pendingCreations = make(map[string]pendingCreation)
+	}
+	if _, ok := m.pendingCreations[worktree.Path]; ok {
+		return
+	}
+	m.pendingCreations[worktree.Path] = pendingCreation{
+		Worktree:      worktree,
+		TicketKey:     ticketKey,
+		PreviousPath:  m.selectedPath,
+		PreviousIndex: m.selectedIndex,
+	}
+	if !worktreeExists(m.allWorktrees, worktree.Path) {
+		m.allWorktrees = append(m.allWorktrees, worktree)
+	}
+	if ticketKey != "" {
+		m.setTicketWorktree(ticketKey, &worktree)
+	}
+	m.pendingWorktreePath = worktree.Path
+	m.selectedPath = worktree.Path
+	m.selectedIndex = len(m.visibleWorktrees)
+	if m.isWorktreeMode() {
+		m.applyFilter()
+	} else if m.isTicketMode() {
+		m.rebuildRows()
+		m.updateDetailContent()
+	}
+}
+
+func (m *model) completePendingCreation(path string) string {
+	creation, ok := m.pendingCreations[path]
+	if !ok {
+		return ""
+	}
+	creation.Completed = true
+	m.pendingCreations[path] = creation
+	m.selectedPath = path
+	m.pendingWorktreePath = path
+	return creation.DeferredAction
+}
+
+func (m *model) rollbackPendingCreation(path string) {
+	creation, ok := m.pendingCreations[path]
+	if !ok {
+		return
+	}
+	delete(m.pendingCreations, path)
+	m.allWorktrees = withoutWorktree(m.allWorktrees, path)
+	if creation.TicketKey != "" {
+		m.clearTicketWorktree(creation.TicketKey, path)
+	}
+	m.pendingWorktreePath = ""
+	m.selectedPath = creation.PreviousPath
+	m.selectedIndex = creation.PreviousIndex
+	if m.isWorktreeMode() {
+		m.applyFilter()
+	} else if m.isTicketMode() {
+		m.applyTicketFilter()
+	}
+}
+
+func (m *model) reconcilePendingCreations() {
+	for path, creation := range m.pendingCreations {
+		if !worktreeExists(m.allWorktrees, path) {
+			m.allWorktrees = append(m.allWorktrees, creation.Worktree)
+		}
+		if creation.TicketKey != "" {
+			worktree := creation.Worktree
+			m.setTicketWorktree(creation.TicketKey, &worktree)
+		}
+	}
+}
+
+func (m *model) deferPendingWorktreeAction(path string, action string) bool {
+	creation, ok := m.pendingCreations[path]
+	if !ok || creation.Completed {
+		return false
+	}
+	creation.DeferredAction = action
+	m.pendingCreations[path] = creation
+	m.statusMessage = fmt.Sprintf("Waiting for %s to be created before opening it...", creation.Worktree.Name)
+	m.statusError = false
+	return true
+}
+
+func (m model) hasPendingCreationInFlight() bool {
+	for _, creation := range m.pendingCreations {
+		if !creation.Completed {
+			return true
+		}
+	}
+	return false
+}
+
+func (m model) hasCompletedPendingCreation() bool {
+	for _, creation := range m.pendingCreations {
+		if creation.Completed {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *model) restorePendingDelete(path string) {
 	deleted, ok := m.pendingDeletes[path]
 	if !ok {
@@ -2006,6 +2209,9 @@ func (m model) openSelectedWorktreeWithAction(action string) (tea.Model, tea.Cmd
 }
 
 func (m model) openWorktreeWithAction(wt Worktree, action string) (tea.Model, tea.Cmd) {
+	if m.deferPendingWorktreeAction(wt.Path, action) {
+		return m, nil
+	}
 	if wt.Missing || wt.Prunable {
 		m.statusMessage = fmt.Sprintf("Cannot open missing worktree %s", wt.Name)
 		m.statusError = true

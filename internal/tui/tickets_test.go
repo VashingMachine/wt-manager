@@ -108,6 +108,85 @@ func TestTicketWorktreeCreationSelectsWorktreeWhenLeavingTickets(t *testing.T) {
 	}
 }
 
+// Assures that ticket creation immediately joins its optimistic worktree and selects it in Worktrees.
+func TestTicketWorktreeCreationIsOptimisticAcrossViews(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	m.mode = modeTickets
+	m.tickets = []Ticket{{Key: "APP-1", Summary: "Create worktree"}}
+	m.visibleTickets = m.tickets
+	m.table.SetColumns(m.activeColumns())
+	m.rebuildRows()
+	m.table.SetCursor(0)
+
+	next, cmd := m.Update(teaKey("n"))
+	created := next.(model)
+	if cmd == nil {
+		t.Fatal("ticket creation did not return a command")
+	}
+	selected := created.selectedTicket()
+	if selected == nil || selected.Worktree == nil {
+		t.Fatal("ticket did not show its optimistic worktree")
+	}
+	path := selected.Worktree.Path
+	if view := ansi.Strip(created.tableView()); !strings.Contains(view, "APP-1-create-work") {
+		t.Fatalf("ticket table did not render optimistic worktree: %q", view)
+	}
+
+	next, _ = created.Update(teaKey("J"))
+	switched := next.(model)
+	if !switched.isWorktreeMode() || switched.selectedPath != path || !worktreeExists(switched.visibleWorktrees, path) {
+		t.Fatalf("worktree switch = mode:%v path:%q rows:%#v", switched.mode, switched.selectedPath, switched.visibleWorktrees)
+	}
+}
+
+// Assures that switching from a selected ticket immediately selects its existing associated worktree.
+func TestTicketSelectionTransfersToExistingWorktree(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	m.mode = modeTickets
+	associated := Worktree{Name: "APP-1-existing", Branch: "APP-1-existing", Path: "/tmp/app-1"}
+	m.tickets = []Ticket{{Key: "APP-1", Worktree: &associated}}
+	m.visibleTickets = m.tickets
+	m.allWorktrees = []Worktree{{Name: "other", Path: "/tmp/other"}, associated}
+	m.visibleWorktrees = append([]Worktree(nil), m.allWorktrees...)
+	m.table.SetColumns(m.activeColumns())
+	m.rebuildRows()
+	m.table.SetCursor(0)
+
+	next, _ := m.Update(teaKey("J"))
+	got := next.(model)
+	if got.selectedPath != associated.Path {
+		t.Fatalf("associated worktree selection = path:%q cursor:%d", got.selectedPath, got.table.Cursor())
+	}
+}
+
+// Assures that a failed ticket creation removes its optimistic ticket association and worktree row.
+func TestFailedTicketWorktreeCreationRollsBackTicketAssociation(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	m.mode = modeTickets
+	m.tickets = []Ticket{{Key: "APP-1", Summary: "Create worktree"}}
+	m.visibleTickets = m.tickets
+	m.table.SetColumns(m.activeColumns())
+	m.rebuildRows()
+	m.table.SetCursor(0)
+
+	next, _ := m.Update(teaKey("n"))
+	creating := next.(model)
+	path := creating.selectedTicket().Worktree.Path
+	next, _ = creating.Update(ticketWorktreeResult{
+		Key:      "APP-1",
+		Worktree: Worktree{Name: "APP-1-create-worktree", Path: path},
+		Err:      context.DeadlineExceeded,
+	})
+	got := next.(model)
+
+	if selected := got.selectedTicket(); selected == nil || selected.Worktree != nil {
+		t.Fatalf("ticket worktree after rollback = %#v", selected)
+	}
+	if worktreeExists(got.allWorktrees, path) || !got.statusError {
+		t.Fatalf("rollback rows/error = rows:%#v error:%v", got.allWorktrees, got.statusError)
+	}
+}
+
 func TestTicketModeRendersJoinedContext(t *testing.T) {
 	m := layoutTestModel(150, 32)
 	m.services = services.NewService()

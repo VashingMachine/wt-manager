@@ -340,7 +340,7 @@ func openVSCodeWorktreeCmd(services core.OpenerService, wt Worktree) tea.Cmd {
 
 func openAgentCmd(services core.OpenerService, wt Worktree, agent AgentTool) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := services.OpenAgent(ctx, wt, agent); err == nil {
 			return actionResult{Message: fmt.Sprintf("Opened %s for %s", agent.Name, wt.Name)}
@@ -359,5 +359,15 @@ func openTerminalWorktreeCmd(services core.OpenerService, wt Worktree) tea.Cmd {
 		} else {
 			return actionResult{Err: err}
 		}
+	}
+}
+
+func notifyCmd(services core.OpenerService, title string, body string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		// The notification is a courtesy; failing to deliver it is not worth surfacing.
+		_ = services.Notify(ctx, title, body)
+		return nil
 	}
 }

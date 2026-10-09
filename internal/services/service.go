@@ -171,6 +171,10 @@ func (s *Service) OpenTerminal(ctx context.Context, wt Worktree) error {
 	return openWorktreeTerminal(ctx, wt)
 }
 
+func (s *Service) Notify(ctx context.Context, title string, body string) error {
+	return notifyCmux(ctx, title, body)
+}
+
 func (s *Service) CheckAtlassianCLI(ctx context.Context) []string {
 	return checkAtlassianCLI(ctx)
 }

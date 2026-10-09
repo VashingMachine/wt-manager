@@ -172,6 +172,105 @@ func TestTableShowsInlineLoadingRow(t *testing.T) {
 	}
 }
 
+// Assures that standard creation inserts and selects an optimistic worktree before Git responds.
+func TestNewWorktreeAppearsBeforeCreateCompletes(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	m.allWorktrees = []Worktree{{Name: "existing", Path: "/tmp/existing"}}
+	m.visibleWorktrees = append([]Worktree(nil), m.allWorktrees...)
+	m.rebuildRows()
+	m.table.SetCursor(0)
+	m.rememberSelection()
+
+	next, _ := m.Update(teaKey("n"))
+	creating := next.(model)
+	creating.newInput.SetValue("feature/optimistic")
+	next, cmd := creating.Update(teaKey("enter"))
+	got := next.(model)
+	path := m.services.CreateWorktreePath(m.cfg, "feature/optimistic")
+
+	if cmd == nil {
+		t.Fatal("creation did not return a command")
+	}
+	if len(got.visibleWorktrees) != 2 || got.selectedPath != path {
+		t.Fatalf("optimistic worktree state = rows:%d selected:%q, want rows:2 selected:%q", len(got.visibleWorktrees), got.selectedPath, path)
+	}
+	if pending, ok := got.pendingCreations[path]; !ok || pending.Worktree.Branch != "feature/optimistic" {
+		t.Fatalf("pending creation = %#v, want optimistic feature worktree", pending)
+	}
+}
+
+// Assures that failed optimistic creation removes its temporary row and restores the prior selection.
+func TestFailedWorktreeCreationRollsBackOptimisticRow(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	m.allWorktrees = []Worktree{{Name: "existing", Path: "/tmp/existing"}}
+	m.visibleWorktrees = append([]Worktree(nil), m.allWorktrees...)
+	m.rebuildRows()
+	m.table.SetCursor(0)
+	m.rememberSelection()
+	path := m.services.CreateWorktreePath(m.cfg, "feature/fails")
+	m.beginWorktreeCreation(Worktree{Name: "feature/fails", Branch: "feature/fails", Path: path, Managed: true}, "")
+
+	next, _ := m.Update(createResult{Name: "feature/fails", Path: path, Err: errors.New("branch is locked")})
+	got := next.(model)
+
+	if len(got.visibleWorktrees) != 1 || got.visibleWorktrees[0].Path != "/tmp/existing" {
+		t.Fatalf("visible worktrees after rollback = %#v", got.visibleWorktrees)
+	}
+	if got.selectedPath != "/tmp/existing" || !got.statusError || !strings.Contains(got.statusMessage, "branch is locked") {
+		t.Fatalf("rollback selection/status = path:%q error:%v message:%q", got.selectedPath, got.statusError, got.statusMessage)
+	}
+	if _, ok := got.pendingCreations[path]; ok {
+		t.Fatal("failed creation remained pending")
+	}
+}
+
+// Assures that refreshes retain an in-flight candidate and confirm it once Git reports the worktree.
+func TestWorktreeRefreshReconcilesOptimisticCreation(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	path := m.services.CreateWorktreePath(m.cfg, "feature/reconcile")
+	candidate := Worktree{Name: "feature/reconcile", Branch: "feature/reconcile", Path: path, Managed: true}
+	m.beginWorktreeCreation(candidate, "")
+
+	next, _ := m.Update(loadResult{Worktrees: []Worktree{{Name: "existing", Path: "/tmp/existing"}}})
+	inFlight := next.(model)
+	if !worktreeExists(inFlight.allWorktrees, path) {
+		t.Fatal("refresh removed in-flight optimistic worktree")
+	}
+
+	next, _ = inFlight.Update(createResult{Name: candidate.Name, Path: path})
+	completed := next.(model)
+	next, _ = completed.Update(loadResult{Worktrees: []Worktree{{Name: "existing", Path: "/tmp/existing"}, candidate}})
+	confirmed := next.(model)
+	if _, ok := confirmed.pendingCreations[path]; ok {
+		t.Fatal("confirmed worktree remained pending")
+	}
+	if !worktreeExists(confirmed.allWorktrees, path) || confirmed.selectedPath != path {
+		t.Fatalf("confirmed state = worktrees:%#v selected:%q", confirmed.allWorktrees, confirmed.selectedPath)
+	}
+}
+
+// Assures that PR creation registers its target as an optimistic worktree immediately.
+func TestPRWorktreeCreationAppearsBeforeCreateCompletes(t *testing.T) {
+	m := layoutTestModel(120, 30)
+	m.mode = modePRs
+	m.remotePRs = []RemotePullRequest{{Number: 42, HeadRefName: "feature/from-pr"}}
+	m.visiblePRs = m.remotePRs
+	m.table.SetColumns(m.activeColumns())
+	m.rebuildRows()
+	m.table.SetCursor(0)
+
+	next, cmd := m.Update(teaKey("n"))
+	got := next.(model)
+	path := m.services.CreateWorktreePath(m.cfg, "feature/from-pr")
+
+	if cmd == nil {
+		t.Fatal("PR creation did not return a command")
+	}
+	if _, ok := got.pendingCreations[path]; !ok {
+		t.Fatalf("PR worktree %q was not optimistic", path)
+	}
+}
+
 func TestDeleteArmTickKeepsCountingThenExpires(t *testing.T) {
 	m := layoutTestModel(120, 30)
 	m.deleteArmedPath = "/tmp/wt"

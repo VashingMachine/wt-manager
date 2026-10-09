@@ -14,11 +14,16 @@ type terminalApp int
 
 const (
 	terminalGhostty terminalApp = iota
+	terminalCmux
 	terminalWarp
 	terminalAppleTerminal
 )
 
 func detectTerminalApp(getenv func(string) string) terminalApp {
+	// cmux reports TERM_PROGRAM=ghostty, so it has to be recognised first.
+	if inCmux(getenv) {
+		return terminalCmux
+	}
 	// Ghostty-specific vars survive tmux, which rewrites TERM_PROGRAM.
 	if getenv("GHOSTTY_RESOURCES_DIR") != "" || getenv("GHOSTTY_BIN_DIR") != "" {
 		return terminalGhostty
@@ -43,6 +48,8 @@ func openWorktreeAgent(ctx context.Context, wt Worktree, agent AgentTool) error 
 		return errors.New("opening terminal tabs is only supported on macOS")
 	}
 	switch currentTerminalApp() {
+	case terminalCmux:
+		return openAgentInCmux(ctx, wt, agent)
 	case terminalWarp:
 		return openAgentInWarp(ctx, wt, agent)
 	case terminalAppleTerminal:
@@ -57,6 +64,8 @@ func openWorktreeTerminal(ctx context.Context, wt Worktree) error {
 		return errors.New("opening terminal tabs is only supported on macOS")
 	}
 	switch currentTerminalApp() {
+	case terminalCmux:
+		return openTerminalInCmux(ctx, wt)
 	case terminalWarp:
 		return openTerminalInWarp(ctx, wt)
 	case terminalAppleTerminal:
