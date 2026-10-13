@@ -25,12 +25,15 @@ func main() {
 	application := app.New()
 	cfg, err := application.DefaultConfig(forceSetup)
 	if err != nil {
+		application.Close()
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
 	}
 
 	p := application.NewProgram(cfg)
-	if _, err := p.Run(); err != nil {
+	_, err = p.Run()
+	application.Close()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "wt-manager failed: %v\n", err)
 		os.Exit(1)
 	}

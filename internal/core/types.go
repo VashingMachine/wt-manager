@@ -112,6 +112,10 @@ type Worktree struct {
 	Commit    CommitInfo
 	PR        *PullRequest
 	LoadError string
+	// StatusPending is true while git status and the last commit have not been
+	// read in this session or an earlier, cached one. Rows render a placeholder
+	// instead of claiming such a worktree is clean.
+	StatusPending bool
 }
 
 type RepoStatus struct {
@@ -170,6 +174,10 @@ type RemotePullRequest struct {
 	Commits           []PullCommit    `json:"commits"`
 	Reviews           []PullReview    `json:"reviews"`
 	Diff              string          `json:"-"`
+	// ChecksKnown reports whether StatusCheckRollup reflects check runs read
+	// for HeadSHA (now or from the cache), so an empty list while checks are
+	// still loading is not mistaken for a PR without CI.
+	ChecksKnown bool `json:"-"`
 }
 
 type GitHubActor struct {
@@ -269,6 +277,35 @@ type Ticket struct {
 	LoadError      string
 }
 
+// TicketPatch is a local edit that is shown before JIRA confirms it, and is
+// written into the cache once it does. Empty fields are left untouched.
+type TicketPatch struct {
+	Key            string
+	Status         string
+	StatusCategory string
+	Assignee       *JiraUser
+	Comment        *TicketComment
+}
+
+// Apply writes the patch into ticket when it is the patched ticket.
+func (p TicketPatch) Apply(ticket *Ticket) {
+	if ticket == nil || ticket.Key != p.Key {
+		return
+	}
+	if p.Status != "" {
+		ticket.Status = p.Status
+		if p.StatusCategory != "" {
+			ticket.StatusCategory = p.StatusCategory
+		}
+	}
+	if p.Assignee != nil {
+		ticket.Assignee = *p.Assignee
+	}
+	if p.Comment != nil {
+		ticket.Comments = append(append([]TicketComment(nil), ticket.Comments...), *p.Comment)
+	}
+}
+
 // JIRA status category keys, used for colouring instead of status names so that
 // arbitrary project workflows render correctly.
 const (
@@ -300,6 +337,15 @@ type ConfigService interface {
 type WorktreeService interface {
 	CollectWorktrees(ctx context.Context, cfg Config, showAll bool) ([]Worktree, string, error)
 	CollectTicketWorktrees(ctx context.Context, cfg Config) ([]Worktree, string, error)
+	// PeekWorktrees returns the last discovered worktrees with their cached
+	// status, without running git, so the first frame is not empty.
+	PeekWorktrees(cfg Config, showAll bool) ([]Worktree, bool)
+	// DiscoverWorktrees runs only `git worktree list`. Status and commit come
+	// from the cache; worktrees without cached status have StatusPending set.
+	DiscoverWorktrees(ctx context.Context, cfg Config, showAll bool) ([]Worktree, error)
+	// LoadWorktreeStatus reads git status and the last commit of one worktree
+	// and caches them.
+	LoadWorktreeStatus(ctx context.Context, cfg Config, wt Worktree) (Worktree, error)
 	CreateWorktree(ctx context.Context, cfg Config, branch string, path string) (bool, error)
 	RemoveWorktree(ctx context.Context, cfg Config, wt Worktree) error
 	EnsurePullRequestWorktree(ctx context.Context, cfg Config, pullRequest RemotePullRequest) (Worktree, bool, error)
@@ -307,10 +353,21 @@ type WorktreeService interface {
 }
 
 type PullRequestService interface {
+	// LoadRemotePullRequests lists PRs with a single API call and overlays
+	// cached check runs; LoadRemotePullRequestChecks fills in the rest.
 	LoadRemotePullRequests(ctx context.Context, cfg Config) ([]RemotePullRequest, error)
-	LoadPullRequestsForTickets(ctx context.Context, cfg Config) ([]PullRequest, error)
+	PeekRemotePullRequests(cfg Config) ([]RemotePullRequest, time.Time, bool)
+	// LoadRemotePullRequestChecks returns check runs for a head commit, reusing
+	// cached runs while they are fresh (longer once every run has completed).
+	LoadRemotePullRequestChecks(ctx context.Context, cfg Config, sha string) ([]StatusCheck, error)
+	// LoadPullRequestIndex returns the PRs used to label worktrees and tickets,
+	// from the cache while it is younger than its TTL unless refresh is set. A
+	// failed refetch falls back to cached PRs with a warning.
+	LoadPullRequestIndex(ctx context.Context, cfg Config, refresh bool) ([]PullRequest, string, error)
+	PeekPullRequestIndex(cfg Config) ([]PullRequest, time.Time, bool)
 	LoadGitHubCurrentUser(ctx context.Context, cfg Config) (string, error)
 	LoadRemotePullRequestDetail(ctx context.Context, cfg Config, number int) (RemotePullRequest, error)
+	PeekRemotePullRequestDetail(cfg Config, number int) (RemotePullRequest, time.Time, bool)
 	ApproveRemotePullRequest(ctx context.Context, cfg Config, number int) error
 	FilterRemotePullRequestsWithAuthor(pullRequests []RemotePullRequest, query string, state string, user string, author string) []RemotePullRequest
 	RemotePRUsers(pullRequests []RemotePullRequest) []string
@@ -339,6 +396,7 @@ type JiraService interface {
 	PeekTicketCache(cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool) ([]Ticket, time.Time, bool)
 	LoadTickets(ctx context.Context, cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool, refresh bool) ([]Ticket, string, error)
 	LoadTicketDetail(ctx context.Context, cfg Config, key string) (Ticket, error)
+	PeekTicketDetail(cfg Config, key string) (Ticket, bool)
 	TransitionTicket(ctx context.Context, key string, status string) error
 	CommentTicket(ctx context.Context, key string, body string) error
 	AssignTicket(ctx context.Context, key string, assignee string) error
@@ -349,7 +407,12 @@ type JiraService interface {
 	TicketBranchName(ticket Ticket) string
 	TicketKeyFromBranch(branch string) string
 	BuildTicketChatPrompt(ticket Ticket, question string) string
+	// InvalidateTicketCache marks every cached scope of a board stale: rows
+	// still paint instantly, but the next load revalidates them.
 	InvalidateTicketCache(cfg Config, board JiraBoard) error
+	// ApplyTicketPatch writes a confirmed mutation into every cached copy of
+	// the ticket and marks the board's lists stale.
+	ApplyTicketPatch(cfg Config, board JiraBoard, patch TicketPatch)
 }
 
 type Services interface {

@@ -25,6 +25,8 @@ func stateLabel(wt Worktree) string {
 		return "missing"
 	case wt.Detached:
 		return "detached"
+	case wt.StatusPending:
+		return "loading"
 	case wt.Status.Conflicts > 0:
 		return "conflict"
 	case wt.Status.Dirty:

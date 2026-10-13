@@ -46,6 +46,8 @@ type iconSet struct {
 	Sprint       string
 	Link         string
 
+	Loading string
+
 	OK            string
 	Err           string
 	Warn          string
@@ -62,7 +64,7 @@ var unicodeIcons = iconSet{
 	PROpen: "●", PRMerged: "◆", PRClosed: "✗", PRDraft: "◌",
 	CheckPass: "✓", CheckFail: "✗", CheckPending: "◐", CheckNone: "·",
 	ReviewApproved: "✓", ReviewChanges: "±", ReviewRequired: "○",
-	Ticket: "◇", TicketDone: "✓", TicketActive: "◈", Comment: "❞", Sprint: "⟳", Link: "⇢",
+	Ticket: "◇", TicketDone: "✓", TicketActive: "◈", Comment: "❞", Sprint: "⟳", Link: "⇢", Loading: "◌",
 	OK: "✓", Err: "✗", Warn: "⚠",
 	Section: "▸", Pointer: "▶", Dot: "·", SkeletonBlock: "░",
 }
@@ -74,7 +76,7 @@ var asciiIcons = iconSet{
 	PROpen: "o", PRMerged: "m", PRClosed: "x", PRDraft: ".",
 	CheckPass: "+", CheckFail: "x", CheckPending: "~", CheckNone: "-",
 	ReviewApproved: "+", ReviewChanges: "~", ReviewRequired: "o",
-	Ticket: "t", TicketDone: "+", TicketActive: "*", Comment: "\"", Sprint: "@", Link: ">",
+	Ticket: "t", TicketDone: "+", TicketActive: "*", Comment: "\"", Sprint: "@", Link: ">", Loading: ".",
 	OK: "+", Err: "x", Warn: "!",
 	Section: ">", Pointer: ">", Dot: "-", SkeletonBlock: "#",
 }
@@ -102,6 +104,8 @@ func stateIcon(wt Worktree) string {
 		return icons.WTConflict
 	case "dirty":
 		return icons.WTDirty
+	case "loading":
+		return icons.Loading
 	default:
 		return icons.WTClean
 	}
@@ -162,6 +166,12 @@ func shortPRDisplay(pr *PullRequest) string {
 	return fmt.Sprintf("%s #%d %s", prStateIcon(pr.State, false), pr.Number, strings.ToLower(pr.State))
 }
 
+// checksUnknown reports a PR whose check runs are still being read, which must
+// not render as "no checks" or count as ready.
+func checksUnknown(pr RemotePullRequest) bool {
+	return pr.HeadSHA != "" && !pr.ChecksKnown && len(pr.StatusCheckRollup) == 0
+}
+
 func checksDisplay(checks []StatusCheck) string {
 	if len(checks) == 0 {
 		return icons.CheckNone
@@ -200,6 +210,8 @@ func checksDetailDisplay(checks []StatusCheck) string {
 func readinessDisplay(pr RemotePullRequest) string {
 	readiness := reviewReadiness(pr)
 	switch readiness {
+	case "checking":
+		return icons.Loading + " " + readiness
 	case "draft":
 		return icons.PRDraft + " " + readiness
 	case "done":

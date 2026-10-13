@@ -29,7 +29,9 @@ Profiles can optionally enable a third JIRA Tickets view backed by Atlassian CLI
 - Ask a configured local AI agent about the selected remote PR using PR metadata, files, comments, and diff context.
 - Browse configured JIRA boards with assigned-to-me and active-sprint scopes.
 - Read JIRA descriptions and comments, open tickets in the browser, create ticket worktrees, transition status, comment, and assign users.
-- Paint cached ticket rows immediately and refresh them in the background.
+- Paint worktrees, PRs, and tickets from a local cache immediately, then refresh them piece by piece in the background.
+- Prefetch PR Radar and JIRA Tickets while you work elsewhere, so switching views shows current data without waiting.
+- Apply ticket status changes, comments, assignments, and PR approvals immediately, rolling back if the remote call fails.
 - Configure everything interactively on first run, including repository path, worktree folder, GitHub repo, and agent commands.
 
 ## Requirements
@@ -126,6 +128,17 @@ Example:
 ```
 
 If `githubRepo` is empty, `wt-manager` tries to infer it from the configured remote when that remote points to GitHub.
+
+## Caching and Background Loading
+
+`wt-manager` keeps what it fetched in memory and in a SQLite cache at `~/.wt-manager/cache/wt-manager.db`, so every view paints immediately, also after a restart, and is then refreshed in the background:
+
+- **Worktrees**: `git worktree list` replaces the rows first; each worktree's status and last commit then arrive independently, and PR labels arrive separately. Rows whose status has never been read show a loading marker instead of `clean`. The status bar shows the progress, for example `status 3/12 · PR labels`. PR labels are reused for two minutes; `r` refetches them.
+- **PR Radar**: one request lists the PRs and their check runs fill in per row, open PRs first. Completed check runs are reused for 15 minutes, pending ones for 30 seconds. A previously viewed PR shows its cached details and diff immediately and is refetched only when it changed. A PR detail's GitHub requests run concurrently.
+- **Prefetching**: shortly after start and then every four minutes, the PR list and the active JIRA board are refreshed while you are in another view.
+- **Mutations**: worktree creation and deletion run one at a time per repository in the order you issued them, so concurrent `git` operations cannot fight over repository locks. Ticket edits are queued per ticket and approvals per PR. Creating a worktree for an existing local branch skips `git fetch`, and creations queued together share one fetch.
+
+The cache only speeds things up: deleting the file is safe, and if it cannot be opened the app keeps running with an in-memory cache and records why in the session log.
 
 ## Keybindings
 
@@ -244,7 +257,7 @@ The `c` action prefers a configured `copilot` agent when present and otherwise f
 
 Press `J` to toggle JIRA Tickets for the active repository profile. Run setup with `I`, paste a JIRA board link, and press enter once to resolve it and again to save. Multiple board links can be added before saving. ACLI authentication remains external to `wt-manager`; no Atlassian credentials are stored in the config.
 
-Tickets default to the current user, the active sprint, and open workflow categories. Press `f` to change these three filters in one dialog. The app caches each profile/board/scope list for five minutes, paints cached rows immediately, and refreshes in the background. A failed refresh keeps stale rows visible with a warning. Successful ticket mutations invalidate the affected board cache.
+Tickets default to the current user, the active sprint, and open workflow categories. Press `f` to change these three filters in one dialog. The app caches each profile/board/scope list for five minutes, paints cached rows immediately, and refreshes in the background. A failed refresh keeps stale rows visible with a warning. Status changes, comments, and assignments appear immediately; a failed change is rolled back with an error. Successful changes update every cached copy of the ticket and mark the board's lists for revalidation.
 
 Worktrees and PRs are matched by a JIRA key such as `APP-123` in the branch name, with PR titles used as a fallback. New ticket worktrees use `<KEY>-<summary-slug>` and reuse an existing matching worktree when possible.
 

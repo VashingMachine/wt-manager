@@ -26,9 +26,9 @@ func (s *paletteSpyServices) OpenEditorWorktree(_ context.Context, wt Worktree, 
 	return nil
 }
 
-func (s *paletteSpyServices) CollectWorktrees(_ context.Context, _ Config, all bool) ([]Worktree, string, error) {
+func (s *paletteSpyServices) DiscoverWorktrees(_ context.Context, _ Config, all bool) ([]Worktree, error) {
 	s.collectedAll = all
-	return s.worktrees, "", nil
+	return s.worktrees, nil
 }
 
 func (s *paletteSpyServices) EnsurePullRequestWorktree(_ context.Context, _ Config, pr RemotePullRequest) (Worktree, bool, error) {

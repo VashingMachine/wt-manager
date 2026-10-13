@@ -2,10 +2,8 @@ package services
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestParseJiraBoardRef(t *testing.T) {
@@ -90,43 +88,31 @@ func TestDecodeJiraIssuesAcceptsJSONStream(t *testing.T) {
 	}
 }
 
+// Assures that ticket scopes are cached separately and that invalidation keeps rows paintable but forces revalidation.
 func TestTicketCacheScopesAndInvalidation(t *testing.T) {
-	home := t.TempDir()
+	svc := NewService()
 	cfg := Config{
-		HomeDir: home,
 		ActiveProfile: RepositoryProfile{
 			Name: "bluesteel",
 			Jira: &JiraConfig{Site: "example.atlassian.net"},
 		},
 	}
 	board := JiraBoard{ID: 24731, Name: "EDP Blue Steel Board"}
-	path := ticketCachePath(cfg, board, true, false)
-	entry := ticketCacheEntry{
-		Version:   ticketCacheSchemaVersion,
-		FetchedAt: time.Now(),
-		Site:      "example.atlassian.net",
-		BoardID:   board.ID,
-		BoardName: board.Name,
-		Scope:     ticketCacheScope(true, false),
-		Tickets:   []Ticket{{Key: "EDPSL-4618"}},
+	if err := svc.cache.Put(bucketTickets, ticketCacheKey(cfg, board, true, false), []Ticket{{Key: "EDPSL-4618"}}); err != nil {
+		t.Fatalf("Put() error = %v", err)
 	}
-	if err := writeTicketCache(path, entry); err != nil {
-		t.Fatalf("writeTicketCache() error = %v", err)
+	tickets, fetchedAt, ok := svc.PeekTicketCache(cfg, board, true, false)
+	if !ok || len(tickets) != 1 || tickets[0].Key != "EDPSL-4618" || fetchedAt.IsZero() {
+		t.Fatalf("PeekTicketCache() = %#v at=%v ok=%v", tickets, fetchedAt, ok)
 	}
-	if filepath.Dir(path) != jiraCacheDir(cfg) {
-		t.Fatalf("cache path = %q", path)
-	}
-	tickets, _, ok := peekTicketCache(cfg, board, true, false)
-	if !ok || len(tickets) != 1 || tickets[0].Key != "EDPSL-4618" {
-		t.Fatalf("peekTicketCache() = %#v, ok=%v", tickets, ok)
-	}
-	if _, _, ok := peekTicketCache(cfg, board, false, false); ok {
+	if _, _, ok := svc.PeekTicketCache(cfg, board, false, false); ok {
 		t.Fatal("all-ticket scope unexpectedly reused mine-only cache")
 	}
-	if err := invalidateTicketCache(cfg, board); err != nil {
-		t.Fatalf("invalidateTicketCache() error = %v", err)
+	if err := svc.InvalidateTicketCache(cfg, board); err != nil {
+		t.Fatalf("InvalidateTicketCache() error = %v", err)
 	}
-	if _, _, ok := peekTicketCache(cfg, board, true, false); ok {
-		t.Fatal("cache remained after invalidation")
+	tickets, fetchedAt, ok = svc.PeekTicketCache(cfg, board, true, false)
+	if !ok || len(tickets) != 1 || !fetchedAt.IsZero() {
+		t.Fatalf("invalidated cache = %#v at=%v ok=%v, want stale rows kept", tickets, fetchedAt, ok)
 	}
 }

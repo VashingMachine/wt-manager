@@ -37,13 +37,15 @@ func (m model) openCommandPalette() (tea.Model, tea.Cmd) {
 	m.showingHelp = false
 	m.paletteCursor = 0
 	m.paletteInput.SetValue("")
-	m.paletteWorktrees = nil
+	// Searchable worktrees only need names, branches and paths: show the
+	// cached list now and refresh it with discovery alone (no status, no gh).
+	m.paletteWorktrees, _ = m.services.PeekWorktrees(m.cfg, true)
 	m.paletteRequest++
-	request, cfg := m.paletteRequest, m.cfg
+	request, cfg, services := m.paletteRequest, m.cfg, m.services
 	return m, tea.Batch(m.paletteInput.Focus(), func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
-		worktrees, _, err := m.services.CollectWorktrees(ctx, cfg, true)
+		worktrees, err := services.DiscoverWorktrees(ctx, cfg, true)
 		return paletteWorktreesResult{Worktrees: worktrees, RepositoryPath: cfg.ActiveProfile.RepositoryPath, Request: request, Err: err}
 	})
 }

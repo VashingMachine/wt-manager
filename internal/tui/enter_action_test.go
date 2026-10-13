@@ -35,8 +35,8 @@ func (s *enterActionSpyServices) OpenTerminal(ctx context.Context, wt Worktree) 
 	return nil
 }
 
-func (s *enterActionSpyServices) CollectWorktrees(ctx context.Context, cfg Config, showAll bool) ([]Worktree, string, error) {
-	return nil, "", nil
+func (s *enterActionSpyServices) DiscoverWorktrees(ctx context.Context, cfg Config, showAll bool) ([]Worktree, error) {
+	return nil, nil
 }
 
 func (s *enterActionSpyServices) LoadTickets(ctx context.Context, cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool, refresh bool) ([]Ticket, string, error) {
@@ -47,8 +47,8 @@ func (s *enterActionSpyServices) CollectTicketWorktrees(ctx context.Context, cfg
 	return nil, "", nil
 }
 
-func (s *enterActionSpyServices) LoadPullRequestsForTickets(ctx context.Context, cfg Config) ([]PullRequest, error) {
-	return nil, nil
+func (s *enterActionSpyServices) LoadPullRequestIndex(ctx context.Context, cfg Config, refresh bool) ([]PullRequest, string, error) {
+	return nil, "", nil
 }
 
 func (s *enterActionSpyServices) WriteAppConfig(configPath string, appConfig AppConfig) error {

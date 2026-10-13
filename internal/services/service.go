@@ -4,15 +4,36 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"time"
+
+	"github.com/VashingMachine/wt-manager/internal/cache"
 )
 
 type Service struct {
 	sessionLog executionLog
+	cache      *cache.Store
+	flights    flightGroup
+	fetches    fetchCoalescer
+	// ghLimit and gitLimit bound how many gh API calls and git status reads
+	// progressive loading runs at once.
+	ghLimit  chan struct{}
+	gitLimit chan struct{}
 }
 
+// NewService returns a service with an in-memory cache only, so tests never
+// touch the user's persistent cache.
 func NewService() *Service {
-	return &Service{}
+	return NewServiceWithCache(cache.NewMemory())
+}
+
+func NewServiceWithCache(store *cache.Store) *Service {
+	if store == nil {
+		store = cache.NewMemory()
+	}
+	return &Service{
+		cache:    store,
+		ghLimit:  make(chan struct{}, 6),
+		gitLimit: make(chan struct{}, 8),
+	}
 }
 
 func (s *Service) DefaultConfig(forceSetup bool) (Config, error) {
@@ -101,19 +122,9 @@ func checkGitHubCLI(ctx context.Context, repoSlug string) []string {
 	return nil
 }
 
-func (s *Service) CollectWorktrees(ctx context.Context, cfg Config, showAll bool) ([]Worktree, string, error) {
-	ctx = s.commandContext(ctx)
-	return collectWorktrees(ctx, cfg, showAll)
-}
-
-func (s *Service) CollectTicketWorktrees(ctx context.Context, cfg Config) ([]Worktree, string, error) {
-	ctx = s.commandContext(ctx)
-	return collectTicketWorktrees(ctx, cfg)
-}
-
 func (s *Service) CreateWorktree(ctx context.Context, cfg Config, branch string, path string) (bool, error) {
 	ctx = s.commandContext(ctx)
-	return createWorktree(ctx, cfg, branch, path)
+	return createWorktreeWith(ctx, cfg, branch, path, s.fetches.fetch)
 }
 
 func (s *Service) RemoveWorktree(ctx context.Context, cfg Config, wt Worktree) error {
@@ -123,36 +134,11 @@ func (s *Service) RemoveWorktree(ctx context.Context, cfg Config, wt Worktree) e
 
 func (s *Service) EnsurePullRequestWorktree(ctx context.Context, cfg Config, pullRequest RemotePullRequest) (Worktree, bool, error) {
 	ctx = s.commandContext(ctx)
-	return ensurePullRequestWorktree(ctx, cfg, pullRequest)
+	return ensurePullRequestWorktreeWith(ctx, cfg, pullRequest, s.fetches.fetch)
 }
 
 func (s *Service) CreateWorktreePath(cfg Config, name string) string {
 	return createWorktreePath(cfg, name)
-}
-
-func (s *Service) LoadRemotePullRequests(ctx context.Context, cfg Config) ([]RemotePullRequest, error) {
-	ctx = s.commandContext(ctx)
-	return loadRemotePullRequests(ctx, cfg)
-}
-
-func (s *Service) LoadPullRequestsForTickets(ctx context.Context, cfg Config) ([]PullRequest, error) {
-	ctx = s.commandContext(ctx)
-	return loadPullRequestsForTickets(ctx, cfg)
-}
-
-func (s *Service) LoadGitHubCurrentUser(ctx context.Context, cfg Config) (string, error) {
-	ctx = s.commandContext(ctx)
-	return loadGitHubCurrentUser(ctx, cfg)
-}
-
-func (s *Service) LoadRemotePullRequestDetail(ctx context.Context, cfg Config, number int) (RemotePullRequest, error) {
-	ctx = s.commandContext(ctx)
-	return loadRemotePullRequestDetail(ctx, cfg, number)
-}
-
-func (s *Service) ApproveRemotePullRequest(ctx context.Context, cfg Config, number int) error {
-	ctx = s.commandContext(ctx)
-	return approveRemotePullRequest(ctx, cfg, number)
 }
 
 func (s *Service) FilterRemotePullRequestsWithAuthor(pullRequests []RemotePullRequest, query string, state string, user string, author string) []RemotePullRequest {
@@ -222,20 +208,6 @@ func (s *Service) SearchJiraBoards(ctx context.Context, name string) ([]JiraBoar
 	return searchJiraBoards(ctx, name)
 }
 
-func (s *Service) PeekTicketCache(cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool) ([]Ticket, time.Time, bool) {
-	return peekTicketCache(cfg, board, mineOnly, sprintOnly)
-}
-
-func (s *Service) LoadTickets(ctx context.Context, cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool, refresh bool) ([]Ticket, string, error) {
-	ctx = s.commandContext(ctx)
-	return loadTickets(ctx, cfg, board, mineOnly, sprintOnly, refresh)
-}
-
-func (s *Service) LoadTicketDetail(ctx context.Context, cfg Config, key string) (Ticket, error) {
-	ctx = s.commandContext(ctx)
-	return loadTicketDetail(ctx, cfg, key)
-}
-
 func (s *Service) TransitionTicket(ctx context.Context, key string, status string) error {
 	ctx = s.commandContext(ctx)
 	return transitionTicket(ctx, key, status)
@@ -277,8 +249,4 @@ func (s *Service) TicketKeyFromBranch(branch string) string {
 
 func (s *Service) BuildTicketChatPrompt(ticket Ticket, question string) string {
 	return buildTicketChatPrompt(ticket, question)
-}
-
-func (s *Service) InvalidateTicketCache(cfg Config, board JiraBoard) error {
-	return invalidateTicketCache(cfg, board)
 }

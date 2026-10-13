@@ -329,6 +329,30 @@ type model struct {
 	filterQuery                    string
 	filterPrevQuery                string
 	ready                          bool
+
+	// ops serializes mutations per repository, ticket and PR (shared by copies).
+	ops *opQueue
+	// Progressive worktree enrichment: statuses and PR labels after discovery.
+	prIndex             []PullRequest
+	prIndexLoading      bool
+	refreshPRIndex      bool
+	worktreeLoadSeq     int
+	worktreeStatusTotal int
+	worktreeStatusDone  int
+	// PR Radar data provenance, kept so prefetched rows can be reused.
+	prListSlug      string
+	prListFetchedAt time.Time
+	prListLoading   bool
+	prChecksLoading map[string]bool
+	// Tickets data provenance (board and scope the rows belong to).
+	ticketsSource    string
+	ticketsFetchedAt time.Time
+	ticketsLoading   bool
+	prefetchSeq      int
+	// Optimistic mutations awaiting confirmation.
+	ticketMutations map[int]ticketMutation
+	nextMutationID  int
+	prApprovals     map[int]string
 }
 
 func NewModel(cfg Config, services core.Services) model {
@@ -430,6 +454,10 @@ func NewModel(cfg Config, services core.Services) model {
 		ticketMineOnly:      true,
 		ticketSprintOnly:    true,
 		ticketOpenOnly:      true,
+		ops:                 &opQueue{},
+		prChecksLoading:     map[string]bool{},
+		ticketMutations:     map[int]ticketMutation{},
+		prApprovals:         map[int]string{},
 		spinner:             spin,
 		loading:             true,
 		loadingKind:         loadingWorktrees,
@@ -452,6 +480,11 @@ func NewModel(cfg Config, services core.Services) model {
 		m.setup = &setup
 		m.loading = false
 		m.statusMessage = cfg.SetupReason
+		return m
+	}
+	m.hydrateFromCache()
+	if len(m.allWorktrees) > 0 {
+		m.statusMessage = "Refreshing worktrees..."
 	}
 	return m
 }
@@ -461,7 +494,7 @@ func (m model) isPRMode() bool       { return m.mode == modePRs }
 func (m model) isTicketMode() bool   { return m.mode == modeTickets }
 
 func (m model) isBusy() bool {
-	return m.loading || m.prDetailLoading || m.ticketDetailLoading
+	return m.loading || m.prDetailLoading || m.ticketDetailLoading || m.backgroundBusy()
 }
 
 func (m *model) applySpinnerForKind(kind string) {
@@ -507,7 +540,7 @@ func (m model) Init() tea.Cmd {
 	if m.setup != nil {
 		return nil
 	}
-	return tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick)
+	return tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick, prefetchTickCmd(m.prefetchSeq, prefetchDelay))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -607,6 +640,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.statusError = false
+		m.attachPRIndex()
 		if msg.Warning != "" {
 			m.statusMessage = msg.Warning
 		} else {
@@ -614,6 +648,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.applyFilter()
 		m.pendingWorktreePath = ""
+		enrich := m.startWorktreeEnrichment()
 		if len(unconfirmedDeletes) > 0 {
 			m.statusMessage = fmt.Sprintf("Delete could not be confirmed for %s; it was restored", unconfirmedDeletes[0].Worktree.Name)
 			m.statusError = true
@@ -622,26 +657,88 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMessage = fmt.Sprintf("Create could not be confirmed for %s; it was removed", unconfirmedCreations[0].Worktree.Name)
 			m.statusError = true
 		}
+		return m, enrich
+	case worktreeStatusResult:
+		if msg.RepositoryPath != m.cfg.ActiveProfile.RepositoryPath {
+			return m, nil
+		}
+		if msg.Seq == m.worktreeLoadSeq && m.worktreeStatusDone < m.worktreeStatusTotal {
+			m.worktreeStatusDone++
+		}
+		m.mergeWorktreeStatus(msg.Worktree)
 		return m, nil
-	case remotePRListResult:
-		m.loading = false
+	case prIndexResult:
+		if msg.RepoSlug != m.cfg.RepoSlug {
+			return m, nil
+		}
+		m.prIndexLoading = false
 		if msg.Err != nil {
-			m.statusMessage = fmt.Sprintf("PR Radar failed: %v", msg.Err)
-			m.statusError = true
+			if m.isWorktreeMode() && !m.statusError {
+				m.statusMessage = "PR lookup unavailable: gh auth or repo access failed"
+			}
+			return m, nil
+		}
+		m.prIndex = msg.PullRequests
+		m.attachPRIndex()
+		if m.isWorktreeMode() {
+			m.rebuildRows()
+			m.updateDetailContent()
+			if msg.Warning != "" && !m.statusError {
+				m.statusMessage = msg.Warning
+			}
+		}
+		return m, nil
+	case prChecksResult:
+		if msg.RepoSlug != m.cfg.RepoSlug {
+			return m, nil
+		}
+		delete(m.prChecksLoading, msg.SHA)
+		if msg.Err == nil {
+			m.mergePRChecks(msg.SHA, msg.Checks)
+		}
+		return m, nil
+	case prefetchTick:
+		return m.handlePrefetchTick(msg)
+	case remotePRListResult:
+		if msg.RepoSlug != m.cfg.RepoSlug {
+			return m, nil
+		}
+		m.prListLoading = false
+		if !msg.Background {
+			m.loading = false
+		}
+		if msg.Err != nil {
+			if m.isPRMode() {
+				m.statusMessage = fmt.Sprintf("PR Radar failed: %v", msg.Err)
+				m.statusError = true
+			}
 			return m, nil
 		}
 
+		if m.isPRMode() && len(m.visiblePRs) > 0 {
+			m.rememberPRSelection()
+		}
 		m.remotePRs = msg.PullRequests
+		m.prListSlug = msg.RepoSlug
+		m.prListFetchedAt = msg.FetchedAt
 		if msg.CurrentUser != "" {
 			m.prCurrentUser = msg.CurrentUser
 		}
-		m.statusError = false
-		m.statusMessage = fmt.Sprintf("Loaded %d remote PRs", len(m.remotePRs))
-		m.applyPRFilter()
-		if selected := m.selectedRemotePR(); selected != nil {
-			return m.startPRDetailLoad(selected.Number)
+		checks := m.loadMissingChecks()
+		m.reapplyPendingApprovals()
+		if !m.isPRMode() {
+			return m, checks
 		}
-		return m, nil
+		if !msg.Background {
+			m.statusError = false
+			m.statusMessage = fmt.Sprintf("Loaded %d remote PRs", len(m.remotePRs))
+		}
+		m.applyPRFilter()
+		if selected := m.selectedRemotePR(); selected != nil && !m.prDetailCurrent(*selected) {
+			next, cmd := m.startPRDetailLoad(selected.Number)
+			return next, tea.Batch(cmd, checks)
+		}
+		return m, checks
 	case remotePRDetailResult:
 		if !m.isCurrentPRDetailResult(msg) {
 			return m, nil
@@ -674,25 +771,47 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateDetailContent()
 		return m, nil
 	case ticketListResult:
-		m.loading = false
-		if msg.Err != nil {
-			m.statusMessage = fmt.Sprintf("JIRA tickets failed: %v", msg.Err)
-			m.statusError = true
+		if msg.Source != "" && msg.Source != m.ticketSource() {
 			return m, nil
 		}
+		m.ticketsLoading = false
+		if !msg.Background {
+			m.loading = false
+		}
+		if msg.Err != nil {
+			if m.isTicketMode() && (!msg.Background || len(m.tickets) == 0) {
+				m.statusMessage = fmt.Sprintf("JIRA tickets failed: %v", msg.Err)
+				m.statusError = true
+			}
+			return m, nil
+		}
+		if m.ticketMutationsInFlight() > 0 {
+			// A result that predates a queued edit would undo its optimistic
+			// state; the edit's own confirmation triggers a newer load.
+			return m, nil
+		}
+		if m.isTicketMode() && len(m.visibleTickets) > 0 {
+			m.rememberTicketSelection()
+		}
 		m.tickets = msg.Tickets
-		m.allWorktrees = msg.Worktrees
-		m.reconcilePendingCreations()
+		m.ticketsSource = m.ticketSource()
+		m.ticketsFetchedAt = msg.FetchedAt
 		m.ticketCacheLabel = ""
 		m.ticketWarning = msg.Warning
+		if !m.isTicketMode() {
+			return m, nil
+		}
+		m.allWorktrees = msg.Worktrees
+		m.attachPRIndex()
+		m.reconcilePendingCreations()
 		if msg.Warning != "" {
 			m.statusMessage = msg.Warning
-		} else {
+		} else if !msg.Background {
 			m.statusMessage = m.ticketLoadSummary()
 		}
 		m.statusError = false
 		m.applyTicketFilter()
-		if selected := m.selectedTicket(); selected != nil {
+		if selected := m.selectedTicket(); selected != nil && (m.ticketDetail == nil || m.ticketDetail.Key != selected.Key) && !m.ticketDetailLoading {
 			return m.startTicketDetailLoad(selected.Key)
 		}
 		return m, nil
@@ -712,24 +831,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateDetailContent()
 			return m, nil
 		}
-		m.ticketDetail = &msg.Ticket
-		m.mergeTicketDetail(msg.Ticket)
+		detail := m.withPendingPatches(msg.Ticket)
+		m.ticketDetail = &detail
+		m.mergeTicketDetail(detail)
 		m.statusMessage = fmt.Sprintf("Loaded %s details", msg.Key)
 		m.statusError = false
 		m.updateDetailContent()
 		return m, nil
 	case ticketMutationResult:
-		m.loading = false
-		if msg.Err != nil {
-			m.statusMessage = fmt.Sprintf("JIRA %s failed for %s: %v", msg.Action, msg.Key, msg.Err)
-			m.statusError = true
-			return m, nil
-		}
-		m.selectedTicketKey = msg.Key
-		m.ticketDetail = nil
-		m.statusMessage = msg.Message + ". Refreshing..."
-		m.statusError = false
-		return m, tea.Batch(m.loadTicketsCmd(true), m.startLoading(loadingTickets, m.statusMessage))
+		return m.handleTicketMutationResult(msg)
 	case ticketWorktreeResult:
 		m.loading = false
 		if msg.Err != nil {
@@ -783,23 +893,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateDetailContent()
 		return m, nil
 	case approvePRResult:
-		m.loading = false
-		m.confirmingPRApproval = false
-		m.prApprovalPendingNumber = 0
-		m.prApprovalWarnings = nil
-		if msg.Err != nil {
-			m.statusMessage = fmt.Sprintf("Approve failed for PR #%d: %v", msg.Number, msg.Err)
-			m.statusError = true
-			return m, nil
-		}
-		m.statusMessage = fmt.Sprintf("Approved PR #%d. Refreshing details...", msg.Number)
-		m.statusError = false
-		notify := notifyCmd(m.services, "PR approved", fmt.Sprintf("Approved PR #%d", msg.Number))
-		if m.isPRMode() && msg.Number == m.selectedPRNumber {
-			next, cmd := m.startPRDetailLoad(msg.Number)
-			return next, tea.Batch(cmd, notify)
-		}
-		return m, notify
+		return m.handleApprovePRResult(msg)
 	case openPRWorktreeResult:
 		m.loading = false
 		if msg.Err != nil {
@@ -864,7 +958,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectedPath = ""
 		m.selectedIndex = 0
 		m.clearDeleteArm()
-		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, msg.Message+". Loading worktrees..."))
+		m.allWorktrees = nil
+		m.visibleWorktrees = nil
+		prefetch := m.resetProfileData()
+		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, msg.Message+". Loading worktrees..."), prefetch)
 	case deleteResult:
 		if msg.Err != nil {
 			m.restorePendingDelete(msg.Path)
@@ -1141,9 +1238,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.prApprovalPendingNumber = 0
 				m.prApprovalAwaitingDetailNumber = 0
 				m.prApprovalWarnings = nil
-				return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg), m.startLoading(loadingPRs, "Refreshing remote PRs..."))
+				m.prListLoading = true
+				return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg, false), m.startLoading(loadingPRs, "Refreshing remote PRs..."))
 			}
 			m.rememberSelection()
+			m.refreshPRIndex = true
 			return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, "Refreshing worktrees..."))
 		}
 		if key.Matches(msg, m.keys.PRRadar) {
@@ -1341,7 +1440,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.deferPendingWorktreeAction(m.services.CreateWorktreePath(m.cfg, selected.HeadRefName), core.EnterActionVSCode) {
 					return m, nil
 				}
-				return m, tea.Batch(openPRWorktreeInEditorCmd(m.services, m.services, m.cfg, *selected, m.configuredEditor()), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for %s...", selected.Number, m.configuredEditor().Name)))
+				return m, tea.Batch(m.ops.enqueue(gitQueueKey(m.cfg), openPRWorktreeInEditorCmd(m.services, m.services, m.cfg, *selected, m.configuredEditor())), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for %s...", selected.Number, m.configuredEditor().Name)))
 			}
 			selected := m.selectedWorktree()
 			if selected == nil {
@@ -1376,7 +1475,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusError = true
 					return m, nil
 				}
-				return m, tea.Batch(openPRWorktreeAgentCmd(m.services, m.services, m.cfg, *selected, *agent), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for %s...", selected.Number, agent.Name)))
+				return m, tea.Batch(m.ops.enqueue(gitQueueKey(m.cfg), openPRWorktreeAgentCmd(m.services, m.services, m.cfg, *selected, *agent)), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for %s...", selected.Number, agent.Name)))
 			}
 			selected := m.selectedWorktree()
 			if selected == nil {
@@ -1441,7 +1540,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Path:    m.services.CreateWorktreePath(m.cfg, branch),
 					Managed: true,
 				}, "")
-				return m, tea.Batch(createWorktreeCmd(m.services, m.cfg, branch), m.startLoading(loadingMutation, fmt.Sprintf("Creating worktree for PR #%d (%s)...", selected.Number, branch)))
+				return m, tea.Batch(m.ops.enqueue(gitQueueKey(m.cfg), createWorktreeCmd(m.services, m.cfg, branch)), m.startLoading(loadingMutation, fmt.Sprintf("Creating worktree for PR #%d (%s)...", selected.Number, branch)))
 			}
 			m.creatingWorktree = true
 			m.newInput.SetValue("")
@@ -1476,7 +1575,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.pendingDeletes[wt.Path] = pendingDelete{Worktree: wt, Index: m.worktreeIndex(wt.Path)}
 				m.optimisticRemove(wt.Path)
-				return m, tea.Batch(removeWorktreeCmd(m.services, m.cfg, wt), m.startLoading(loadingMutation, fmt.Sprintf("Deleting %s...", wt.Name)))
+				return m, tea.Batch(m.ops.enqueue(gitQueueKey(m.cfg), removeWorktreeCmd(m.services, m.cfg, wt)), m.startLoading(loadingMutation, fmt.Sprintf("Deleting %s...", wt.Name)))
 			}
 
 			m.deleteArmedPath = selected.Path
@@ -1550,7 +1649,7 @@ func (m model) updateNewWorktree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			Path:    m.services.CreateWorktreePath(m.cfg, name),
 			Managed: true,
 		}, "")
-		return m, tea.Batch(createWorktreeCmd(m.services, m.cfg, name), m.startLoading(loadingMutation, fmt.Sprintf("Creating %s...", name)))
+		return m, tea.Batch(m.ops.enqueue(gitQueueKey(m.cfg), createWorktreeCmd(m.services, m.cfg, name)), m.startLoading(loadingMutation, fmt.Sprintf("Creating %s...", name)))
 	}
 
 	var cmd tea.Cmd
@@ -1613,7 +1712,9 @@ func (m model) updatePRApprovalConfirmation(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 			return m, nil
 		}
 		m.confirmingPRApproval = false
-		return m, tea.Batch(approveRemotePullRequestCmd(m.services, m.cfg, number), m.startLoading(loadingMutation, fmt.Sprintf("Approving PR #%d...", number)))
+		m.prApprovalPendingNumber = 0
+		m.prApprovalWarnings = nil
+		return m.startPRApproval(number)
 	}
 	return m, nil
 }
@@ -1629,7 +1730,8 @@ func (m model) updatePRDiffMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.prApprovalPendingNumber = 0
 		m.prApprovalAwaitingDetailNumber = 0
 		m.prApprovalWarnings = nil
-		return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg), m.startLoading(loadingPRs, "Refreshing remote PRs..."))
+		m.prListLoading = true
+		return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg, false), m.startLoading(loadingPRs, "Refreshing remote PRs..."))
 	case key.Matches(msg, m.keys.ApprovePR):
 		return m.beginPRApproval()
 	case key.Matches(msg, m.keys.OpenPR):
@@ -1840,7 +1942,8 @@ func (m model) updateProfileSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedPath = ""
 		m.selectedIndex = 0
 		m.clearDeleteArm()
-		return m, tea.Batch(m.persistConfig("Saved config "+m.cfg.ConfigPath), loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, fmt.Sprintf("Switching to %s...", profile.Name)))
+		prefetch := m.resetProfileData()
+		return m, tea.Batch(m.persistConfig("Saved config "+m.cfg.ConfigPath), loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, fmt.Sprintf("Switching to %s...", profile.Name)), prefetch)
 	}
 
 	return m, nil
@@ -2569,19 +2672,49 @@ func (m model) movePRSelectionAndLoad(delta int) (tea.Model, tea.Cmd) {
 	return m.startPRDetailLoad(selected.Number)
 }
 
+// startPRDetailLoad shows the cached detail of a PR at once and refetches it
+// only when the PR changed since, or the cached copy has aged out.
 func (m model) startPRDetailLoad(number int) (tea.Model, tea.Cmd) {
 	m.cancelPRDetailLoad()
+	if cached, fetchedAt, ok := m.services.PeekRemotePullRequestDetail(m.cfg, number); ok {
+		listed := m.remotePRByNumber(number)
+		if listed != nil && listed.ChecksKnown {
+			// Checks streamed into the list are at least as new as the cache.
+			cached.StatusCheckRollup = listed.StatusCheckRollup
+			cached.ChecksKnown = true
+		}
+		m.prDetail = &cached
+		if listed != nil && listed.UpdatedAt == cached.UpdatedAt && listed.HeadSHA == cached.HeadSHA && isRecent(fetchedAt, prDetailTTL) {
+			m.updateDetailContent()
+			return m, nil
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 	m.prDetailRequest++
 	m.prDetailCancel = cancel
 	m.prDetailLoading = true
-	m.prDetail = nil
 	m.statusMessage = fmt.Sprintf("Loading PR #%d details...", number)
 	m.statusError = false
 	if !m.loading {
 		m.applySpinnerForKind(loadingDetail)
 	}
+	m.updateDetailContent()
 	return m, tea.Batch(loadRemotePullRequestDetailCmd(m.services, ctx, m.cfg, number, m.prDetailRequest), m.spinner.Tick)
+}
+
+// prDetailCurrent reports whether the shown detail already matches the PR as
+// listed, so a list refresh need not reload it.
+func (m model) prDetailCurrent(listed RemotePullRequest) bool {
+	return m.prDetail != nil && m.prDetail.Number == listed.Number && m.prDetail.UpdatedAt == listed.UpdatedAt && (m.prDetailLoading || m.prDetail.HeadSHA == listed.HeadSHA)
+}
+
+func (m *model) remotePRByNumber(number int) *RemotePullRequest {
+	for i := range m.remotePRs {
+		if m.remotePRs[i].Number == number {
+			return &m.remotePRs[i]
+		}
+	}
+	return nil
 }
 
 func (m *model) cancelPRDetailLoad() {
@@ -2790,6 +2923,9 @@ func reviewReadiness(pr RemotePullRequest) string {
 	if strings.EqualFold(pr.State, "closed") || strings.EqualFold(pr.State, "merged") {
 		return "done"
 	}
+	if checksUnknown(pr) {
+		return "checking"
+	}
 	if checksFailing(pr.StatusCheckRollup) {
 		return "blocked"
 	}
@@ -2921,9 +3057,15 @@ func detailViewContent(wt *Worktree, showPRBody bool, width int) string {
 		fmt.Sprintf("Path: %s", wt.Path),
 		fmt.Sprintf("Branch: %s", wt.Branch),
 		fmt.Sprintf("State: %s", stateDisplay(*wt)),
-		fmt.Sprintf("Tracking: %s", trackingDisplay(wt.Status)),
-		fmt.Sprintf("Changes: %s (staged=%d unstaged=%d untracked=%d conflicts=%d)", changeDisplay(wt.Status), wt.Status.Staged, wt.Status.Unstaged, wt.Status.Untracked, wt.Status.Conflicts),
 	)
+	if wt.StatusPending {
+		lines = append(lines, "Tracking: reading git status...", "Changes: reading git status...")
+	} else {
+		lines = append(lines,
+			fmt.Sprintf("Tracking: %s", trackingDisplay(wt.Status)),
+			fmt.Sprintf("Changes: %s (staged=%d unstaged=%d untracked=%d conflicts=%d)", changeDisplay(wt.Status), wt.Status.Staged, wt.Status.Unstaged, wt.Status.Untracked, wt.Status.Conflicts),
+		)
+	}
 
 	if wt.Commit.Hash != "" {
 		lines = append(lines,

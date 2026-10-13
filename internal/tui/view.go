@@ -233,7 +233,13 @@ func isSuccessStatus(message string) bool {
 func (m model) statusBarView() string {
 	if m.isBusy() {
 		message := m.statusMessage
-		if hint := m.elapsedHint(); hint != "" {
+		if progress := m.progressHint(); progress != "" {
+			if strings.TrimSpace(message) != "" {
+				message += " " + mutedStyle.Render("·") + " "
+			}
+			message += mutedStyle.Render(progress)
+		}
+		if hint := m.elapsedHint(); hint != "" && m.loading {
 			message += " " + mutedStyle.Render(hint)
 		}
 		return statusStyle.Render(fmt.Sprintf("%s %s", m.spinner.View(), message))
@@ -442,14 +448,22 @@ func worktreeRowCells(wt Worktree, compact bool) []string {
 	if wt.Commit.Relative != "" {
 		commit = fmt.Sprintf("%s %s", wt.Commit.Relative, wt.Commit.Subject)
 	}
-	return []string{wt.Name, wt.Branch, stateDisplay(wt), changeDisplay(wt.Status), shortPRDisplay(wt.PR), commit}
+	delta := changeDisplay(wt.Status)
+	if wt.StatusPending {
+		delta = icons.Loading
+	}
+	return []string{wt.Name, wt.Branch, stateDisplay(wt), delta, shortPRDisplay(wt.PR), commit}
 }
 
 func (m model) prRowCells(pr RemotePullRequest, compact bool) []string {
 	if compact {
 		return []string{fmt.Sprintf("#%d", pr.Number), pr.Author.Login, prStateDisplay(pr), m.prHeadline(pr)}
 	}
-	return []string{fmt.Sprintf("#%d", pr.Number), pr.Author.Login, prStateDisplay(pr), checksDisplay(pr.StatusCheckRollup), readinessDisplay(pr), shortTime(pr.UpdatedAt), m.prHeadline(pr)}
+	checks := checksDisplay(pr.StatusCheckRollup)
+	if checksUnknown(pr) {
+		checks = icons.Loading
+	}
+	return []string{fmt.Sprintf("#%d", pr.Number), pr.Author.Login, prStateDisplay(pr), checks, readinessDisplay(pr), shortTime(pr.UpdatedAt), m.prHeadline(pr)}
 }
 
 func visibleRowRange(cursor, total, height int) (int, int) {

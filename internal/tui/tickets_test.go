@@ -31,19 +31,14 @@ func (s *ticketLoadSpyServices) LoadTickets(ctx context.Context, cfg Config, boa
 	return []Ticket{{Key: "APP-1"}}, "", nil
 }
 
-func (s *ticketLoadSpyServices) CollectWorktrees(ctx context.Context, cfg Config, showAll bool) ([]Worktree, string, error) {
-	s.wait(ctx, "worktrees")
-	return []Worktree{{Name: "APP-1", Branch: "APP-1", Path: "/tmp/app-1"}}, "", nil
-}
-
 func (s *ticketLoadSpyServices) CollectTicketWorktrees(ctx context.Context, cfg Config) ([]Worktree, string, error) {
 	s.wait(ctx, "worktrees")
 	return []Worktree{{Name: "APP-1", Branch: "APP-1", Path: "/tmp/app-1"}}, "", nil
 }
 
-func (s *ticketLoadSpyServices) LoadPullRequestsForTickets(ctx context.Context, cfg Config) ([]PullRequest, error) {
+func (s *ticketLoadSpyServices) LoadPullRequestIndex(ctx context.Context, cfg Config, refresh bool) ([]PullRequest, string, error) {
 	s.wait(ctx, "pull requests")
-	return []PullRequest{{Number: 1, HeadRefName: "APP-1"}}, nil
+	return []PullRequest{{Number: 1, HeadRefName: "APP-1"}}, "", nil
 }
 
 // Assures that ticket loading does not serialize independent Jira, worktree, and PR requests.
@@ -277,8 +272,11 @@ func TestTicketStatusAllowsDirectEntry(t *testing.T) {
 	}
 	next, cmd := got.Update(teaKey("enter"))
 	got = next.(model)
-	if cmd == nil || !got.loading || got.loadingKind != loadingMutation {
-		t.Fatalf("status submission did not start mutation: loading=%v kind=%q cmd=%v", got.loading, got.loadingKind, cmd)
+	if cmd == nil || got.ticketMutationsInFlight() != 1 {
+		t.Fatalf("status submission did not start mutation: in flight=%d cmd=%v", got.ticketMutationsInFlight(), cmd)
+	}
+	if ticket, ok := got.ticketByKey("EDPSL-4618"); !ok || ticket.Status != "Resolved" {
+		t.Fatalf("status submission was not applied optimistically: %#v", ticket)
 	}
 }
 

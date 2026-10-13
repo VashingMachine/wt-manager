@@ -20,7 +20,7 @@ func singleGlyphIcons(set iconSet) map[string]string {
 		"ReviewRequired": set.ReviewRequired,
 		"OK":             set.OK, "Err": set.Err, "Warn": set.Warn,
 		"Section": set.Section, "Pointer": set.Pointer, "Dot": set.Dot,
-		"SkeletonBlock": set.SkeletonBlock,
+		"SkeletonBlock": set.SkeletonBlock, "Loading": set.Loading,
 	}
 }
 

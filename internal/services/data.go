@@ -455,39 +455,27 @@ func loadRemotePullRequests(ctx context.Context, cfg Config) ([]RemotePullReques
 	if err := json.Unmarshal([]byte(output), &restPullRequests); err != nil {
 		return nil, fmt.Errorf("gh returned invalid PR JSON: %w", err)
 	}
+	// Check runs cost one request per PR, so they are not awaited here: the
+	// list paints first and LoadRemotePullRequestChecks fills rows in.
 	pullRequests := make([]RemotePullRequest, 0, len(restPullRequests))
 	for _, pr := range restPullRequests {
 		pullRequest := remotePullRequestFromREST(pr)
 		pullRequests = append(pullRequests, pullRequest)
 	}
-	enrichRemotePullRequestChecks(ctx, cfg, pullRequests)
 	sortRemotePullRequests(pullRequests)
 	return pullRequests, nil
 }
 
-func enrichRemotePullRequestChecks(ctx context.Context, cfg Config, pullRequests []RemotePullRequest) {
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 6)
-	limit := min(len(pullRequests), 40)
-	for i := 0; i < limit; i++ {
-		if pullRequests[i].HeadSHA == "" {
-			continue
-		}
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			checks, err := loadRemotePullRequestChecks(ctx, cfg, pullRequests[idx].HeadSHA)
-			if err == nil {
-				pullRequests[idx].StatusCheckRollup = checks
-			}
-		}(i)
-	}
-	wg.Wait()
-}
+type checksLoader func(ctx context.Context, cfg Config, sha string) ([]StatusCheck, error)
 
 func loadRemotePullRequestDetail(ctx context.Context, cfg Config, number int) (RemotePullRequest, error) {
+	return loadRemotePullRequestDetailWith(ctx, cfg, number, loadRemotePullRequestChecks)
+}
+
+// loadRemotePullRequestDetailWith issues the detail's independent requests
+// concurrently, so a detail costs about two round trips instead of seven: only
+// the check runs wait for the head SHA from the PR itself.
+func loadRemotePullRequestDetailWith(ctx context.Context, cfg Config, number int, loadChecks checksLoader) (RemotePullRequest, error) {
 	if cfg.RepoSlug == "" {
 		return RemotePullRequest{}, errors.New("GitHub repository is not configured")
 	}
@@ -498,38 +486,68 @@ func loadRemotePullRequestDetail(ctx context.Context, cfg Config, number int) (R
 		return RemotePullRequest{}, errors.New("gh not found; run setup after installing GitHub CLI")
 	}
 
-	output, err := runCommand(ctx, cfg.ActiveProfile.RepositoryPath, "gh", "api", fmt.Sprintf("repos/%s/pulls/%d", cfg.RepoSlug, number))
-	if err != nil {
-		return RemotePullRequest{}, fmt.Errorf("PR detail lookup failed: %w", err)
-	}
+	var (
+		wg          sync.WaitGroup
+		restPR      restPullRequest
+		detailErr   error
+		checks      []StatusCheck
+		checksErr   error
+		files       []PullFile
+		filesErr    error
+		comments    []PullComment
+		commentsErr error
+		commits     []PullCommit
+		commitsErr  error
+		reviews     []PullReview
+		reviewsErr  error
+		diff        string
+		diffErr     error
+	)
+	wg.Go(func() {
+		output, err := runCommand(ctx, cfg.ActiveProfile.RepositoryPath, "gh", "api", fmt.Sprintf("repos/%s/pulls/%d", cfg.RepoSlug, number))
+		if err != nil {
+			detailErr = fmt.Errorf("PR detail lookup failed: %w", err)
+			return
+		}
+		if err := json.Unmarshal([]byte(output), &restPR); err != nil {
+			detailErr = fmt.Errorf("gh returned invalid PR detail JSON: %w", err)
+			return
+		}
+		if restPR.Head.SHA != "" {
+			checks, checksErr = loadChecks(ctx, cfg, restPR.Head.SHA)
+		}
+	})
+	wg.Go(func() { files, filesErr = loadRemotePullRequestFiles(ctx, cfg, number) })
+	wg.Go(func() { comments, commentsErr = loadRemotePullRequestComments(ctx, cfg, number) })
+	wg.Go(func() { commits, commitsErr = loadRemotePullRequestCommits(ctx, cfg, number) })
+	wg.Go(func() { reviews, reviewsErr = loadRemotePullRequestReviews(ctx, cfg, number) })
+	wg.Go(func() {
+		diff, diffErr = runCommand(ctx, cfg.ActiveProfile.RepositoryPath, "gh", "api", fmt.Sprintf("repos/%s/pulls/%d", cfg.RepoSlug, number), "-H", "Accept: application/vnd.github.v3.diff")
+	})
+	wg.Wait()
 
-	var restPR restPullRequest
-	if err := json.Unmarshal([]byte(output), &restPR); err != nil {
-		return RemotePullRequest{}, fmt.Errorf("gh returned invalid PR detail JSON: %w", err)
+	if detailErr != nil {
+		return RemotePullRequest{}, detailErr
 	}
 	pullRequest := remotePullRequestFromREST(restPR)
-
-	if files, err := loadRemotePullRequestFiles(ctx, cfg, number); err == nil {
+	if filesErr == nil {
 		pullRequest.Files = files
 	}
-	if comments, err := loadRemotePullRequestComments(ctx, cfg, number); err == nil {
+	if commentsErr == nil {
 		pullRequest.Comments = comments
 	}
-	if commits, err := loadRemotePullRequestCommits(ctx, cfg, number); err == nil {
+	if commitsErr == nil {
 		pullRequest.Commits = commits
 	}
-	if reviews, err := loadRemotePullRequestReviews(ctx, cfg, number); err == nil {
+	if reviewsErr == nil {
 		pullRequest.Reviews = reviews
 		pullRequest.ReviewDecision = deriveReviewDecision(reviews)
 	}
-	if restPR.Head.SHA != "" {
-		if checks, err := loadRemotePullRequestChecks(ctx, cfg, restPR.Head.SHA); err == nil {
-			pullRequest.StatusCheckRollup = checks
-		}
+	if restPR.Head.SHA != "" && checksErr == nil {
+		pullRequest.StatusCheckRollup = checks
+		pullRequest.ChecksKnown = true
 	}
-
-	diff, err := runCommand(ctx, cfg.ActiveProfile.RepositoryPath, "gh", "api", fmt.Sprintf("repos/%s/pulls/%d", cfg.RepoSlug, number), "-H", "Accept: application/vnd.github.v3.diff")
-	if err == nil {
+	if diffErr == nil {
 		pullRequest.Diff = diff
 	}
 	return pullRequest, nil
@@ -1001,40 +1019,14 @@ func runAgentWithPrompt(ctx context.Context, dir string, command string, prompt 
 	return string(output), nil
 }
 
-func collectWorktrees(ctx context.Context, cfg Config, showAll bool) ([]Worktree, string, error) {
-	entries, err := discoverWorktrees(ctx, cfg)
-	if err != nil {
-		return nil, "", err
-	}
-
-	filtered := make([]Worktree, 0, len(entries))
-	for _, wt := range entries {
+func filterManaged(worktrees []Worktree, showAll bool) []Worktree {
+	filtered := make([]Worktree, 0, len(worktrees))
+	for _, wt := range worktrees {
 		if showAll || wt.Managed {
 			filtered = append(filtered, wt)
 		}
 	}
-
-	prIndex, prWarning := loadPullRequestIndex(ctx, cfg)
-
-	var warnings []string
-	if prWarning != "" {
-		warnings = append(warnings, prWarning)
-	}
-	enrichWorktrees(ctx, filtered, prIndex, &warnings)
-	sortWorktrees(filtered)
-
-	return filtered, strings.Join(warnings, " | "), nil
-}
-
-// collectTicketWorktrees only gathers the local fields needed for ticket
-// matching. Status, commits, and PRs are not displayed in ticket worktree cells.
-func collectTicketWorktrees(ctx context.Context, cfg Config) ([]Worktree, string, error) {
-	worktrees, err := discoverWorktrees(ctx, cfg)
-	if err != nil {
-		return nil, "", err
-	}
-	sortWorktrees(worktrees)
-	return worktrees, "", nil
+	return filtered
 }
 
 func discoverWorktrees(ctx context.Context, cfg Config) ([]Worktree, error) {
@@ -1044,6 +1036,10 @@ func discoverWorktrees(ctx context.Context, cfg Config) ([]Worktree, error) {
 		return nil, err
 	}
 
+	// Symlink resolution walks every path component, so resolve the profile's
+	// directories once rather than per worktree.
+	canonicalRepo := canonicalPath(repoPath)
+	canonicalWorktrees := canonicalPath(cfg.ActiveProfile.WorktreesDir)
 	entries := make([]Worktree, 0, 8)
 	current := Worktree{}
 	flush := func() {
@@ -1051,9 +1047,13 @@ func discoverWorktrees(ctx context.Context, cfg Config) ([]Worktree, error) {
 			return
 		}
 		current.Path = filepath.Clean(current.Path)
-		current.IsMain = canonicalPath(current.Path) == canonicalPath(cfg.ActiveProfile.RepositoryPath)
-		current.Managed = current.IsMain || pathInsideDir(current.Path, cfg.ActiveProfile.WorktreesDir)
-		current.Name = worktreeName(current, cfg)
+		canonical := canonicalPath(current.Path)
+		current.IsMain = canonical == canonicalRepo
+		current.Managed = current.IsMain || canonicalInsideDir(canonical, canonicalWorktrees)
+		current.Name = filepath.Base(current.Path)
+		if current.IsMain {
+			current.Name = cfg.ActiveProfile.Name
+		}
 		if _, err := os.Stat(current.Path); err != nil {
 			current.Missing = errors.Is(err, os.ErrNotExist)
 		}
@@ -1093,69 +1093,72 @@ func discoverWorktrees(ctx context.Context, cfg Config) ([]Worktree, error) {
 	return entries, nil
 }
 
-func enrichWorktrees(ctx context.Context, worktrees []Worktree, prIndex map[string]*PullRequest, warnings *[]string) {
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 6)
-	var mu sync.Mutex
-
-	for i := range worktrees {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			wt := &worktrees[idx]
-			localWarnings := enrichWorktree(ctx, wt, prIndex)
-
-			if len(localWarnings) == 0 {
-				return
-			}
-
-			mu.Lock()
-			*warnings = append(*warnings, localWarnings...)
-			mu.Unlock()
-		}(i)
+// missingWorktreeNote explains why a worktree has no status to read, or
+// returns "" when its directory exists.
+func missingWorktreeNote(wt Worktree) string {
+	if !wt.Missing {
+		return ""
 	}
-
-	wg.Wait()
+	if wt.Prunable {
+		return "prunable worktree entry"
+	}
+	return "path missing on disk"
 }
 
-func enrichWorktree(ctx context.Context, wt *Worktree, prIndex map[string]*PullRequest) []string {
-	var warnings []string
-
-	if wt.Missing {
-		wt.LoadError = "path missing on disk"
-		if wt.Prunable {
-			wt.LoadError = "prunable worktree entry"
-		}
-		return warnings
+// readWorktreeStatus runs git status and git log for one worktree
+// concurrently and records what they report on wt.
+func readWorktreeStatus(ctx context.Context, wt *Worktree) []string {
+	wt.StatusPending = false
+	if note := missingWorktreeNote(*wt); note != "" {
+		wt.LoadError = note
+		return nil
 	}
 
-	status, err := loadRepoStatus(ctx, wt.Path)
-	if err != nil {
-		wt.LoadError = err.Error()
+	var (
+		wg        sync.WaitGroup
+		status    RepoStatus
+		statusErr error
+		commit    CommitInfo
+		commitErr error
+	)
+	wg.Go(func() { status, statusErr = loadRepoStatus(ctx, wt.Path) })
+	wg.Go(func() { commit, commitErr = loadCommitInfo(ctx, wt.Path) })
+	wg.Wait()
+
+	var warnings []string
+	wt.LoadError = ""
+	if statusErr != nil {
+		wt.LoadError = statusErr.Error()
 		warnings = append(warnings, fmt.Sprintf("status failed for %s", wt.Name))
 	} else {
 		wt.Status = status
 	}
-
-	commit, err := loadCommitInfo(ctx, wt.Path)
-	if err != nil {
+	if commitErr != nil {
 		warnings = append(warnings, fmt.Sprintf("commit failed for %s", wt.Name))
 	} else {
 		wt.Commit = commit
 	}
-
-	if wt.Detached || wt.Branch == "" || wt.Branch == "detached" {
-		return warnings
-	}
-
-	if prIndex != nil {
-		wt.PR = prIndex[wt.Branch]
-	}
-
 	return warnings
+}
+
+// attachPullRequests labels each branch worktree with its PR, if any.
+func attachPullRequests(worktrees []Worktree, prs []PullRequest) {
+	index := make(map[string]*PullRequest, len(prs))
+	for i := range prs {
+		if prs[i].HeadRefName == "" {
+			continue
+		}
+		pr := prs[i]
+		index[pr.HeadRefName] = &pr
+	}
+	for i := range worktrees {
+		wt := &worktrees[i]
+		wt.PR = nil
+		if wt.Detached || wt.Branch == "" || wt.Branch == "detached" {
+			continue
+		}
+		wt.PR = index[wt.Branch]
+	}
 }
 
 func loadRepoStatus(ctx context.Context, repoPath string) (RepoStatus, error) {
@@ -1256,26 +1259,7 @@ func loadCommitInfo(ctx context.Context, repoPath string) (CommitInfo, error) {
 	return commit, nil
 }
 
-func loadPullRequestIndex(ctx context.Context, cfg Config) (map[string]*PullRequest, string) {
-	prs, err := loadPullRequestsForTickets(ctx, cfg)
-	if err != nil {
-		return nil, "PR lookup unavailable: gh auth or repo access failed"
-	}
-
-	index := make(map[string]*PullRequest, len(prs))
-	for i := range prs {
-		pr := prs[i]
-		if pr.HeadRefName == "" {
-			continue
-		}
-		prCopy := pr
-		index[pr.HeadRefName] = &prCopy
-	}
-
-	return index, ""
-}
-
-func loadPullRequestsForTickets(ctx context.Context, cfg Config) ([]PullRequest, error) {
+func fetchPullRequestIndex(ctx context.Context, cfg Config) ([]PullRequest, error) {
 	if cfg.RepoSlug == "" {
 		return nil, errors.New("GitHub repository is not configured")
 	}
@@ -1309,7 +1293,20 @@ func removeWorktree(ctx context.Context, cfg Config, wt Worktree) error {
 	return err
 }
 
+// fetchFunc updates remote-tracking refs. It reports whether it actually ran
+// git fetch; force bypasses any reuse of a recent fetch.
+type fetchFunc func(ctx context.Context, repoPath string, remoteName string, force bool) bool
+
+func fetchRemote(ctx context.Context, repoPath string, remoteName string, _ bool) bool {
+	_, _ = runCommand(ctx, repoPath, "git", "-C", repoPath, "fetch", "--quiet", remoteName, "--prune")
+	return true
+}
+
 func createWorktree(ctx context.Context, cfg Config, branch string, path string) (bool, error) {
+	return createWorktreeWith(ctx, cfg, branch, path, fetchRemote)
+}
+
+func createWorktreeWith(ctx context.Context, cfg Config, branch string, path string, fetch fetchFunc) (bool, error) {
 	if strings.TrimSpace(branch) == "" {
 		return false, errors.New("branch name is required")
 	}
@@ -1331,14 +1328,20 @@ func createWorktree(ctx context.Context, cfg Config, branch string, path string)
 		return false, err
 	}
 
-	_, _ = runCommand(ctx, repoPath, "git", "-C", repoPath, "fetch", "--quiet", remoteName, "--prune")
-
+	// A local branch is checked out as-is, so the network round trip of a fetch
+	// would not change the result.
 	if gitRefExists(ctx, repoPath, "refs/heads/"+branch) {
 		_, err := runCommand(ctx, repoPath, "git", "-C", repoPath, "worktree", "add", path, branch)
 		return false, err
 	}
 
 	remoteRef := "refs/remotes/" + remoteName + "/" + branch
+	fetched := fetch(ctx, repoPath, remoteName, false)
+	if !fetched && !gitRefExists(ctx, repoPath, remoteRef) {
+		// A reused fetch may predate a branch pushed moments ago; check again
+		// before creating a new branch instead of tracking the remote one.
+		fetch(ctx, repoPath, remoteName, true)
+	}
 	if gitRefExists(ctx, repoPath, remoteRef) {
 		_, err := runCommand(ctx, repoPath, "git", "-C", repoPath, "worktree", "add", "--track", "-b", branch, path, remoteName+"/"+branch)
 		return false, err
@@ -1350,6 +1353,10 @@ func createWorktree(ctx context.Context, cfg Config, branch string, path string)
 }
 
 func ensurePullRequestWorktree(ctx context.Context, cfg Config, pullRequest RemotePullRequest) (Worktree, bool, error) {
+	return ensurePullRequestWorktreeWith(ctx, cfg, pullRequest, fetchRemote)
+}
+
+func ensurePullRequestWorktreeWith(ctx context.Context, cfg Config, pullRequest RemotePullRequest, fetch fetchFunc) (Worktree, bool, error) {
 	if pullRequest.Number <= 0 {
 		return Worktree{}, false, errors.New("pull request number is required")
 	}
@@ -1389,7 +1396,7 @@ func ensurePullRequestWorktree(ctx context.Context, cfg Config, pullRequest Remo
 	}
 
 	if strings.TrimSpace(pullRequest.HeadRefName) != "" {
-		existing, err := createWorktree(ctx, cfg, pullRequest.HeadRefName, path)
+		existing, err := createWorktreeWith(ctx, cfg, pullRequest.HeadRefName, path, fetch)
 		return Worktree{Name: filepath.Base(path), Path: path, Branch: pullRequest.HeadRefName}, existing, err
 	}
 	return Worktree{}, false, fmt.Errorf("cannot create worktree for PR #%d", pullRequest.Number)
@@ -1510,8 +1517,10 @@ func knownWorktreePath(ctx context.Context, repoPath string, path string) bool {
 }
 
 func pathInsideDir(path string, dir string) bool {
-	cleanPath := canonicalPath(path)
-	cleanDir := canonicalPath(dir)
+	return canonicalInsideDir(canonicalPath(path), canonicalPath(dir))
+}
+
+func canonicalInsideDir(cleanPath string, cleanDir string) bool {
 	if cleanPath == cleanDir {
 		return true
 	}
@@ -1583,13 +1592,6 @@ func sortWorktrees(worktrees []Worktree) {
 
 		return strings.ToLower(left.Path) < strings.ToLower(right.Path)
 	})
-}
-
-func worktreeName(wt Worktree, cfg Config) string {
-	if canonicalPath(wt.Path) == canonicalPath(cfg.ActiveProfile.RepositoryPath) {
-		return cfg.ActiveProfile.Name
-	}
-	return filepath.Base(wt.Path)
 }
 
 func appendUnique(files *[]string, seen map[string]struct{}, path string) {

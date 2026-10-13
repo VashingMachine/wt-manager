@@ -23,16 +23,24 @@ type loadResult struct {
 }
 
 type remotePRListResult struct {
+	RepoSlug     string
 	PullRequests []RemotePullRequest
 	CurrentUser  string
+	FetchedAt    time.Time
 	Err          error
+	// Background results come from prefetching or quiet revalidation and must
+	// not take over the status bar or selection.
+	Background bool
 }
 
 type ticketListResult struct {
-	Tickets   []Ticket
-	Worktrees []Worktree
-	Warning   string
-	Err       error
+	Source     string
+	Tickets    []Ticket
+	Worktrees  []Worktree
+	Warning    string
+	FetchedAt  time.Time
+	Err        error
+	Background bool
 }
 
 type ticketDetailResult struct {
@@ -43,6 +51,7 @@ type ticketDetailResult struct {
 }
 
 type ticketMutationResult struct {
+	ID      int
 	Key     string
 	Action  string
 	Message string
@@ -56,27 +65,35 @@ type ticketWorktreeResult struct {
 	Err      error
 }
 
+// loadWorktreesCmd only discovers worktrees (one fast git call); handling its
+// result starts the per-worktree status reads and the PR label lookup.
 func loadWorktreesCmd(services core.WorktreeService, cfg Config, showAll bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
 
-		worktrees, warning, err := services.CollectWorktrees(ctx, cfg, showAll)
-		return loadResult{Worktrees: worktrees, Warning: warning, Err: err, RepositoryPath: cfg.ActiveProfile.RepositoryPath, ShowAll: showAll}
+		worktrees, err := services.DiscoverWorktrees(ctx, cfg, showAll)
+		return loadResult{Worktrees: worktrees, Err: err, RepositoryPath: cfg.ActiveProfile.RepositoryPath, ShowAll: showAll}
 	}
 }
 
-func loadRemotePullRequestsCmd(services core.PullRequestService, cfg Config) tea.Cmd {
+func loadRemotePullRequestsCmd(services core.PullRequestService, cfg Config, background bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
 
-		pullRequests, err := services.LoadRemotePullRequests(ctx, cfg)
-		currentUser := ""
-		if err == nil {
-			currentUser, _ = services.LoadGitHubCurrentUser(ctx, cfg)
-		}
-		return remotePRListResult{PullRequests: pullRequests, CurrentUser: currentUser, Err: err}
+		var (
+			wg           sync.WaitGroup
+			pullRequests []RemotePullRequest
+			err          error
+			currentUser  string
+		)
+		// The user lookup is cached for a day, but on a cold cache it should not
+		// add a round trip in front of the list.
+		wg.Go(func() { pullRequests, err = services.LoadRemotePullRequests(ctx, cfg) })
+		wg.Go(func() { currentUser, _ = services.LoadGitHubCurrentUser(ctx, cfg) })
+		wg.Wait()
+		return remotePRListResult{RepoSlug: cfg.RepoSlug, PullRequests: pullRequests, CurrentUser: currentUser, FetchedAt: time.Now(), Err: err, Background: background}
 	}
 }
 
@@ -120,12 +137,13 @@ func loadTicketsCmd(services core.Services, cfg Config, board JiraBoard, mineOnl
 		}()
 		go func() {
 			defer wg.Done()
-			pullRequests, pullRequestErr = services.LoadPullRequestsForTickets(ctx, cfg)
+			pullRequests, _, pullRequestErr = services.LoadPullRequestIndex(ctx, cfg, false)
 		}()
 		wg.Wait()
 
+		source := fmt.Sprintf("%s|%d|%t|%t", cfg.ActiveProfile.RepositoryPath, board.ID, mineOnly, sprintOnly)
 		if ticketErr != nil {
-			return ticketListResult{Err: ticketErr}
+			return ticketListResult{Source: source, Err: ticketErr}
 		}
 
 		if worktreeErr != nil {
@@ -143,9 +161,11 @@ func loadTicketsCmd(services core.Services, cfg Config, board JiraBoard, mineOnl
 		}
 
 		return ticketListResult{
+			Source:    source,
 			Tickets:   services.AttachTicketContext(tickets, worktrees, pullRequests),
 			Worktrees: worktrees,
 			Warning:   warning,
+			FetchedAt: time.Now(),
 		}
 	}
 }
@@ -154,48 +174,6 @@ func loadTicketDetailCmd(services core.JiraService, ctx context.Context, cfg Con
 	return func() tea.Msg {
 		ticket, err := services.LoadTicketDetail(ctx, cfg, key)
 		return ticketDetailResult{Key: key, RequestID: requestID, Ticket: ticket, Err: err}
-	}
-}
-
-func transitionTicketCmd(services core.JiraService, cfg Config, board JiraBoard, key string, status string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-		defer cancel()
-		if err := services.TransitionTicket(ctx, key, status); err != nil {
-			return ticketMutationResult{Key: key, Action: "transition", Err: err}
-		}
-		if err := services.InvalidateTicketCache(cfg, board); err != nil {
-			return ticketMutationResult{Key: key, Action: "transition", Err: fmt.Errorf("status changed but cache invalidation failed: %w", err)}
-		}
-		return ticketMutationResult{Key: key, Action: "transition", Message: fmt.Sprintf("Changed %s to %s", key, status)}
-	}
-}
-
-func commentTicketCmd(services core.JiraService, cfg Config, board JiraBoard, key string, body string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-		defer cancel()
-		if err := services.CommentTicket(ctx, key, body); err != nil {
-			return ticketMutationResult{Key: key, Action: "comment", Err: err}
-		}
-		if err := services.InvalidateTicketCache(cfg, board); err != nil {
-			return ticketMutationResult{Key: key, Action: "comment", Err: fmt.Errorf("comment added but cache invalidation failed: %w", err)}
-		}
-		return ticketMutationResult{Key: key, Action: "comment", Message: fmt.Sprintf("Commented on %s", key)}
-	}
-}
-
-func assignTicketCmd(services core.JiraService, cfg Config, board JiraBoard, key string, assignee string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-		defer cancel()
-		if err := services.AssignTicket(ctx, key, assignee); err != nil {
-			return ticketMutationResult{Key: key, Action: "assign", Err: err}
-		}
-		if err := services.InvalidateTicketCache(cfg, board); err != nil {
-			return ticketMutationResult{Key: key, Action: "assign", Err: fmt.Errorf("assignment changed but cache invalidation failed: %w", err)}
-		}
-		return ticketMutationResult{Key: key, Action: "assign", Message: fmt.Sprintf("Assigned %s to %s", key, assignee)}
 	}
 }
 

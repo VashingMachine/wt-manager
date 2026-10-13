@@ -84,6 +84,7 @@ func (m model) switchMode(target viewMode) (tea.Model, tea.Cmd) {
 		m.selectedIndex = 0
 	}
 	if target == modeWorktrees {
+		m.attachPRIndex()
 		if !m.showAll {
 			worktrees := make([]Worktree, 0, len(m.allWorktrees))
 			for _, worktree := range m.allWorktrees {
@@ -107,7 +108,7 @@ func (m model) switchMode(target viewMode) (tea.Model, tea.Cmd) {
 
 	switch target {
 	case modePRs:
-		return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg), m.startLoading(loadingPRs, "Loading remote PRs..."))
+		return m.enterPRMode()
 	case modeTickets:
 		return m.enterTicketMode()
 	default:
@@ -137,9 +138,43 @@ func (m model) startTicketWorktreeCreation(ticket Ticket, action string) (tea.Mo
 		m.deferPendingWorktreeAction(worktree.Path, action)
 	}
 	return m, tea.Batch(
-		ensureTicketWorktreeCmd(m.services, m.cfg, ticket),
+		m.ops.enqueue(gitQueueKey(m.cfg), ensureTicketWorktreeCmd(m.services, m.cfg, ticket)),
 		m.startLoading(loadingMutation, fmt.Sprintf("Preparing worktree for %s...", ticket.Key)),
 	)
+}
+
+// enterPRMode reuses prefetched or cached PRs when there are any, so the list
+// paints at once and is only revalidated in the background once it ages out.
+func (m model) enterPRMode() (tea.Model, tea.Cmd) {
+	if m.prListSlug != m.cfg.RepoSlug {
+		m.remotePRs = nil
+		m.prListFetchedAt = time.Time{}
+	}
+	if len(m.remotePRs) == 0 {
+		if cached, fetchedAt, ok := m.services.PeekRemotePullRequests(m.cfg); ok {
+			m.remotePRs = cached
+			m.prListFetchedAt = fetchedAt
+			m.prListSlug = m.cfg.RepoSlug
+		}
+	}
+	if len(m.remotePRs) == 0 {
+		m.prListLoading = true
+		return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg, false), m.startLoading(loadingPRs, "Loading remote PRs..."))
+	}
+
+	m.applyPRFilter()
+	m.statusMessage = m.prFilterSummary()
+	cmds := []tea.Cmd{m.loadMissingChecks()}
+	if !m.prListLoading && !isRecent(m.prListFetchedAt, prListTTL) {
+		m.prListLoading = true
+		cmds = append(cmds, loadRemotePullRequestsCmd(m.services, m.cfg, true), m.spinner.Tick)
+	}
+	if selected := m.selectedRemotePR(); selected != nil {
+		next, cmd := m.startPRDetailLoad(selected.Number)
+		m = next.(model)
+		cmds = append(cmds, cmd)
+	}
+	return m, tea.Batch(cmds...)
 }
 
 // enterTicketMode paints whatever is on disk before touching the network, so
@@ -162,11 +197,29 @@ func (m model) enterTicketMode() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if cached, fetchedAt, ok := m.services.PeekTicketCache(m.cfg, m.ticketBoard, m.ticketMineOnly, m.ticketSprintOnly); ok {
-		m.tickets = cached
-		m.ticketCacheLabel = "cached " + relativeAge(fetchedAt)
-		m.applyTicketFilter()
+	if m.ticketsSource != m.ticketSource() {
+		m.tickets = nil
 	}
+	if len(m.tickets) == 0 {
+		m.paintCachedTickets()
+	}
+	if len(m.tickets) > 0 {
+		// Prefetched or cached rows: show them now and revalidate quietly.
+		m.applyTicketFilter()
+		m.statusMessage = m.ticketFilterSummary()
+		cmds := []tea.Cmd{}
+		if !m.ticketsLoading {
+			m.ticketsLoading = true
+			cmds = append(cmds, m.backgroundTicketsCmd(false), m.spinner.Tick)
+		}
+		if selected := m.selectedTicket(); selected != nil {
+			next, cmd := m.startTicketDetailLoad(selected.Key)
+			m = next.(model)
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+	}
+	m.ticketsLoading = true
 	return m, tea.Batch(m.loadTicketsCmd(false), m.startLoading(loadingTickets, m.ticketLoadingMessage()))
 }
 
@@ -382,10 +435,12 @@ func (m model) submitTicketStatus(status string) (tea.Model, tea.Cmd) {
 	m.selectingTicketStatus = false
 	m.enteringTicketStatus = false
 	m.ticketStatusInput.Blur()
-	return m, tea.Batch(
-		transitionTicketCmd(m.services, m.cfg, m.ticketBoard, selected.Key, status),
-		m.startLoading(loadingMutation, fmt.Sprintf("Changing %s to %s...", selected.Key, status)),
-	)
+	key, services := selected.Key, m.services
+	patch := core.TicketPatch{Key: key, Status: status, StatusCategory: m.statusCategoryFor(status)}
+	return m.startTicketMutation("transition", patch,
+		fmt.Sprintf("Changing %s to %s...", key, status),
+		fmt.Sprintf("Changed %s to %s", key, status),
+		func(ctx context.Context) error { return services.TransitionTicket(ctx, key, status) })
 }
 
 func (m model) updateTicketComment(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -411,10 +466,12 @@ func (m model) updateTicketComment(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.commentingTicket = false
 		m.ticketCommentInput.Blur()
-		return m, tea.Batch(
-			commentTicketCmd(m.services, m.cfg, m.ticketBoard, selected.Key, body),
-			m.startLoading(loadingMutation, fmt.Sprintf("Commenting on %s...", selected.Key)),
-		)
+		key, services := selected.Key, m.services
+		patch := core.TicketPatch{Key: key, Comment: &TicketComment{Author: "You", Body: body, Created: nowRFC3339()}}
+		return m.startTicketMutation("comment", patch,
+			fmt.Sprintf("Commenting on %s...", key),
+			fmt.Sprintf("Commented on %s", key),
+			func(ctx context.Context) error { return services.CommentTicket(ctx, key, body) })
 	}
 	var cmd tea.Cmd
 	m.ticketCommentInput, cmd = m.ticketCommentInput.Update(msg)
@@ -489,10 +546,13 @@ func (m model) submitTicketAssignee(assignee string) (tea.Model, tea.Cmd) {
 	m.selectingTicketAssignee = false
 	m.enteringTicketAssignee = false
 	m.ticketAssigneeInput.Blur()
-	return m, tea.Batch(
-		assignTicketCmd(m.services, m.cfg, m.ticketBoard, selected.Key, assignee),
-		m.startLoading(loadingMutation, fmt.Sprintf("Assigning %s...", selected.Key)),
-	)
+	key, services := selected.Key, m.services
+	user := assigneeForPatch(assignee, m.ticketAssigneeOptions)
+	patch := core.TicketPatch{Key: key, Assignee: &user}
+	return m.startTicketMutation("assign", patch,
+		fmt.Sprintf("Assigning %s...", key),
+		fmt.Sprintf("Assigned %s to %s", key, assignee),
+		func(ctx context.Context) error { return services.AssignTicket(ctx, key, assignee) })
 }
 
 func (m model) updateBoardSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -555,15 +615,14 @@ func (m model) reloadTicketsAfterScopeChange(what string) (tea.Model, tea.Cmd, b
 	m.cancelTicketDetailLoad()
 	m.persistTicketScope()
 
-	// Each scope has its own cache file, so swapping scope can also paint instantly.
+	// Each scope is cached separately, so swapping scope can also paint instantly.
 	m.tickets = nil
+	m.ticketsSource = ""
 	m.ticketCacheLabel = ""
-	if cached, fetchedAt, ok := m.services.PeekTicketCache(m.cfg, m.ticketBoard, m.ticketMineOnly, m.ticketSprintOnly); ok {
-		m.tickets = cached
-		m.ticketCacheLabel = "cached " + relativeAge(fetchedAt)
-	}
+	m.paintCachedTickets()
 	m.applyTicketFilter()
 	_ = what
+	m.ticketsLoading = true
 	return m, tea.Batch(m.loadTicketsCmd(false), m.persistConfig("Saved config "+m.cfg.ConfigPath), m.startLoading(loadingTickets, m.ticketLoadingMessage())), true
 }
 
@@ -711,11 +770,21 @@ func (m model) moveTicketSelectionAndLoad(delta int) (tea.Model, tea.Cmd) {
 
 func (m model) startTicketDetailLoad(key string) (tea.Model, tea.Cmd) {
 	m.cancelTicketDetailLoad()
+	// Show the description and comments from an earlier visit while JIRA is
+	// asked again.
+	if cached, ok := m.services.PeekTicketDetail(m.cfg, key); ok {
+		if listed, found := m.ticketByKey(key); found {
+			cached.Worktree, cached.PR = listed.Worktree, listed.PR
+			if listed.Status != "" {
+				cached.Status, cached.StatusCategory = listed.Status, listed.StatusCategory
+			}
+		}
+		m.ticketDetail = &cached
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 	m.ticketDetailRequest++
 	m.ticketDetailCancel = cancel
 	m.ticketDetailLoading = true
-	m.ticketDetail = nil
 	m.statusMessage = fmt.Sprintf("Loading %s...", key)
 	m.statusError = false
 	if !m.loading {
