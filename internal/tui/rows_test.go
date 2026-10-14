@@ -30,9 +30,9 @@ func TestRowHighlightSpansEveryCell(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	t.Cleanup(func() { lipgloss.SetColorProfile(previous) })
 
-	wt := &Worktree{Name: "backend-ACT", Branch: "ACT-3986", Repository: "backend", Status: RepoStatus{Dirty: true, Unstaged: 1}, PR: &PullRequest{Number: 270, State: "OPEN"}, Commit: CommitInfo{Relative: "1 day ago", Subject: "fix"}}
-	pr := remotePRFixture(270, "OPEN", "me", "Fix checkout", "ACT-3986")
-	ticket := Ticket{Key: "ACT-3986", Type: "Story", Status: "In Progress", StatusCategory: "indeterminate", Summary: "Fix checkout", PR: wt.PR}
+	wt := &Worktree{Name: "backend-APP", Branch: "APP-321", Repository: "backend", Status: RepoStatus{Dirty: true, Unstaged: 1}, PR: &PullRequest{Number: 270, State: "OPEN"}, Commit: CommitInfo{Relative: "1 day ago", Subject: "fix"}}
+	pr := remotePRFixture(270, "OPEN", "me", "Fix checkout", "APP-321")
+	ticket := Ticket{Key: "APP-321", Type: "Story", Status: "In Progress", StatusCategory: "indeterminate", Summary: "Fix checkout", PR: wt.PR}
 	rows := map[string]func(selected, focused, armed bool) string{
 		"worktrees": func(selected, focused, armed bool) string {
 			return renderTableRow(buildColumns(120), worktreeRowCells(*wt, false), wt, selected, focused, armed)

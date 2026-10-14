@@ -380,7 +380,7 @@ func (m model) handlePrefetchTick(msg prefetchTick) (tea.Model, tea.Cmd) {
 		m.prListLoading = true
 		cmds = append(cmds, loadRemotePullRequestsCmd(m.services, prCfg, true))
 	}
-	if !m.isTicketMode() && m.ticketBoard.ID != 0 && m.cfg.ActiveProfile.Jira != nil && !m.ticketsLoading && !isRecent(m.ticketsFetchedAt, prefetchInterval) {
+	if !m.isTicketMode() && m.ticketBoard.Configured() && m.cfg.ActiveProfile.Jira != nil && !m.ticketsLoading && !isRecent(m.ticketsFetchedAt, prefetchInterval) {
 		m.ticketsLoading = true
 		cmds = append(cmds, m.backgroundTicketsCmd(false))
 	}

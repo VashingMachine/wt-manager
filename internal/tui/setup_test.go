@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/VashingMachine/wt-manager/internal/core"
 	"github.com/VashingMachine/wt-manager/internal/services"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -296,4 +298,51 @@ func teaKey(value string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEnter}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)}
+}
+
+// jiraLinkServices resolves pasted ticket links to their space without acli.
+type jiraLinkServices struct {
+	offlineServices
+}
+
+func (jiraLinkServices) JiraSite(context.Context) (string, error) {
+	return "example.atlassian.net", nil
+}
+
+func (jiraLinkServices) ResolveJiraBoard(_ context.Context, link string) (JiraBoard, error) {
+	key := link[strings.LastIndex(link, "/")+1:]
+	key = key[:strings.Index(key, "-")]
+	return JiraBoard{URL: link, Name: key + " space", Projects: []string{key}}, nil
+}
+
+// Assures that the JIRA setup step accepts ticket links, adds each space once
+// however many of its tickets are pasted, keeps different spaces apart, and
+// opens tickets on all of them together.
+func TestSetupJiraStepAddsSpacesFromTicketLinks(t *testing.T) {
+	cfg := testGitRepo(t)
+	svc := jiraLinkServices{offlineServices{services.NewService()}}
+	setup := newSetupModel(Config{HomeDir: cfg.HomeDir, ConfigPath: filepath.Join(cfg.HomeDir, ".wt-manager.json"), App: svc.DefaultAppConfig(), SetupRepo: cfg.ActiveProfile.RepositoryPath}, true, svc)
+	setup.step = setupStepJira
+
+	for _, link := range []string{
+		"https://example.atlassian.net/browse/OPS-42",
+		"https://example.atlassian.net/browse/WEB-3",
+		"https://example.atlassian.net/browse/OPS-43",
+	} {
+		setup.jiraBoardInput.SetValue(link)
+		setup, _ = setup.updateJiraStep(teaKey("enter"))
+		if setup.statusErr || !strings.Contains(setup.status, "space") {
+			t.Fatalf("adding %s: status = %q (error %v)", link, setup.status, setup.statusErr)
+		}
+	}
+	jira := setup.jiraConfig
+	if jira == nil || jira.Site != "example.atlassian.net" || jira.DefaultBoard != core.JiraAllSources || len(jira.Boards) != 2 {
+		t.Fatalf("JIRA config = %+v, want the OPS and WEB spaces", jira)
+	}
+	if jira.Boards[0].URL != "https://example.atlassian.net/browse/OPS-43" || jira.Boards[1].Projects[0] != "WEB" {
+		t.Fatalf("spaces = %+v, want OPS refreshed in place and WEB kept", jira.Boards)
+	}
+	if view := strings.Join(setup.jiraView(), "\n"); !strings.Contains(view, "OPS space") || !strings.Contains(view, "[whole space]") {
+		t.Fatalf("JIRA step view = %q", view)
+	}
 }

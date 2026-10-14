@@ -77,7 +77,7 @@ func (m model) handleTicketMutationResult(msg ticketMutationResult) (tea.Model, 
 	var cmds []tea.Cmd
 	// Reconcile with JIRA (status categories, scope membership) once the burst
 	// of edits is over, without blocking the list.
-	if m.ticketMutationsInFlight() == 0 && m.ticketBoard.ID != 0 {
+	if m.ticketMutationsInFlight() == 0 && m.ticketBoard.Configured() {
 		m.ticketsLoading = true
 		cmds = append(cmds, m.backgroundTicketsCmd(true), m.spinner.Tick)
 	}
@@ -208,15 +208,16 @@ func (m model) ticketSource() string {
 	return ticketSourceKey(m.cfg, m.ticketBoard, m.ticketMineOnly, m.ticketSprintOnly)
 }
 
-// ticketSourceKey identifies the project, board and scope ticket rows belong to.
+// ticketSourceKey identifies the project, board or space, and scope ticket rows
+// belong to.
 func ticketSourceKey(cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool) string {
-	return fmt.Sprintf("%s|%d|%t|%t", projectKey(cfg), board.ID, mineOnly, sprintOnly)
+	return fmt.Sprintf("%s|%s|%t|%t", projectKey(cfg), board.SourceID(), mineOnly, board.SprintScoped(sprintOnly))
 }
 
 // paintCachedTickets shows the cached rows for the current board and scope,
 // joined to the worktrees and PRs already known.
 func (m *model) paintCachedTickets() bool {
-	if m.ticketBoard.ID == 0 {
+	if !m.ticketBoard.Configured() {
 		return false
 	}
 	cached, fetchedAt, ok := m.services.PeekTicketCache(m.cfg, m.ticketBoard, m.ticketMineOnly, m.ticketSprintOnly)

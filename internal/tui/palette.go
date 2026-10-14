@@ -65,7 +65,7 @@ func (m model) paletteEntries() []paletteEntry {
 		{ID: "agent-menu", Title: "Choose default AI agent", Category: "Settings", Shortcut: "m", Key: "m"},
 		{ID: "profile-menu", Title: "Switch project", Description: "Choose another repository profile", Category: "Profiles", Shortcut: "s", Key: "s"},
 		{ID: "setup", Title: "Edit project " + m.cfg.ActiveProfile.Name + "…", Description: "Guided setup: repositories, agents, GitHub, and JIRA", Category: "Profiles", Shortcut: "I", Key: "I"},
-		{ID: "project-new", Title: "New project…", Description: "Set up another project with its repositories, agents, and JIRA boards", Category: "Profiles"},
+		{ID: "project-new", Title: "New project…", Description: "Set up another project with its repositories, agents, and JIRA boards or spaces", Category: "Profiles"},
 		{ID: "config-edit", Title: "Edit configuration file", Description: "Open " + m.services.CompactPath(m.cfg.ConfigPath, m.cfg.HomeDir) + " in " + m.configuredEditor().Name + "; saved changes apply automatically", Category: "Settings"},
 		{ID: "config-reload", Title: "Reload configuration", Description: "Read " + m.services.CompactPath(m.cfg.ConfigPath, m.cfg.HomeDir) + " again", Category: "Settings"},
 		{ID: "repo-add", Title: "Add repository to " + m.cfg.ActiveProfile.Name + "…", Description: "List another repository's worktrees in this project and create worktrees in it", Category: "Profiles"},
@@ -84,7 +84,7 @@ func (m model) paletteEntries() []paletteEntry {
 		entries = append(entries, paletteEntry{ID: id, Title: title, Description: description, Category: "Commands", Shortcut: shortcut, Key: key})
 	}
 	if jira := m.cfg.ActiveProfile.Jira; jira != nil && jira.ActiveBoard() != nil {
-		add("tickets", "Show JIRA tickets", "Browse configured boards", "J", "")
+		add("tickets", "Show JIRA tickets", "Browse configured boards and spaces", "J", "")
 	}
 	if m.filterQuery != "" {
 		add("clear-filter", "Clear current filter", m.filterQuery, "Esc", "")
@@ -118,7 +118,7 @@ func (m model) paletteEntries() []paletteEntry {
 		add("ticket-filters", "Configure ticket filters", "Assigned to me, active sprint, open tickets", "f", "f")
 		add("ticket-mine", "Toggle tickets assigned to me", "", "Y", "Y")
 		add("ticket-sprint", "Toggle active sprint tickets", "", "S", "S")
-		add("ticket-board", "Choose JIRA board", "", "b", "b")
+		add("ticket-board", "Choose JIRA board or space", "", "b", "b")
 		add("ticket-status", "Change selected ticket status", "", "t", "t")
 		add("ticket-comment", "Comment on selected ticket", "", "C", "C")
 		add("ticket-assign", "Assign selected ticket", "", "A", "A")

@@ -32,13 +32,22 @@ const (
 
 var (
 	// Board URLs come in two shapes plus a bare id:
-	//   /jira/software/c/projects/EDPSL/boards/24731
-	//   /secure/RapidBoard.jspa?rapidView=24731
+	//   /jira/software/c/projects/APP/boards/456
+	//   /secure/RapidBoard.jspa?rapidView=456
 	jiraBoardPathPattern = regexp.MustCompile(`/boards?/(\d+)`)
 	jiraRapidViewPattern = regexp.MustCompile(`[?&]rapidView=(\d+)`)
-	jiraSitePattern      = regexp.MustCompile(`(?im)^\s*Site:\s*(\S+)\s*$`)
-	// Issue keys as they appear in branch names: EDPSL-4618-foo, feature/EDPSL-4592,
-	// fix/edpsl-2913-bar, EDPSL-4567/changes8.
+	// Any other link inside a space names it through a work item or the space
+	// itself:
+	//   /browse/OPS-42, /browse/OPS
+	//   /issues/?jql=…&selectedIssue=OPS-42
+	//   /jira/software/c/projects/OPS/list, /jira/servicedesk/projects/OPS/queues
+	jiraSelectedIssuePattern = regexp.MustCompile(`[?&]selectedIssue=([A-Za-z][A-Za-z0-9_]*)-\d+`)
+	jiraBrowsePattern        = regexp.MustCompile(`/browse/([A-Za-z][A-Za-z0-9_]*)(?:-\d+)?(?:[/?#]|$)`)
+	jiraSpacePathPattern     = regexp.MustCompile(`/(?:projects|spaces)/([A-Za-z][A-Za-z0-9_]*)(?:[/?#]|$)`)
+	jiraBareKeyPattern       = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]*)(?:-\d+)?$`)
+	jiraSitePattern          = regexp.MustCompile(`(?im)^\s*Site:\s*(\S+)\s*$`)
+	// Issue keys as they appear in branch names: APP-123-foo, feature/APP-124,
+	// fix/app-125-bar, APP-126/changes8.
 	jiraIssueKeyPattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9])([A-Za-z][A-Za-z0-9]*-\d+)([^0-9]|$)`)
 	jiraSlugPattern     = regexp.MustCompile(`[^a-z0-9]+`)
 )
@@ -93,23 +102,38 @@ func jiraTicketURL(site string, key string) string {
 	return "https://" + strings.TrimSuffix(site, "/") + "/browse/" + key
 }
 
-// parseJiraBoardRef extracts a numeric board id from a pasted board URL or a
-// bare id.
-func parseJiraBoardRef(input string) (int, error) {
+// jiraLinkRef is what a pasted JIRA link points at: a board by id, or a
+// space by key.
+type jiraLinkRef struct {
+	BoardID int
+	Space   string
+}
+
+// parseJiraLink reads a pasted board URL or id, or any link or key inside a
+// space. Board links win, since they also carry the space in their path.
+func parseJiraLink(input string) (jiraLinkRef, error) {
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "" {
-		return 0, errors.New("board link is required")
+		return jiraLinkRef{}, errors.New("JIRA link is required")
 	}
 	if id, err := strconv.Atoi(trimmed); err == nil && id > 0 {
-		return id, nil
+		return jiraLinkRef{BoardID: id}, nil
 	}
-	if match := jiraRapidViewPattern.FindStringSubmatch(trimmed); match != nil {
-		return strconv.Atoi(match[1])
+	for _, pattern := range []*regexp.Regexp{jiraRapidViewPattern, jiraBoardPathPattern} {
+		if match := pattern.FindStringSubmatch(trimmed); match != nil {
+			id, err := strconv.Atoi(match[1])
+			if err != nil {
+				return jiraLinkRef{}, err
+			}
+			return jiraLinkRef{BoardID: id}, nil
+		}
 	}
-	if match := jiraBoardPathPattern.FindStringSubmatch(trimmed); match != nil {
-		return strconv.Atoi(match[1])
+	for _, pattern := range []*regexp.Regexp{jiraSelectedIssuePattern, jiraBrowsePattern, jiraSpacePathPattern, jiraBareKeyPattern} {
+		if match := pattern.FindStringSubmatch(trimmed); match != nil {
+			return jiraLinkRef{Space: strings.ToUpper(match[1])}, nil
+		}
 	}
-	return 0, fmt.Errorf("could not find a board id in %q", trimmed)
+	return jiraLinkRef{}, fmt.Errorf("could not find a board or space in %q", trimmed)
 }
 
 type restJiraBoard struct {
@@ -137,14 +161,24 @@ type restJiraSprints struct {
 	} `json:"sprints"`
 }
 
-// resolveJiraBoard turns a pasted board link into a fully resolved board, so the
-// link only has to be parsed and looked up once (at setup) rather than per load.
-func resolveJiraBoard(ctx context.Context, boardURLOrID string) (JiraBoard, error) {
-	id, err := parseJiraBoardRef(boardURLOrID)
+type restJiraProject struct {
+	Key  string `json:"key"`
+	Name string `json:"name"`
+}
+
+// resolveJiraBoard turns a pasted link into a fully resolved board or space, so
+// the link only has to be parsed and looked up once (at setup) rather than per
+// load.
+func resolveJiraBoard(ctx context.Context, link string) (JiraBoard, error) {
+	ref, err := parseJiraLink(link)
 	if err != nil {
 		return JiraBoard{}, err
 	}
+	if ref.Space != "" {
+		return resolveJiraSpace(ctx, link, ref.Space)
+	}
 
+	id := ref.BoardID
 	output, err := runACLI(ctx, "jira", "board", "view", "--id", strconv.Itoa(id), "--json")
 	if err != nil {
 		return JiraBoard{}, fmt.Errorf("board %d lookup failed: %w", id, err)
@@ -162,11 +196,34 @@ func resolveJiraBoard(ctx context.Context, boardURLOrID string) (JiraBoard, erro
 		return JiraBoard{}, fmt.Errorf("board %d (%s) has no associated projects", id, board.Name)
 	}
 
-	resolved := JiraBoard{URL: strings.TrimSpace(boardURLOrID), ID: id, Name: board.Name, Projects: projects}
+	resolved := JiraBoard{URL: strings.TrimSpace(link), ID: id, Name: board.Name, Projects: projects}
 	if resolved.Name == "" {
 		resolved.Name = fmt.Sprintf("board %d", id)
 	}
 	return resolved, nil
+}
+
+// resolveJiraSpace looks the space up so a mistyped key fails at setup, and
+// names it like JIRA's own board locations: "Operations (OPS)".
+func resolveJiraSpace(ctx context.Context, link string, key string) (JiraBoard, error) {
+	output, err := runACLI(ctx, "jira", "project", "view", "--key", key, "--json")
+	if err != nil {
+		return JiraBoard{}, fmt.Errorf("space %s lookup failed: %w", key, err)
+	}
+	var project restJiraProject
+	if err := json.Unmarshal([]byte(output), &project); err != nil {
+		return JiraBoard{}, fmt.Errorf("acli returned invalid project JSON: %w", err)
+	}
+	// JIRA answers with the space's current key, which differs when the link
+	// predates a key change.
+	if current := strings.ToUpper(strings.TrimSpace(project.Key)); current != "" {
+		key = current
+	}
+	name := key
+	if trimmed := strings.TrimSpace(project.Name); trimmed != "" {
+		name = fmt.Sprintf("%s (%s)", trimmed, key)
+	}
+	return JiraBoard{URL: strings.TrimSpace(link), Name: name, Projects: []string{key}}, nil
 }
 
 func jiraBoardProjects(ctx context.Context, boardID int) ([]string, error) {
@@ -475,7 +532,7 @@ func decodeJiraIssueDocument(raw json.RawMessage) ([]restJiraIssue, error) {
 
 func fetchTickets(ctx context.Context, cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool) ([]Ticket, error) {
 	site := jiraSiteForConfig(ctx, cfg)
-	if sprintOnly {
+	if board.SprintScoped(sprintOnly) {
 		return fetchTicketsBySprint(ctx, cfg, board, mineOnly, site)
 	}
 	return fetchTicketsByProject(ctx, cfg, board, mineOnly, site)
@@ -541,8 +598,8 @@ func assignTicket(ctx context.Context, key string, assignee string) error {
 }
 
 // ticketKeyFromBranch pulls the JIRA key out of a branch name. Real branches in
-// the wild look like EDPSL-4618-foo, feature/EDPSL-4592, fix/edpsl-2913-bar and
-// EDPSL-4567/changes8, so the key can sit anywhere and in any case.
+// the wild look like APP-123-foo, feature/APP-124, fix/app-125-bar and
+// APP-126/changes8, so the key can sit anywhere and in any case.
 func ticketKeyFromBranch(branch string) string {
 	match := jiraIssueKeyPattern.FindStringSubmatch(branch)
 	if match == nil {
@@ -552,7 +609,7 @@ func ticketKeyFromBranch(branch string) string {
 }
 
 // ticketBranchName builds the default branch/worktree name for a ticket,
-// matching the convention already used in these repos: EDPSL-4618-short-summary.
+// matching the common convention: APP-123-short-summary.
 func ticketBranchName(ticket Ticket) string {
 	key := strings.ToUpper(strings.TrimSpace(ticket.Key))
 	slug := jiraSlugPattern.ReplaceAllString(strings.ToLower(ticket.Summary), "-")

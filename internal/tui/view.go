@@ -798,13 +798,13 @@ func singleLineCell(value string) string {
 
 func (m model) filterLabel() string {
 	if m.isTicketMode() {
-		parts := []string{"board=" + emptyDash(m.ticketBoard.Name)}
+		parts := []string{m.ticketSourceLabel()}
 		if m.ticketMineOnly {
 			parts = append(parts, "assignee=me")
 		} else {
 			parts = append(parts, "assignee=all")
 		}
-		if m.ticketSprintOnly {
+		if m.ticketSprintScoped() {
 			parts = append(parts, "active sprint")
 		}
 		if m.ticketOpenOnly {
@@ -1122,17 +1122,24 @@ func renderTicketAssigneeInputModal(m model) string {
 }
 
 func renderBoardSelectorModal(m model) string {
-	body := []string{"Choose the configured JIRA board.", ""}
-	if jira := m.cfg.ActiveProfile.Jira; jira != nil {
-		for idx, board := range jira.Boards {
-			label := board.Name
-			if len(board.Projects) > 0 {
-				label += "  [" + strings.Join(board.Projects, ", ") + "]"
-			}
-			body = append(body, selectorLine(idx == m.boardCursor, label, board.Name == m.ticketBoard.Name))
+	body := []string{"Choose a configured JIRA board or space, or all of them.", ""}
+	for idx, board := range m.ticketSourceOptions() {
+		label := board.Name
+		if tag := jiraSourceTag(board); tag != "" {
+			label += "  " + tag
 		}
+		body = append(body, selectorLine(idx == m.boardCursor, label, board.SourceID() == m.ticketBoard.SourceID()))
 	}
 	return renderModal("JIRA Board", body, selectHints)
+}
+
+// sprintFilterLabel marks the sprint filter as board-only while a space or
+// all sources are shown, since spaces list every ticket regardless.
+func sprintFilterLabel(board JiraBoard) string {
+	if board.ID == 0 {
+		return "Current sprint (boards only)"
+	}
+	return "Current sprint"
 }
 
 func renderTicketFiltersModal(m model) string {
@@ -1141,7 +1148,7 @@ func renderTicketFiltersModal(m model) string {
 		checked bool
 	}{
 		{label: "Only me", checked: m.ticketFilterMineOnly},
-		{label: "Current sprint", checked: m.ticketFilterSprintOnly},
+		{label: sprintFilterLabel(m.ticketBoard), checked: m.ticketFilterSprintOnly},
 		{label: "Open (not closed)", checked: m.ticketFilterOpenOnly},
 	}
 	body := []string{"Choose which tickets to display.", ""}

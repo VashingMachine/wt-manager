@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -235,11 +236,11 @@ func (m model) enterTicketMode() (tea.Model, tea.Cmd) {
 		m.ticketCacheLabel = ""
 		m.rebuildRows()
 		m.updateDetailContent()
-		m.statusMessage = "No JIRA board configured for this profile — press I to run setup"
+		m.statusMessage = "No JIRA board or space configured for this profile — press I to run setup"
 		m.statusError = true
 		return m, nil
 	}
-	if m.ticketBoard.ID == 0 {
+	if !m.ticketBoard.Configured() {
 		if board := jira.ActiveBoard(); board != nil {
 			m.ticketBoard = *board
 		}
@@ -301,18 +302,26 @@ func (m model) updateTicketMode(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		return m.reloadTicketsAfterScopeChange("assignee")
 
 	case key.Matches(msg, m.keys.SprintOnly):
+		if !m.ticketBoard.SprintScoped(true) {
+			m.statusMessage = fmt.Sprintf("%s is a whole space, which has no sprint of its own — press b to pick a board for sprint scope", m.ticketBoard.Name)
+			if m.ticketBoard.IsCombined() {
+				m.statusMessage = "Only spaces are configured, and spaces have no sprint of their own — add a board in setup (I) for sprint scope"
+			}
+			m.statusError = false
+			return m, nil, true
+		}
 		m.ticketSprintOnly = !m.ticketSprintOnly
 		return m.reloadTicketsAfterScopeChange("sprint")
 
 	case key.Matches(msg, m.keys.BoardMenu):
 		if m.cfg.ActiveProfile.Jira == nil || len(m.cfg.ActiveProfile.Jira.Boards) == 0 {
-			m.statusMessage = "No boards configured — press I to run setup"
+			m.statusMessage = "No boards or spaces configured — press I to run setup"
 			m.statusError = true
 			return m, nil, true
 		}
 		m.selectingBoard = true
 		m.boardCursor = m.currentBoardIndex()
-		m.statusMessage = "Select a JIRA board"
+		m.statusMessage = "Select a JIRA board or space"
 		m.statusError = false
 		return m, nil, true
 
@@ -604,8 +613,8 @@ func (m model) submitTicketAssignee(assignee string) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateBoardSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	jira := m.cfg.ActiveProfile.Jira
-	if jira == nil || len(jira.Boards) == 0 {
+	options := m.ticketSourceOptions()
+	if len(options) == 0 {
 		m.selectingBoard = false
 		return m, nil
 	}
@@ -621,13 +630,13 @@ func (m model) updateBoardSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "j":
-		if m.boardCursor < len(jira.Boards)-1 {
+		if m.boardCursor < len(options)-1 {
 			m.boardCursor++
 		}
 		return m, nil
 	case "enter":
-		m.boardCursor = min(max(m.boardCursor, 0), len(jira.Boards)-1)
-		m.ticketBoard = jira.Boards[m.boardCursor]
+		m.boardCursor = min(max(m.boardCursor, 0), len(options)-1)
+		m.ticketBoard = options[m.boardCursor]
 		m.selectingBoard = false
 		m.persistTicketScope()
 		returnModel, cmd, _ := m.reloadTicketsAfterScopeChange("board")
@@ -701,13 +710,23 @@ func (m *model) persistTicketScope() {
 	}
 }
 
-func (m model) currentBoardIndex() int {
+// ticketSourceOptions lists what b can switch to: every board and space
+// together first, when there is more than one, then each on its own.
+func (m model) ticketSourceOptions() []JiraBoard {
 	jira := m.cfg.ActiveProfile.Jira
-	if jira == nil {
-		return 0
+	if jira == nil || len(jira.Boards) == 0 {
+		return nil
 	}
-	for idx, board := range jira.Boards {
-		if board.Name == m.ticketBoard.Name {
+	options := make([]JiraBoard, 0, len(jira.Boards)+1)
+	if len(jira.Boards) > 1 {
+		options = append(options, jira.AllSources())
+	}
+	return append(options, jira.Boards...)
+}
+
+func (m model) currentBoardIndex() int {
+	for idx, option := range m.ticketSourceOptions() {
+		if option.SourceID() == m.ticketBoard.SourceID() {
 			return idx
 		}
 	}
@@ -945,13 +964,62 @@ func (m model) emptyTicketsMessage() string {
 	if m.ticketOpenOnly {
 		return "No open tickets match the active filters — press f to adjust"
 	}
-	if m.ticketSprintOnly {
+	if m.ticketSprintScoped() {
 		return "No tickets in the active sprint"
+	}
+	if m.ticketBoard.IsSpace() {
+		if m.ticketMineOnly {
+			return "No tickets in this space are assigned to you — press Y to show the whole space"
+		}
+		return "No tickets in this space"
+	}
+	if m.ticketBoard.IsCombined() {
+		if m.ticketMineOnly {
+			return "No tickets in any board or space are assigned to you — press Y to show everyone's"
+		}
+		return "No tickets in any board or space"
 	}
 	if m.ticketMineOnly {
 		return "No tickets assigned to you — press Y to show the whole board"
 	}
 	return "No tickets on this board"
+}
+
+// ticketSprintScoped reports whether the sprint filter applies to the current
+// source; a space has no sprint of its own.
+func (m model) ticketSprintScoped() bool {
+	return m.ticketBoard.SprintScoped(m.ticketSprintOnly)
+}
+
+// ticketSourceLabel names the current source for status lines.
+func (m model) ticketSourceLabel() string {
+	if m.ticketBoard.IsCombined() {
+		return "source=all boards and spaces"
+	}
+	if m.ticketBoard.IsSpace() {
+		return "space=" + m.ticketBoard.Name
+	}
+	return "board=" + emptyDash(m.ticketBoard.Name)
+}
+
+// jiraSourceTag labels what a source lists: a board's spaces, a whole space,
+// or every space the boards and spaces shown together cover.
+func jiraSourceTag(board JiraBoard) string {
+	if board.IsSpace() {
+		return "[whole space]"
+	}
+	var keys []string
+	for _, member := range board.Members() {
+		for _, key := range member.Projects {
+			if !slices.Contains(keys, key) {
+				keys = append(keys, key)
+			}
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	return "[" + strings.Join(keys, ", ") + "]"
 }
 
 func (m model) ticketRowCells(ticket Ticket, compact bool) []string {
@@ -1058,12 +1126,12 @@ func buildTicketColumns(totalWidth int) []table.Column {
 func (m model) ticketFilterSummary() string {
 	parts := []string{fmt.Sprintf("Showing %d/%d tickets", len(m.visibleTickets), len(m.tickets))}
 	if m.ticketBoard.Name != "" {
-		parts = append(parts, "board="+m.ticketBoard.Name)
+		parts = append(parts, m.ticketSourceLabel())
 	}
 	if m.ticketMineOnly {
 		parts = append(parts, "assignee=me")
 	}
-	if m.ticketSprintOnly {
+	if m.ticketSprintScoped() {
 		parts = append(parts, "sprint=active")
 	}
 	if m.ticketOpenOnly {

@@ -318,12 +318,15 @@ func normalizeJiraConfig(profile *RepositoryProfile) bool {
 	for _, board := range jira.Boards {
 		board.Name = strings.TrimSpace(board.Name)
 		board.URL = strings.TrimSpace(board.URL)
-		if board.ID == 0 {
+		if !board.Configured() {
 			changed = true
 			continue
 		}
 		if board.Name == "" {
 			board.Name = fmt.Sprintf("board %d", board.ID)
+			if board.IsSpace() {
+				board.Name = strings.Join(board.Projects, ", ")
+			}
 			changed = true
 		}
 		if _, ok := seen[board.Name]; ok {
@@ -339,12 +342,13 @@ func normalizeJiraConfig(profile *RepositoryProfile) bool {
 	jira.Boards = boards
 
 	jira.DefaultBoard = strings.TrimSpace(jira.DefaultBoard)
-	if jira.DefaultBoard != "" && jira.Board(jira.DefaultBoard) == nil {
+	if jira.DefaultBoard != "" && jira.DefaultBoard != core.JiraAllSources && jira.Board(jira.DefaultBoard) == nil {
 		jira.DefaultBoard = ""
 		changed = true
 	}
+	// Tickets open on every board and space together unless one was picked.
 	if jira.DefaultBoard == "" && len(jira.Boards) > 0 {
-		jira.DefaultBoard = jira.Boards[0].Name
+		jira.DefaultBoard = core.JiraAllSources
 		changed = true
 	}
 	if jira.Limit <= 0 {

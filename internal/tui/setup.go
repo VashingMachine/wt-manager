@@ -155,8 +155,8 @@ func newSetupModelFor(cfg Config, startup bool, services core.Services, repoPath
 	customCommand.Width = 64
 
 	jiraBoardInput := textinput.New()
-	jiraBoardInput.Prompt = "board URL or ID: "
-	jiraBoardInput.Placeholder = "https://site.atlassian.net/jira/software/c/projects/KEY/boards/123"
+	jiraBoardInput.Prompt = "JIRA link: "
+	jiraBoardInput.Placeholder = "https://site.atlassian.net/browse/KEY-123 or a board link"
 	jiraBoardInput.CharLimit = 300
 	jiraBoardInput.Width = 76
 
@@ -560,7 +560,7 @@ func (s setupModel) updateJiraStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
 		defer cancel()
 		board, err := s.services.ResolveJiraBoard(ctx, input)
 		if err != nil {
-			s.fail(fmt.Sprintf("Resolve JIRA board failed: %v", err))
+			s.fail(fmt.Sprintf("Resolve JIRA link failed: %v", err))
 			return s, nil
 		}
 		if s.jiraConfig == nil {
@@ -580,7 +580,7 @@ func (s setupModel) updateJiraStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
 		}
 		replaced := false
 		for idx := range s.jiraConfig.Boards {
-			if s.jiraConfig.Boards[idx].ID == board.ID {
+			if s.jiraConfig.Boards[idx].SourceID() == board.SourceID() {
 				s.jiraConfig.Boards[idx] = board
 				replaced = true
 				break
@@ -588,12 +588,16 @@ func (s setupModel) updateJiraStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
 		}
 		if !replaced {
 			s.jiraConfig.Boards = append(s.jiraConfig.Boards, board)
-		}
-		if s.jiraConfig.DefaultBoard == "" {
-			s.jiraConfig.DefaultBoard = board.Name
+			// Open tickets on everything configured, so a newly added board or
+			// space shows up rather than staying behind the previous default.
+			s.jiraConfig.DefaultBoard = core.JiraAllSources
 		}
 		s.jiraBoardInput.SetValue("")
-		s.status, s.statusErr = fmt.Sprintf("Added board %s; paste another or press enter to review", board.Name), false
+		added := "board " + board.Name
+		if board.IsSpace() {
+			added = "space " + board.Name + ", listing all of its tickets"
+		}
+		s.status, s.statusErr = fmt.Sprintf("Added %s; paste another or press enter to review", added), false
 		return s, nil
 	}
 	var cmd tea.Cmd
@@ -730,8 +734,8 @@ func (s setupModel) stepContent(width int) (string, string, []string, []keyHint)
 	case setupStepCustomCommand:
 		return "Custom agent", "Name: " + s.customName.Value(), []string{s.customCommand.View()}, []keyHint{{"enter", "add"}, {"esc", "back"}}
 	case setupStepJira:
-		return "JIRA (optional)", "Paste board links to browse their tickets; boards are resolved through ACLI.", s.jiraView(),
-			[]keyHint{{"enter", "add board / review"}, {"ctrl+x", "turn off JIRA"}, {"esc", "back"}}
+		return "JIRA (optional)", "Paste a board link, or any link from a space (such as a ticket) to browse all of that space's tickets. Links are resolved through ACLI.", s.jiraView(),
+			[]keyHint{{"enter", "add link / review"}, {"ctrl+x", "turn off JIRA"}, {"esc", "back"}}
 	case setupStepReview:
 		return "Review", "Nothing is saved until you confirm.", s.reviewView(),
 			[]keyHint{{"enter", "save"}, {"esc", "back"}}
@@ -805,10 +809,10 @@ func (s setupModel) jiraView() []string {
 	var lines []string
 	if s.jiraConfig != nil && len(s.jiraConfig.Boards) > 0 {
 		for _, board := range s.jiraConfig.Boards {
-			lines = append(lines, successStyle.Render(fmt.Sprintf("%s %s", icons.OK, board.Name))+mutedStyle.Render(" ["+strings.Join(board.Projects, ", ")+"]"))
+			lines = append(lines, successStyle.Render(fmt.Sprintf("%s %s", icons.OK, board.Name))+mutedStyle.Render(" "+jiraSourceTag(board)))
 		}
 	} else {
-		lines = append(lines, mutedStyle.Render("No boards; JIRA tickets stay off for this project."))
+		lines = append(lines, mutedStyle.Render("No boards or spaces; JIRA tickets stay off for this project."))
 	}
 	return append(lines, "", s.jiraBoardInput.View())
 }
@@ -1011,7 +1015,7 @@ func buildSetupConfig(s setupModel) (Config, error) {
 	}
 	if profile.Jira != nil {
 		if profile.Jira.DefaultBoard == "" {
-			profile.Jira.DefaultBoard = profile.Jira.Boards[0].Name
+			profile.Jira.DefaultBoard = core.JiraAllSources
 		}
 		if profile.Jira.Limit <= 0 {
 			profile.Jira.Limit = 100

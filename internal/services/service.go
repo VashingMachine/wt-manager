@@ -217,9 +217,9 @@ func (s *Service) JiraSite(ctx context.Context) (string, error) {
 	return jiraSite(ctx)
 }
 
-func (s *Service) ResolveJiraBoard(ctx context.Context, boardURLOrID string) (JiraBoard, error) {
+func (s *Service) ResolveJiraBoard(ctx context.Context, link string) (JiraBoard, error) {
 	ctx = s.commandContext(ctx)
-	return resolveJiraBoard(ctx, boardURLOrID)
+	return resolveJiraBoard(ctx, link)
 }
 
 func (s *Service) SearchJiraBoards(ctx context.Context, name string) ([]JiraBoard, error) {

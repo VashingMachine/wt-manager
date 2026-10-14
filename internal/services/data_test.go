@@ -148,6 +148,38 @@ func TestNormalizeAppConfigAddsDefaultJiraFilters(t *testing.T) {
 	}
 }
 
+// Assures that JIRA spaces, which have no board id, survive config
+// normalization, that an unnamed space is named after its key, and that
+// tickets default to every board and space together.
+func TestNormalizeAppConfigKeepsJiraSpaces(t *testing.T) {
+	app := AppConfig{
+		DefaultProfile: "app",
+		DefaultAgent:   "codex",
+		Agents:         []AgentTool{{Name: "codex", Command: "codex"}},
+		Profiles: []RepositoryProfile{{
+			Name:           "app",
+			RepositoryPath: "/tmp/app",
+			WorktreesDir:   "/tmp/worktrees",
+			RemoteName:     "origin",
+			Jira: &JiraConfig{
+				Boards: []JiraBoard{
+					{URL: "https://site.atlassian.net/browse/OPS-42", Name: "Operations (OPS)", Projects: []string{"OPS"}},
+					{Projects: []string{"WEB"}},
+					{Name: "nothing to list"},
+				},
+			},
+		}},
+	}
+	normalized, _, err := normalizeAppConfig(app)
+	if err != nil {
+		t.Fatalf("normalizeAppConfig() error = %v", err)
+	}
+	jira := normalized.Profiles[0].Jira
+	if jira == nil || len(jira.Boards) != 2 || jira.Boards[0].Name != "Operations (OPS)" || jira.Boards[1].Name != "WEB" || jira.DefaultBoard != core.JiraAllSources {
+		t.Fatalf("normalized JIRA = %+v", jira)
+	}
+}
+
 func TestDefaultConfigSetupModes(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")

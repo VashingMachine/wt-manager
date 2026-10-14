@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/VashingMachine/wt-manager/internal/core"
@@ -50,15 +52,20 @@ func ticketCacheSite(cfg Config) string {
 }
 
 func ticketCacheKey(cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool) string {
-	return fmt.Sprintf("%s/%s/%d/%s", ticketCacheSite(cfg), cacheProfileName(cfg), board.ID, ticketCacheScope(mineOnly, sprintOnly))
+	return fmt.Sprintf("%s/%s/%s/%s", ticketCacheSite(cfg), cacheProfileName(cfg), board.SourceID(), ticketCacheScope(mineOnly, board.SprintScoped(sprintOnly)))
 }
 
-// ticketCacheKeys lists every scope a board can be cached under.
+// ticketCacheKeys lists every scope a board or space, or each of them in the
+// all-sources selection, can be cached under.
 func ticketCacheKeys(cfg Config, board JiraBoard) []string {
-	keys := make([]string, 0, 4)
-	for _, mineOnly := range []bool{true, false} {
-		for _, sprintOnly := range []bool{true, false} {
-			keys = append(keys, ticketCacheKey(cfg, board, mineOnly, sprintOnly))
+	keys := []string{}
+	for _, member := range board.Members() {
+		for _, mineOnly := range []bool{true, false} {
+			for _, sprintOnly := range []bool{true, false} {
+				if key := ticketCacheKey(cfg, member, mineOnly, sprintOnly); !slices.Contains(keys, key) {
+					keys = append(keys, key)
+				}
+			}
 		}
 	}
 	return keys
@@ -81,19 +88,113 @@ func cacheableTickets(tickets []Ticket) []Ticket {
 }
 
 // PeekTicketCache returns cached tickets without touching the network, along
-// with the time they were fetched (zero once a mutation made them stale).
+// with the time they were fetched (zero once a mutation made them stale). For
+// all boards and spaces together it merges what each one has cached, dated by
+// the oldest, and undated while any of them is stale or not cached yet.
 func (s *Service) PeekTicketCache(cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool) ([]Ticket, time.Time, bool) {
-	var tickets []Ticket
-	fetchedAt, ok := s.cache.Get(bucketTickets, ticketCacheKey(cfg, board, mineOnly, sprintOnly), &tickets)
-	return tickets, fetchedAt, ok
+	if !board.IsCombined() {
+		var tickets []Ticket
+		fetchedAt, ok := s.cache.Get(bucketTickets, ticketCacheKey(cfg, board, mineOnly, sprintOnly), &tickets)
+		return tickets, fetchedAt, ok
+	}
+	var lists [][]Ticket
+	var oldest time.Time
+	complete := true
+	for _, source := range board.Sources {
+		var tickets []Ticket
+		fetchedAt, ok := s.cache.Get(bucketTickets, ticketCacheKey(cfg, source, mineOnly, sprintOnly), &tickets)
+		if !ok || fetchedAt.IsZero() {
+			complete = false
+		}
+		if !ok {
+			continue
+		}
+		lists = append(lists, tickets)
+		if oldest.IsZero() || fetchedAt.Before(oldest) {
+			oldest = fetchedAt
+		}
+	}
+	if len(lists) == 0 {
+		return nil, time.Time{}, false
+	}
+	if !complete {
+		oldest = time.Time{}
+	}
+	return mergeTickets(lists...), oldest, true
 }
 
 func (s *Service) LoadTickets(ctx context.Context, cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool, refresh bool) ([]Ticket, string, error) {
 	ctx = s.commandContext(ctx)
-	if board.ID == 0 {
-		return nil, "", errors.New("no JIRA board configured for this profile; press I to run setup")
+	if !board.Configured() {
+		return nil, "", errors.New("no JIRA board or space configured for this profile; press I to run setup")
 	}
+	if board.IsCombined() {
+		return s.loadCombinedTickets(ctx, cfg, board, mineOnly, sprintOnly, refresh)
+	}
+	return s.loadSourceTickets(ctx, cfg, board, mineOnly, sprintOnly, refresh)
+}
 
+// loadCombinedTickets loads every board and space at once, each through its
+// own cache. One that fails is reported as a warning while the rest still
+// show; it is an error only when all of them fail.
+func (s *Service) loadCombinedTickets(ctx context.Context, cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool, refresh bool) ([]Ticket, string, error) {
+	type result struct {
+		tickets []Ticket
+		warning string
+		err     error
+	}
+	results := make([]result, len(board.Sources))
+	var wg sync.WaitGroup
+	for i, source := range board.Sources {
+		wg.Go(func() {
+			results[i].tickets, results[i].warning, results[i].err = s.loadSourceTickets(ctx, cfg, source, mineOnly, sprintOnly, refresh)
+		})
+	}
+	wg.Wait()
+
+	lists := make([][]Ticket, 0, len(results))
+	var warnings []string
+	var errs []error
+	for i, result := range results {
+		name := board.Sources[i].Name
+		if result.err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, result.err))
+			continue
+		}
+		if result.warning != "" {
+			warnings = append(warnings, name+": "+result.warning)
+		}
+		lists = append(lists, result.tickets)
+	}
+	if len(errs) == len(results) {
+		return nil, "", errors.Join(errs...)
+	}
+	for _, err := range errs {
+		warnings = append(warnings, err.Error())
+	}
+	return mergeTickets(lists...), strings.Join(warnings, "; "), nil
+}
+
+// mergeTickets joins ticket lists in order, keeping the first copy of a ticket
+// that several boards or spaces list.
+func mergeTickets(lists ...[]Ticket) []Ticket {
+	seen := map[string]struct{}{}
+	merged := []Ticket{}
+	for _, list := range lists {
+		for _, ticket := range list {
+			key := strings.ToUpper(ticket.Key)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, ticket)
+		}
+	}
+	return merged
+}
+
+// loadSourceTickets loads one board or space through its cache.
+func (s *Service) loadSourceTickets(ctx context.Context, cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool, refresh bool) ([]Ticket, string, error) {
 	key := ticketCacheKey(cfg, board, mineOnly, sprintOnly)
 	cached, fetchedAt, cachedOK := s.PeekTicketCache(cfg, board, mineOnly, sprintOnly)
 	if !refresh && cachedOK && isFresh(fetchedAt, ticketCacheTTL) {
@@ -137,7 +238,7 @@ func (s *Service) PeekTicketDetail(cfg Config, key string) (Ticket, bool) {
 }
 
 func (s *Service) InvalidateTicketCache(cfg Config, board JiraBoard) error {
-	if board.ID == 0 {
+	if !board.Configured() {
 		return nil
 	}
 	for _, key := range ticketCacheKeys(cfg, board) {
@@ -150,7 +251,7 @@ func (s *Service) ApplyTicketPatch(cfg Config, board JiraBoard, patch core.Ticke
 	if patch.Key == "" {
 		return
 	}
-	if board.ID != 0 {
+	if board.Configured() {
 		for _, key := range ticketCacheKeys(cfg, board) {
 			var tickets []Ticket
 			if _, ok := s.cache.Get(bucketTickets, key, &tickets); !ok {

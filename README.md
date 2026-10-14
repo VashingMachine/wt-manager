@@ -6,7 +6,7 @@ It gives you a compact dashboard for every worktree in a repository: branch, dir
 
 It also includes PR Radar, a remote pull request view backed by GitHub CLI. PR Radar lets you browse open, closed, and merged PRs for the active repository profile, filter them by user or text, inspect files/checks/comments/diffs, approve selected PRs, create a worktree from a PR branch, and ask a configured AI agent about the selected PR context.
 
-Profiles can optionally enable a third JIRA Tickets view backed by Atlassian CLI. It shows board tickets with their workflow status, matching local worktree, and matching GitHub pull request, and supports reading and updating the selected ticket without leaving the terminal.
+Profiles can optionally enable a third JIRA Tickets view backed by Atlassian CLI. It shows the tickets of a board or of a whole JIRA space with their workflow status, matching local worktree, and matching GitHub pull request, and supports reading and updating the selected ticket without leaving the terminal.
 
 ## Highlights
 
@@ -29,12 +29,12 @@ Profiles can optionally enable a third JIRA Tickets view backed by Atlassian CLI
 - Inspect selected PR diffs in a full-terminal view with coloured Go and Python code.
 - Approve selected PRs through GitHub CLI after confirmation.
 - Ask a configured local AI agent about the selected remote PR using PR metadata, files, comments, and diff context.
-- Browse configured JIRA boards with assigned-to-me and active-sprint scopes.
+- Browse configured JIRA boards with assigned-to-me and active-sprint scopes, or every ticket assigned to you in a whole JIRA space from any link inside it, such as a ticket link.
 - Read JIRA descriptions and comments, open tickets in the browser, create ticket worktrees, transition status, comment, and assign users.
 - Paint worktrees, PRs, and tickets from a local cache immediately, then refresh them piece by piece in the background.
 - Prefetch PR Radar and JIRA Tickets while you work elsewhere, so switching views shows current data without waiting.
 - Apply ticket status changes, comments, assignments, and PR approvals immediately, rolling back if the remote call fails.
-- Configure everything interactively on first run with a guided project setup: the project's repositories and worktree folders, GitHub repos, agent commands, and JIRA boards.
+- Configure everything interactively on first run with a guided project setup: the project's repositories and worktree folders, GitHub repos, agent commands, and JIRA boards or spaces.
 
 ## Requirements
 
@@ -91,7 +91,7 @@ If the file is missing, has no profiles, or the current Git repository is not co
 1. **Project**: the project's name. It defaults to the project that already contains the current repository, or to the repository's folder name. Typing the name of another configured project edits that project instead (and adds the current repository to it); typing a new name while editing renames the project.
 2. **Repositories**: the project's repositories, starting with the current one. `a` adds another: the picker lists only git repositories (no plain folders, nothing inside a repository, no linked worktrees, nor repositories already in the project), then asks for its name and worktrees folder with defaults that follow the project's layout. `enter` on a repository edits it and `d` removes it from the list.
 3. **Agents**: the agent tools to offer, with installed ones preselected.
-4. **JIRA** (optional): board links to browse tickets for.
+4. **JIRA** (optional): board links, or any link from a JIRA space (such as a ticket link), to browse tickets for.
 5. **Review**: everything that will be saved, including each repository's GitHub repository (inferred from its remote) and worktree folders that will be created. `enter` saves; `gh` access is checked as a warning.
 
 Inside the app, `I` opens the wizard for the active project, or for the repository the app was started in when no project has it yet. **New project…** in the command palette sets up another project.
@@ -116,9 +116,14 @@ Example:
             "id": 123,
             "name": "App Board",
             "projects": ["APP"]
+          },
+          {
+            "url": "https://example.atlassian.net/browse/OPS-42",
+            "name": "Operations (OPS)",
+            "projects": ["OPS"]
           }
         ],
-        "defaultBoard": "App Board",
+        "defaultBoard": "All boards and spaces",
         "mineOnly": true,
         "sprintOnly": true,
         "openOnly": true,
@@ -220,7 +225,7 @@ Saving the setup wizard gives the project exactly the repositories listed in its
 
 - **Worktrees**: `git worktree list` replaces the rows first; each worktree's status and last commit then arrive independently, and PR labels arrive separately. Rows whose status has never been read show a loading marker instead of `clean`. The status bar shows the progress, for example `status 3/12 · PR labels`. PR labels are reused for two minutes; `r` refetches them.
 - **PR Radar**: one request lists the PRs and their check runs fill in per row, open PRs first. Completed check runs are reused for 15 minutes, pending ones for 30 seconds. A previously viewed PR shows its cached details and diff immediately and is refetched only when it changed. A PR detail's GitHub requests run concurrently.
-- **Prefetching**: shortly after start and then every four minutes, the PR list and the active JIRA board are refreshed while you are in another view.
+- **Prefetching**: shortly after start and then every four minutes, the PR list and the active JIRA board, space, or all of them are refreshed while you are in another view.
 - **Mutations**: worktree creation and deletion run one at a time per repository in the order you issued them, so concurrent `git` operations cannot fight over repository locks. Ticket edits are queued per ticket and approvals per PR. Creating a worktree for an existing local branch skips `git fetch`, and creations queued together share one fetch.
 
 The cache only speeds things up: deleting the file is safe, and if it cannot be opened the app keeps running with an in-memory cache and records why in the session log.
@@ -260,7 +265,7 @@ The cache only speeds things up: deleting the file is safe, and if it cannot be 
 | `d d` | Delete selected worktree |
 | `q`, `ctrl+c` | Quit |
 
-In JIRA Tickets mode, `f` opens the ticket filter dialog, `Y` toggles assigned-to-me/all tickets, `S` toggles active-sprint scope, `b` selects a configured board, `t` changes status, `C` comments, `A` assigns, `n` creates or reuses a ticket worktree, `o` opens the ticket in a browser, and `enter` opens the full-screen ticket reader.
+In JIRA Tickets mode, `f` opens the ticket filter dialog, `Y` toggles assigned-to-me/all tickets, `S` toggles active-sprint scope, `b` selects all boards and spaces together or a single configured one, `t` changes status, `C` comments, `A` assigns, `n` creates or reuses a ticket worktree, `o` opens the ticket in a browser, and `enter` opens the full-screen ticket reader.
 
 ## Command Palette
 
@@ -341,9 +346,13 @@ The `c` action prefers a configured `copilot` agent when present and otherwise f
 
 ## JIRA Tickets
 
-Press `J` to toggle JIRA Tickets for the active repository profile. Open the setup wizard with `I`, go to its JIRA step, paste a JIRA board link, and press enter to resolve it; enter on an empty input continues to the review, where enter saves. Multiple board links can be added before saving. ACLI authentication remains external to `wt-manager`; no Atlassian credentials are stored in the config.
+Press `J` to toggle JIRA Tickets for the active repository profile. Open the setup wizard with `I`, go to its JIRA step, paste a JIRA link, and press enter to resolve it; enter on an empty input continues to the review, where enter saves. Multiple links can be added before saving.
 
-Tickets default to the current user, the active sprint, and open workflow categories. Press `f` to change these three filters in one dialog. The app caches each profile/board/scope list for five minutes, paints cached rows immediately, and refreshes in the background. A failed refresh keeps stale rows visible with a warning. Status changes, comments, and assignments appear immediately; a failed change is rolled back with an error. Successful changes update every cached copy of the ticket and mark the board's lists for revalidation.
+A board link (or a bare board id) adds that board. Any other link from a space adds the whole space: a ticket link such as `https://example.atlassian.net/browse/OPS-42`, a project page such as `…/jira/software/c/projects/OPS/list`, a link with `selectedIssue=OPS-42`, or a bare key such as `OPS-42` or `OPS`. A space lists every ticket in it, so with the default filters it shows all tickets assigned to you across the space. Pasting another link from a space already added updates it rather than adding it twice.
+
+When more than one board or space is configured, tickets open on **All boards and spaces**: every board and space loads at once and the tickets are merged into one list, each ticket once. A board or space that fails to load (for example a board with no active sprint) shows as a warning while the rest still load. Press `b` to pick a single board or space instead; the choice is saved as `defaultBoard`, and `"All boards and spaces"` there selects them all. Adding a new board or space in setup switches back to all of them, so it shows up straight away. ACLI authentication remains external to `wt-manager`; no Atlassian credentials are stored in the config.
+
+Tickets default to the current user, the active sprint, and open workflow categories. Press `f` to change these three filters in one dialog. Sprints belong to boards, so the sprint filter does not narrow a space; `S` on a space explains this instead of toggling. With all boards and spaces shown, the sprint filter narrows only the boards among them. The app caches each profile/board/scope list for five minutes, paints cached rows immediately, and refreshes in the background. A failed refresh keeps stale rows visible with a warning. Status changes, comments, and assignments appear immediately; a failed change is rolled back with an error. Successful changes update every cached copy of the ticket and mark the board's lists for revalidation.
 
 Worktrees and PRs are matched by a JIRA key such as `APP-123` in the branch name, with PR titles used as a fallback. New ticket worktrees use `<KEY>-<summary-slug>` and reuse an existing matching worktree when possible. In a project with several repositories, worktrees and PRs of every repository are matched, and creating a ticket worktree asks for the repository first.
 

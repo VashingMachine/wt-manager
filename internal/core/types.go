@@ -207,14 +207,78 @@ func (c Config) SharesWorktreesDir() bool {
 	return false
 }
 
-// JiraBoard is a board resolved from a pasted board URL. ID/Name/Projects are
-// filled once by ResolveJiraBoard and then persisted, so the URL only has to be
-// parsed and looked up during setup.
+// JiraBoard is a ticket source resolved from a pasted JIRA link. A board link
+// gives a board (ID set), which can also be scoped to its active sprints. Any
+// other link inside a space (a work item, a project page, a bare key) gives the
+// whole space: no ID and the space's key as its only project. ID/Name/Projects
+// are filled once by ResolveJiraBoard and then persisted, so the link only has
+// to be parsed and looked up during setup.
 type JiraBoard struct {
 	URL      string   `json:"url"`
-	ID       int      `json:"id"`
+	ID       int      `json:"id,omitempty"`
 	Name     string   `json:"name"`
 	Projects []string `json:"projects"`
+	// Sources holds the boards and spaces of the all-sources selection built
+	// by JiraConfig.AllSources. It is never persisted.
+	Sources []JiraBoard `json:"-"`
+}
+
+// JiraAllSources names the selection that lists every configured board and
+// space together. DefaultBoard stores it like any board name.
+const JiraAllSources = "All boards and spaces"
+
+// Configured reports whether the source can list tickets at all.
+func (b JiraBoard) Configured() bool {
+	return b.ID != 0 || len(b.Projects) > 0 || len(b.Sources) > 0
+}
+
+// IsCombined reports whether the source is the all-sources selection.
+func (b JiraBoard) IsCombined() bool {
+	return len(b.Sources) > 0
+}
+
+// Members lists the boards and spaces the source loads: its sources when
+// combined, otherwise itself.
+func (b JiraBoard) Members() []JiraBoard {
+	if b.IsCombined() {
+		return b.Sources
+	}
+	return []JiraBoard{b}
+}
+
+// IsSpace reports whether the source is a whole JIRA space rather than a board.
+func (b JiraBoard) IsSpace() bool {
+	return b.ID == 0 && len(b.Projects) > 0
+}
+
+// SourceID identifies the source in cache and selection keys.
+func (b JiraBoard) SourceID() string {
+	if b.IsCombined() {
+		ids := make([]string, 0, len(b.Sources))
+		for _, source := range b.Sources {
+			ids = append(ids, source.SourceID())
+		}
+		return "all:" + strings.Join(ids, "|")
+	}
+	if b.ID != 0 {
+		return fmt.Sprint(b.ID)
+	}
+	return "space:" + strings.Join(b.Projects, ",")
+}
+
+// SprintScoped reports whether the sprint filter narrows this source. Sprints
+// belong to boards, so a space always lists every ticket in it, and the
+// all-sources selection is narrowed only through its boards.
+func (b JiraBoard) SprintScoped(sprintOnly bool) bool {
+	if !sprintOnly {
+		return false
+	}
+	for _, member := range b.Members() {
+		if member.ID != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // JiraConfig is the per-repository JIRA setup written under a profile.
@@ -242,8 +306,15 @@ func (c *JiraConfig) Board(name string) *JiraBoard {
 	return nil
 }
 
-// ActiveBoard returns the board named by DefaultBoard, falling back to the
-// first configured board.
+// AllSources is the selection that lists every configured board and space
+// together.
+func (c *JiraConfig) AllSources() JiraBoard {
+	return JiraBoard{Name: JiraAllSources, Sources: append([]JiraBoard(nil), c.Boards...)}
+}
+
+// ActiveBoard returns the board or space named by DefaultBoard. Otherwise it
+// returns every board and space together, or the only one when there is just
+// one.
 func (c *JiraConfig) ActiveBoard() *JiraBoard {
 	if c == nil || len(c.Boards) == 0 {
 		return nil
@@ -251,7 +322,11 @@ func (c *JiraConfig) ActiveBoard() *JiraBoard {
 	if board := c.Board(c.DefaultBoard); board != nil {
 		return board
 	}
-	return &c.Boards[0]
+	if len(c.Boards) == 1 {
+		return &c.Boards[0]
+	}
+	all := c.AllSources()
+	return &all
 }
 
 type AgentTool struct {
@@ -570,7 +645,9 @@ type OpenerService interface {
 type JiraService interface {
 	CheckAtlassianCLI(ctx context.Context) []string
 	JiraSite(ctx context.Context) (string, error)
-	ResolveJiraBoard(ctx context.Context, boardURLOrID string) (JiraBoard, error)
+	// ResolveJiraBoard turns a board link or id into a board, and any other
+	// link or key inside a space into that whole space.
+	ResolveJiraBoard(ctx context.Context, link string) (JiraBoard, error)
 	SearchJiraBoards(ctx context.Context, name string) ([]JiraBoard, error)
 	PeekTicketCache(cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool) ([]Ticket, time.Time, bool)
 	LoadTickets(ctx context.Context, cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool, refresh bool) ([]Ticket, string, error)
