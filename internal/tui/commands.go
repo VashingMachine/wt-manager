@@ -19,7 +19,9 @@ type loadResult struct {
 	Warning        string
 	Err            error
 	RepositoryPath string
-	ShowAll        bool
+	// Project identifies the project the worktrees were listed for.
+	Project string
+	ShowAll bool
 }
 
 type remotePRListResult struct {
@@ -65,15 +67,16 @@ type ticketWorktreeResult struct {
 	Err      error
 }
 
-// loadWorktreesCmd only discovers worktrees (one fast git call); handling its
-// result starts the per-worktree status reads and the PR label lookup.
+// loadWorktreesCmd only discovers worktrees (one fast git call per project
+// repository); handling its result starts the per-worktree status reads and
+// the PR label lookups.
 func loadWorktreesCmd(services core.WorktreeService, cfg Config, showAll bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
 
-		worktrees, err := services.DiscoverWorktrees(ctx, cfg, showAll)
-		return loadResult{Worktrees: worktrees, Err: err, RepositoryPath: cfg.ActiveProfile.RepositoryPath, ShowAll: showAll}
+		worktrees, warning, err := discoverProjectWorktrees(ctx, services, cfg, showAll)
+		return loadResult{Worktrees: worktrees, Warning: warning, Err: err, RepositoryPath: cfg.ActiveProfile.RepositoryPath, Project: projectKey(cfg), ShowAll: showAll}
 	}
 }
 
@@ -126,22 +129,47 @@ func loadTicketsCmd(services core.Services, cfg Config, board JiraBoard, mineOnl
 			pullRequestErr  error
 			wg              sync.WaitGroup
 		)
-		wg.Add(3)
-		go func() {
-			defer wg.Done()
+		// Tickets match worktrees and PRs of every repository in the project.
+		scopes := []Config{cfg}
+		if repositories := cfg.Repositories(); len(repositories) > 1 {
+			scopes = scopes[:0]
+			for _, repository := range repositories {
+				scopes = append(scopes, cfg.ForRepository(repository.Name))
+			}
+		}
+		scopedWorktrees := make([][]Worktree, len(scopes))
+		scopedWarnings := make([]string, len(scopes))
+		scopedErrs := make([]error, len(scopes))
+		scopedPRs := make([][]PullRequest, len(scopes))
+		scopedPRErrs := make([]error, len(scopes))
+		wg.Go(func() {
 			tickets, warning, ticketErr = services.LoadTickets(ctx, cfg, board, mineOnly, sprintOnly, refresh)
-		}()
-		go func() {
-			defer wg.Done()
-			worktrees, worktreeWarning, worktreeErr = services.CollectTicketWorktrees(ctx, cfg)
-		}()
-		go func() {
-			defer wg.Done()
-			pullRequests, _, pullRequestErr = services.LoadPullRequestIndex(ctx, cfg, false)
-		}()
+		})
+		for i, scoped := range scopes {
+			wg.Go(func() {
+				scopedWorktrees[i], scopedWarnings[i], scopedErrs[i] = services.CollectTicketWorktrees(ctx, scoped)
+			})
+			wg.Go(func() {
+				scopedPRs[i], _, scopedPRErrs[i] = services.LoadPullRequestIndex(ctx, scoped, false)
+			})
+		}
 		wg.Wait()
+		for i, scoped := range scopes {
+			worktrees = append(worktrees, scopedWorktrees[i]...)
+			if worktreeErr == nil {
+				worktreeErr = scopedErrs[i]
+			}
+			if worktreeWarning == "" {
+				worktreeWarning = scopedWarnings[i]
+			}
+			pullRequests = append(pullRequests, scopedPRs[i]...)
+			// A repository without GitHub has no PRs to miss.
+			if pullRequestErr == nil && (len(scopes) == 1 || scoped.RepoSlug != "") {
+				pullRequestErr = scopedPRErrs[i]
+			}
+		}
 
-		source := fmt.Sprintf("%s|%d|%t|%t", cfg.ActiveProfile.RepositoryPath, board.ID, mineOnly, sprintOnly)
+		source := ticketSourceKey(cfg, board, mineOnly, sprintOnly)
 		if ticketErr != nil {
 			return ticketListResult{Source: source, Err: ticketErr}
 		}
@@ -189,7 +217,7 @@ func ensureTicketWorktreeCmd(services core.Services, cfg Config, ticket Ticket) 
 		existing, err := services.CreateWorktree(ctx, cfg, branch, path)
 		return ticketWorktreeResult{
 			Key:      ticket.Key,
-			Worktree: Worktree{Name: branch, Branch: branch, Path: path, Managed: true},
+			Worktree: Worktree{Name: branch, Branch: branch, Path: path, Managed: true, Repository: cfg.RepositoryName()},
 			Existing: existing,
 			Err:      err,
 		}

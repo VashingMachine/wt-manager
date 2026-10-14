@@ -45,6 +45,8 @@ type iconSet struct {
 	Comment      string
 	Sprint       string
 	Link         string
+	Repo         string
+	Star         string
 
 	Loading string
 
@@ -64,7 +66,7 @@ var unicodeIcons = iconSet{
 	PROpen: "●", PRMerged: "◆", PRClosed: "✗", PRDraft: "◌",
 	CheckPass: "✓", CheckFail: "✗", CheckPending: "◐", CheckNone: "·",
 	ReviewApproved: "✓", ReviewChanges: "±", ReviewRequired: "○",
-	Ticket: "◇", TicketDone: "✓", TicketActive: "◈", Comment: "❞", Sprint: "⟳", Link: "⇢", Loading: "◌",
+	Ticket: "◇", TicketDone: "✓", TicketActive: "◈", Comment: "❞", Sprint: "⟳", Link: "⇢", Repo: "⎇", Star: "★", Loading: "◌",
 	OK: "✓", Err: "✗", Warn: "⚠",
 	Section: "▸", Pointer: "▶", Dot: "·", SkeletonBlock: "░",
 }
@@ -76,7 +78,7 @@ var asciiIcons = iconSet{
 	PROpen: "o", PRMerged: "m", PRClosed: "x", PRDraft: ".",
 	CheckPass: "+", CheckFail: "x", CheckPending: "~", CheckNone: "-",
 	ReviewApproved: "+", ReviewChanges: "~", ReviewRequired: "o",
-	Ticket: "t", TicketDone: "+", TicketActive: "*", Comment: "\"", Sprint: "@", Link: ">", Loading: ".",
+	Ticket: "t", TicketDone: "+", TicketActive: "*", Comment: "\"", Sprint: "@", Link: ">", Repo: "#", Star: "*", Loading: ".",
 	OK: "+", Err: "x", Warn: "!",
 	Section: ">", Pointer: ">", Dot: "-", SkeletonBlock: "#",
 }

@@ -62,6 +62,9 @@ func (m model) View() string {
 	tableTitle := infoStyle.Render("Worktrees")
 	if m.isPRMode() {
 		tableTitle = infoStyle.Render("PR Radar")
+		if m.cfg.MultiRepository() {
+			tableTitle += " " + purpleStyle.Render(icons.Repo+" "+m.prCfg().RepositoryName()) + mutedStyle.Render("  R switches")
+		}
 	} else if m.isTicketMode() {
 		tableTitle = infoStyle.Render("JIRA Tickets")
 	}
@@ -102,6 +105,12 @@ func (m model) View() string {
 	}
 	if m.selectingProfile {
 		view = overlay(view, renderProfileSelectorModal(m), m.width, m.height)
+	}
+	if m.pickingRepository {
+		view = overlay(view, renderRepositoryPickerModal(m), m.width, m.height)
+	}
+	if m.addingRepository != nil {
+		view = overlay(view, renderAddRepositoryModal(m), m.width, m.height)
 	}
 	if m.selectingPRUser {
 		view = overlay(view, renderPRUserSelectorModal(m), m.width, m.height)
@@ -182,6 +191,16 @@ func (m model) headerMetaLine(usable int) string {
 	}
 
 	repo := m.cfg.ActiveProfile.RepositoryPath
+	if m.cfg.MultiRepository() {
+		names := make([]string, 0, len(m.cfg.ActiveProfile.Repositories))
+		for _, repository := range m.cfg.ActiveProfile.Repositories {
+			names = append(names, repository.Name)
+		}
+		repo = strings.Join(names, ", ")
+		if m.isPRMode() {
+			repo = "PRs of " + m.prCfg().RepositoryName() + " (" + repo + ")"
+		}
+	}
 	line := build(repo)
 	for lipgloss.Width(line) > usable && len([]rune(repo)) > 8 {
 		repo = truncateRunes(repo, len([]rune(repo))-1)
@@ -339,7 +358,7 @@ func (m model) tableView() string {
 		compact := m.table.Width() <= 70
 		start, end := visibleRowRange(m.table.Cursor(), len(m.visibleWorktrees), m.table.Height())
 		for _, wt := range m.visibleWorktrees[start:end] {
-			rows = append(rows, worktreeRowCells(wt, compact))
+			rows = append(rows, m.worktreeRow(wt, compact))
 		}
 	}
 
@@ -536,120 +555,119 @@ func rowCellValue(raw string, columnIndex int, selected bool) string {
 	return value
 }
 
-func rowLineStyle(line string, selected, focused, armed bool) string {
+// rowHighlight is the background a selected, blurred-selected or armed row
+// paints under all of its cells.
+func rowHighlight(selected, focused, armed bool) (lipgloss.Style, bool) {
 	switch {
 	case armed:
-		return armedRowStyle.Render(line)
+		return armedRowStyle, true
 	case selected && focused:
-		return selectedRowStyle.Render(line)
+		return selectedRowStyle, true
 	case selected:
-		return blurredRowStyle.Render(line)
+		return blurredRowStyle, true
 	default:
-		return line
+		return lipgloss.Style{}, false
 	}
+}
+
+// renderRowCells renders a table row. Each cell keeps its own colors and gets
+// the row's highlight itself: wrapping the joined line instead would lose the
+// highlight at the first colored cell, whose reset clears the background.
+func renderRowCells(columns []table.Column, row []string, selected, focused, armed bool, cellStyle func(title string) lipgloss.Style) string {
+	highlight, highlighted := rowHighlight(selected, focused, armed)
+	cells := make([]string, 0, len(columns))
+	for idx, column := range columns {
+		value := ""
+		if idx < len(row) {
+			value = rowCellValue(row[idx], idx, selected)
+		}
+		value = runewidth.Truncate(value, column.Width, "…")
+		style, padding := cellStyle(column.Title), tableCellStyle
+		if highlighted {
+			style, padding = style.Inherit(highlight), padding.Inherit(highlight)
+		}
+		cells = append(cells, padding.Render(style.Render(padCellForColumn(value, column))))
+	}
+	return strings.Join(cells, "")
 }
 
 func renderTableRow(columns []table.Column, row []string, wt *Worktree, selected, focused, armed bool) string {
-	cells := make([]string, 0, len(columns))
-	for idx, column := range columns {
-		value := ""
-		if idx < len(row) {
-			value = rowCellValue(row[idx], idx, selected)
+	return renderRowCells(columns, row, selected, focused, armed, func(title string) lipgloss.Style {
+		if wt == nil {
+			return mutedStyle
 		}
-		value = runewidth.Truncate(value, column.Width, "…")
-		cell := padCellForColumn(value, column)
-		if wt != nil {
-			cell = styleTableCell(cell, column.Title, wt)
-		} else {
-			cell = mutedStyle.Render(cell)
-		}
-		cells = append(cells, tableCellStyle.Render(cell))
-	}
-
-	return rowLineStyle(strings.Join(cells, ""), selected, focused, armed)
+		return worktreeCellStyle(title, wt)
+	})
 }
 
 func renderPRTableRow(columns []table.Column, row []string, pr *RemotePullRequest, selected, focused bool) string {
-	cells := make([]string, 0, len(columns))
-	for idx, column := range columns {
-		value := ""
-		if idx < len(row) {
-			value = rowCellValue(row[idx], idx, selected)
+	return renderRowCells(columns, row, selected, focused, false, func(title string) lipgloss.Style {
+		if pr == nil {
+			return mutedStyle
 		}
-		value = runewidth.Truncate(value, column.Width, "…")
-		cell := padCellForColumn(value, column)
-		if pr != nil {
-			cell = stylePRTableCell(cell, column.Title, pr)
-		} else {
-			cell = mutedStyle.Render(cell)
-		}
-		cells = append(cells, tableCellStyle.Render(cell))
-	}
-	return rowLineStyle(strings.Join(cells, ""), selected, focused, false)
+		return prTableCellStyle(title, pr)
+	})
 }
 
 func renderTicketTableRow(columns []table.Column, row []string, ticket *Ticket, selected, focused bool) string {
-	cells := make([]string, 0, len(columns))
-	for idx, column := range columns {
-		value := ""
-		if idx < len(row) {
-			value = rowCellValue(row[idx], idx, selected)
-		}
-		value = runewidth.Truncate(value, column.Width, "…")
-		cell := padCellForColumn(value, column)
+	return renderRowCells(columns, row, selected, focused, false, func(title string) lipgloss.Style {
 		if ticket == nil {
-			cell = mutedStyle.Render(cell)
-		} else {
-			switch column.Title {
-			case "Status":
-				switch strings.ToLower(ticket.StatusCategory) {
-				case "done":
-					cell = successStyle.Render(cell)
-				case "indeterminate":
-					cell = warnStyle.Render(cell)
-				default:
-					cell = infoStyle.Render(cell)
-				}
-			case "PR":
-				cell = prCellStyle(ticket.PR).Render(cell)
-			case "Worktree", "WT":
-				if ticket.Worktree == nil {
-					cell = mutedStyle.Render(cell)
-				}
-			}
+			return mutedStyle
 		}
-		cells = append(cells, tableCellStyle.Render(cell))
-	}
-	return rowLineStyle(strings.Join(cells, ""), selected, focused, false)
+		return ticketCellStyle(title, ticket)
+	})
 }
 
-func stylePRTableCell(cell, title string, pr *RemotePullRequest) string {
+func ticketCellStyle(title string, ticket *Ticket) lipgloss.Style {
 	switch title {
-	case "State":
-		return prStateCellStyle(*pr).Render(cell)
-	case "Checks":
-		return checksCellStyle(pr.StatusCheckRollup).Render(cell)
-	case "Ready":
-		return readinessCellStyle(*pr).Render(cell)
-	case "Updated":
-		return mutedStyle.Render(cell)
-	default:
-		return cell
-	}
-}
-
-func styleTableCell(cell, title string, wt *Worktree) string {
-	switch title {
-	case "State":
-		return stateCellStyle(*wt).Render(cell)
-	case "Delta":
-		return deltaCellStyle(wt.Status).Render(cell)
+	case "Status":
+		switch strings.ToLower(ticket.StatusCategory) {
+		case "done":
+			return successStyle
+		case "indeterminate":
+			return warnStyle
+		default:
+			return infoStyle
+		}
 	case "PR":
-		return prCellStyle(wt.PR).Render(cell)
-	case "Last Commit":
-		return mutedStyle.Render(cell)
+		return prCellStyle(ticket.PR)
+	case "Worktree", "WT":
+		if ticket.Worktree == nil {
+			return mutedStyle
+		}
+	}
+	return lipgloss.NewStyle()
+}
+
+func prTableCellStyle(title string, pr *RemotePullRequest) lipgloss.Style {
+	switch title {
+	case "State":
+		return prStateCellStyle(*pr)
+	case "Checks":
+		return checksCellStyle(pr.StatusCheckRollup)
+	case "Ready":
+		return readinessCellStyle(*pr)
+	case "Updated":
+		return mutedStyle
 	default:
-		return cell
+		return lipgloss.NewStyle()
+	}
+}
+
+func worktreeCellStyle(title string, wt *Worktree) lipgloss.Style {
+	switch title {
+	case "State":
+		return stateCellStyle(*wt)
+	case "Delta":
+		return deltaCellStyle(wt.Status)
+	case "PR":
+		return prCellStyle(wt.PR)
+	case "Last Commit":
+		return mutedStyle
+	case "Repo":
+		return purpleStyle
+	default:
+		return lipgloss.NewStyle()
 	}
 }
 
@@ -853,6 +871,12 @@ func (m model) focusLabel() string {
 	if m.selectingProfile {
 		return "profile selector"
 	}
+	if m.pickingRepository {
+		return "repository selector"
+	}
+	if m.addingRepository != nil {
+		return "add repository"
+	}
 	if m.selectingPRUser {
 		return "PR user selector"
 	}
@@ -911,6 +935,17 @@ func renderModal(title string, body []string, hints []keyHint) string {
 	return modalStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
+// renderWideModal is renderModal for content that needs more room, such as
+// folder paths.
+func renderWideModal(title string, body []string, hints []keyHint, width int) string {
+	lines := []string{titleStyle.Render(title), ""}
+	lines = append(lines, body...)
+	if len(hints) > 0 {
+		lines = append(lines, "", renderKeyHints(hints))
+	}
+	return modalStyle.Width(width).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
 func selectorLine(selected bool, label string, current bool) string {
 	cursor := "  "
 	style := subtleStyle
@@ -928,8 +963,13 @@ func selectorLine(selected bool, label string, current bool) string {
 var selectHints = []keyHint{{"j/k", "move"}, {"enter", "select"}, {"esc", "cancel"}}
 
 func renderNewWorktreeModal(m model) string {
+	intro := "Create or open a branch for the active repository."
+	if m.cfg.MultiRepository() {
+		repository := m.cfg.ForRepository(m.newWorktreeRepository).RepositoryName()
+		intro = "Create or open a branch in " + purpleStyle.Render(icons.Repo+" "+repository) + "."
+	}
 	body := []string{
-		"Create or open a branch for the active repository.",
+		intro,
 		"",
 		m.newInput.View(),
 	}
@@ -971,7 +1011,15 @@ func renderProfileSelectorModal(m model) string {
 		body = append(body, errorStyle.Render("No profiles configured"))
 	} else {
 		for idx, profile := range m.cfg.App.Profiles {
-			label := fmt.Sprintf("%-14s %s", profile.Name, profile.RepositoryPath)
+			location := profile.RepositoryPath
+			if repositories := profile.RepositoryList(); len(repositories) > 1 {
+				names := make([]string, 0, len(repositories))
+				for _, repository := range repositories {
+					names = append(names, repository.Name)
+				}
+				location = fmt.Sprintf("%d repositories: %s", len(repositories), strings.Join(names, ", "))
+			}
+			label := fmt.Sprintf("%-14s %s", profile.Name, location)
 			body = append(body, selectorLine(idx == m.profileCursor, label, profile.Name == m.cfg.App.DefaultProfile))
 		}
 	}
@@ -1127,8 +1175,8 @@ func renderHelpModal(m model) string {
 		helpKeyLine("r", "refresh current mode"),
 		helpKeyLine("/", "filter current mode"),
 		helpKeyLine("esc", "cancel input, clear filter, or close help"),
-		helpKeyLine("s", "switch repository profile"),
-		helpKeyLine("I", "setup profiles and agents"),
+		helpKeyLine("s", "switch project"),
+		helpKeyLine("I", "edit project: repositories, agents, JIRA"),
 		helpKeyLine("m", "choose default AI agent"),
 		"",
 		helpSection("Worktrees"),
@@ -1156,6 +1204,7 @@ func renderHelpModal(m model) string {
 		helpKeyLine("A", "approve selected PR"),
 		helpKeyLine("c", "ask configured agent about selected PR"),
 		helpKeyLine("n", "create worktree from selected PR branch"),
+		helpKeyLine("R", "choose the repository PR Radar shows"),
 		helpKeyLine("o", "open selected PR in browser"),
 		"",
 		helpSection("JIRA Tickets"),

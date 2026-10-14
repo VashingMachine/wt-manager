@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"unicode"
@@ -17,10 +18,10 @@ type paletteEntry struct {
 }
 
 type paletteWorktreesResult struct {
-	Worktrees      []Worktree
-	RepositoryPath string
-	Request        int
-	Err            error
+	Worktrees []Worktree
+	Project   string
+	Request   int
+	Err       error
 }
 
 // Keep the palette from interrupting a draft or an existing confirmation.
@@ -28,6 +29,7 @@ func (m model) hasTextOrConfirmationModal() bool {
 	return m.filtering || m.creatingWorktree || m.askingPR || m.confirmingPRApproval ||
 		m.enteringTicketStatus || m.commentingTicket || m.enteringTicketAssignee ||
 		m.selectingAgent || m.selectingEnterAction || m.selectingProfile || m.selectingPRUser ||
+		m.pickingRepository || m.addingRepository != nil ||
 		m.selectingTicketFilters || m.selectingTicketStatus || m.selectingTicketAssignee || m.selectingBoard
 }
 
@@ -39,14 +41,14 @@ func (m model) openCommandPalette() (tea.Model, tea.Cmd) {
 	m.paletteInput.SetValue("")
 	// Searchable worktrees only need names, branches and paths: show the
 	// cached list now and refresh it with discovery alone (no status, no gh).
-	m.paletteWorktrees, _ = m.services.PeekWorktrees(m.cfg, true)
+	m.paletteWorktrees, _ = peekProjectWorktrees(m.services, m.cfg, true)
 	m.paletteRequest++
 	request, cfg, services := m.paletteRequest, m.cfg, m.services
 	return m, tea.Batch(m.paletteInput.Focus(), func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
-		worktrees, err := services.DiscoverWorktrees(ctx, cfg, true)
-		return paletteWorktreesResult{Worktrees: worktrees, RepositoryPath: cfg.ActiveProfile.RepositoryPath, Request: request, Err: err}
+		worktrees, _, err := discoverProjectWorktrees(ctx, services, cfg, true)
+		return paletteWorktreesResult{Worktrees: worktrees, Project: projectKey(cfg), Request: request, Err: err}
 	})
 }
 
@@ -61,9 +63,22 @@ func (m model) paletteEntries() []paletteEntry {
 		{ID: "logs", Title: "View session logs", Description: "Inspect temporary execution logs, command output, and errors", Category: "Commands"},
 		{ID: "editor", Title: "Configure editor", Description: "Choose the IDE opened by v: VS Code, IntelliJ IDEA, or a custom command", Category: "Settings"},
 		{ID: "agent-menu", Title: "Choose default AI agent", Category: "Settings", Shortcut: "m", Key: "m"},
-		{ID: "profile-menu", Title: "Switch repository profile", Category: "Profiles", Shortcut: "s", Key: "s"},
-		{ID: "setup", Title: "Set up repository profiles", Description: "Configure repositories, agents, GitHub, and JIRA", Category: "Settings", Shortcut: "I", Key: "I"},
+		{ID: "profile-menu", Title: "Switch project", Description: "Choose another repository profile", Category: "Profiles", Shortcut: "s", Key: "s"},
+		{ID: "setup", Title: "Edit project " + m.cfg.ActiveProfile.Name + "…", Description: "Guided setup: repositories, agents, GitHub, and JIRA", Category: "Profiles", Shortcut: "I", Key: "I"},
+		{ID: "project-new", Title: "New project…", Description: "Set up another project with its repositories, agents, and JIRA boards", Category: "Profiles"},
+		{ID: "config-edit", Title: "Edit configuration file", Description: "Open " + m.services.CompactPath(m.cfg.ConfigPath, m.cfg.HomeDir) + " in " + m.configuredEditor().Name + "; saved changes apply automatically", Category: "Settings"},
+		{ID: "config-reload", Title: "Reload configuration", Description: "Read " + m.services.CompactPath(m.cfg.ConfigPath, m.cfg.HomeDir) + " again", Category: "Settings"},
+		{ID: "repo-add", Title: "Add repository to " + m.cfg.ActiveProfile.Name + "…", Description: "List another repository's worktrees in this project and create worktrees in it", Category: "Profiles"},
 		{ID: "quit", Title: "Quit wt-manager", Category: "Commands", Shortcut: "q", Key: "q"},
+	}
+	if editor := terminalEditor(os.Getenv); editor != "" {
+		entries = append(entries, paletteEntry{ID: "config-edit-terminal", Title: "Edit configuration file in terminal", Description: "Open the config in " + editor + " inside this terminal", Category: "Settings"})
+	}
+	if m.cfg.MultiRepository() {
+		entries = append(entries,
+			paletteEntry{ID: "repo-remove", Title: "Remove repository from " + m.cfg.ActiveProfile.Name + "…", Description: "Stop listing a repository in this project; files stay on disk", Category: "Profiles"},
+			paletteEntry{ID: "pr-repo", Title: "Choose PR Radar repository", Description: "Currently " + m.prCfg().RepositoryName(), Category: "Profiles", Shortcut: "R"},
+		)
 	}
 	add := func(id, title, description, shortcut, key string) {
 		entries = append(entries, paletteEntry{ID: id, Title: title, Description: description, Category: "Commands", Shortcut: shortcut, Key: key})
@@ -138,7 +153,11 @@ func (m model) paletteEntries() []paletteEntry {
 			if _, deleting := m.pendingDeletes[wt.Path]; deleting {
 				continue
 			}
-			entries = append(entries, paletteEntry{ID: "worktree:" + wt.Path, Title: wt.Name, Description: wt.Branch + " · " + wt.Path, Category: "Worktrees"})
+			description := wt.Branch + " · " + wt.Path
+			if m.cfg.MultiRepository() {
+				description = m.worktreeRepository(wt) + " · " + description
+			}
+			entries = append(entries, paletteEntry{ID: "worktree:" + wt.Path, Title: wt.Name, Description: description, Category: "Worktrees"})
 		}
 	}
 	return entries
@@ -276,6 +295,20 @@ func (m model) executePaletteEntry(entry paletteEntry) (tea.Model, tea.Cmd) {
 		m.filterInput.SetValue("")
 		m.applyFilter()
 		return m, m.setTransientStatus("Filter cleared")
+	case "config-edit":
+		return m.editConfigInEditor()
+	case "config-edit-terminal":
+		return m.editConfigInTerminal()
+	case "config-reload":
+		return m.reloadConfig()
+	case "repo-add":
+		return m.openAddRepository()
+	case "project-new":
+		return m.openSetup(newProjectSetupModel(m.cfg, m.services))
+	case "repo-remove":
+		return m.openRepositoryPicker(pickRepoToRemove, Ticket{}, "")
+	case "pr-repo":
+		return m.openRepositoryPicker(pickRepoForPRRadar, Ticket{}, "")
 	}
 	var idx int
 	if _, err := fmt.Sscanf(entry.ID, "enter:%d", &idx); err == nil && idx >= 0 && idx < len(enterActionOptions) {

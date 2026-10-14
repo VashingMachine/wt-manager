@@ -205,7 +205,12 @@ func assigneeForPatch(assignee string, options []JiraUser) JiraUser {
 // --- tickets data source ----------------------------------------------------
 
 func (m model) ticketSource() string {
-	return fmt.Sprintf("%s|%d|%t|%t", m.cfg.ActiveProfile.RepositoryPath, m.ticketBoard.ID, m.ticketMineOnly, m.ticketSprintOnly)
+	return ticketSourceKey(m.cfg, m.ticketBoard, m.ticketMineOnly, m.ticketSprintOnly)
+}
+
+// ticketSourceKey identifies the project, board and scope ticket rows belong to.
+func ticketSourceKey(cfg Config, board JiraBoard, mineOnly bool, sprintOnly bool) string {
+	return fmt.Sprintf("%s|%d|%t|%t", projectKey(cfg), board.ID, mineOnly, sprintOnly)
 }
 
 // paintCachedTickets shows the cached rows for the current board and scope,
@@ -218,7 +223,7 @@ func (m *model) paintCachedTickets() bool {
 	if !ok {
 		return false
 	}
-	m.tickets = m.services.AttachTicketContext(cached, m.allWorktrees, m.prIndex)
+	m.tickets = m.services.AttachTicketContext(cached, m.allWorktrees, m.allPRIndexes())
 	m.ticketsSource = m.ticketSource()
 	m.ticketsFetchedAt = fetchedAt
 	m.ticketCacheLabel = "cached"
@@ -287,7 +292,8 @@ func (m model) startPRApproval(number int) (tea.Model, tea.Cmd) {
 	m.setPRReviewDecision(number, optimisticReviewDecision(before), "", false)
 	m.statusMessage = fmt.Sprintf("Approving PR #%d...", number)
 	m.statusError = false
-	cmd := m.ops.enqueue(prQueueKey(m.cfg, number), approveRemotePullRequestCmd(m.services, m.cfg, number))
+	prCfg := m.prCfg()
+	cmd := m.ops.enqueue(prQueueKey(prCfg, number), approveRemotePullRequestCmd(m.services, prCfg, number))
 	return m, tea.Batch(cmd, m.spinner.Tick)
 }
 

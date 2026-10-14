@@ -116,6 +116,7 @@ type keyMap struct {
 	EnterAction   key.Binding
 	AgentMenu     key.Binding
 	ProfileMenu   key.Binding
+	PRRepository  key.Binding
 	Setup         key.Binding
 	New           key.Binding
 	Delete        key.Binding
@@ -190,8 +191,9 @@ func defaultKeys() keyMap {
 		OpenAgent:     key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "open agent")),
 		EnterAction:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "enter action")),
 		AgentMenu:     key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "select agent")),
-		ProfileMenu:   key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "switch repo")),
-		Setup:         key.NewBinding(key.WithKeys("I"), key.WithHelp("I", "setup")),
+		ProfileMenu:   key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "switch project")),
+		PRRepository:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "PR repository")),
+		Setup:         key.NewBinding(key.WithKeys("I"), key.WithHelp("I", "edit project")),
 		New:           key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new worktree")),
 		Delete:        key.NewBinding(key.WithKeys("d"), key.WithHelp("d d", "delete worktree")),
 		Quit:          key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
@@ -203,7 +205,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Palette, k.Up, k.Down, k.Focus, k.HelpPage, k.Refresh, k.ToggleAll, k.PRRadar, k.TicketMode, k.Filter}, {k.StateFilter, k.SprintOnly, k.BoardMenu, k.SetStatus, k.WriteNote, k.AssignSelf, k.UserFilter, k.MineFilter, k.BranchView, k.FailedGHA, k.TicketFilters, k.PRDiff, k.ApprovePR, k.AskPR, k.New, k.ProfileMenu, k.Setup, k.ToggleBody, k.OpenPR, k.OpenCode, k.OpenAgent, k.EnterAction, k.AgentMenu, k.Delete, k.Quit}}
+	return [][]key.Binding{{k.Palette, k.Up, k.Down, k.Focus, k.HelpPage, k.Refresh, k.ToggleAll, k.PRRadar, k.TicketMode, k.Filter}, {k.StateFilter, k.SprintOnly, k.BoardMenu, k.SetStatus, k.WriteNote, k.AssignSelf, k.UserFilter, k.MineFilter, k.BranchView, k.FailedGHA, k.TicketFilters, k.PRDiff, k.ApprovePR, k.AskPR, k.PRRepository, k.New, k.ProfileMenu, k.Setup, k.ToggleBody, k.OpenPR, k.OpenCode, k.OpenAgent, k.EnterAction, k.AgentMenu, k.Delete, k.Quit}}
 }
 
 type model struct {
@@ -311,6 +313,14 @@ type model struct {
 	selectingAgent                 bool
 	selectingEnterAction           bool
 	selectingProfile               bool
+	pickingRepository              bool
+	repoPickerPurpose              repoPickerPurpose
+	repoPickerCursor               int
+	repoPickerTicket               Ticket
+	repoPickerAction               string
+	repoRemoveArmed                string
+	newWorktreeRepository          string
+	addingRepository               *repositoryEditor
 	showingHelp                    bool
 	agentCursor                    int
 	enterActionCursor              int
@@ -332,13 +342,17 @@ type model struct {
 
 	// ops serializes mutations per repository, ticket and PR (shared by copies).
 	ops *opQueue
-	// Progressive worktree enrichment: statuses and PR labels after discovery.
-	prIndex             []PullRequest
-	prIndexLoading      bool
+	// Progressive worktree enrichment: statuses and, per repository, PR labels
+	// after discovery.
+	prIndexes           map[string][]PullRequest
+	prIndexLoading      map[string]bool
 	refreshPRIndex      bool
 	worktreeLoadSeq     int
 	worktreeStatusTotal int
 	worktreeStatusDone  int
+	// prRepository names the project repository PR Radar shows; empty means
+	// the first one.
+	prRepository string
 	// PR Radar data provenance, kept so prefetched rows can be reused.
 	prListSlug      string
 	prListFetchedAt time.Time
@@ -435,7 +449,7 @@ func NewModel(cfg Config, services core.Services) model {
 
 	m := model{
 		services:            services,
-		configSaveState:     &configSaveState{},
+		configSaveState:     newConfigSaveState(services, cfg.App),
 		cfg:                 cfg,
 		keys:                defaultKeys(),
 		help:                h,
@@ -538,9 +552,9 @@ func (m *model) setTransientStatus(message string) tea.Cmd {
 
 func (m model) Init() tea.Cmd {
 	if m.setup != nil {
-		return nil
+		return configPollCmd()
 	}
-	return tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick, prefetchTickCmd(m.prefetchSeq, prefetchDelay))
+	return tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.spinner.Tick, prefetchTickCmd(m.prefetchSeq, prefetchDelay), configPollCmd())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -579,7 +593,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logsViewport.GotoBottom()
 		return m, nil
 	case paletteWorktreesResult:
-		if !m.paletteOpen || msg.Request != m.paletteRequest || msg.RepositoryPath != m.cfg.ActiveProfile.RepositoryPath {
+		if !m.paletteOpen || msg.Request != m.paletteRequest || msg.Project != projectKey(m.cfg) {
 			return m, nil
 		}
 		if msg.Err == nil {
@@ -596,6 +610,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case loadResult:
 		if msg.RepositoryPath != "" && (msg.RepositoryPath != m.cfg.ActiveProfile.RepositoryPath || msg.ShowAll != m.showAll) {
+			return m, nil
+		}
+		if msg.Project != "" && msg.Project != projectKey(m.cfg) {
 			return m, nil
 		}
 		m.loading = false
@@ -659,7 +676,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, enrich
 	case worktreeStatusResult:
-		if msg.RepositoryPath != m.cfg.ActiveProfile.RepositoryPath {
+		if !m.ownsRepositoryPath(msg.RepositoryPath) {
 			return m, nil
 		}
 		if msg.Seq == m.worktreeLoadSeq && m.worktreeStatusDone < m.worktreeStatusTotal {
@@ -668,17 +685,24 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mergeWorktreeStatus(msg.Worktree)
 		return m, nil
 	case prIndexResult:
-		if msg.RepoSlug != m.cfg.RepoSlug {
+		repository := msg.Repository
+		if repository == "" {
+			repository = m.cfg.RepositoryName()
+		}
+		if scoped := m.cfg.ForRepository(repository); scoped.RepositoryName() != repository || msg.RepoSlug != scoped.RepoSlug {
 			return m, nil
 		}
-		m.prIndexLoading = false
+		delete(m.prIndexLoading, repository)
 		if msg.Err != nil {
 			if m.isWorktreeMode() && !m.statusError {
 				m.statusMessage = "PR lookup unavailable: gh auth or repo access failed"
 			}
 			return m, nil
 		}
-		m.prIndex = msg.PullRequests
+		if m.prIndexes == nil {
+			m.prIndexes = map[string][]PullRequest{}
+		}
+		m.prIndexes[repository] = msg.PullRequests
 		m.attachPRIndex()
 		if m.isWorktreeMode() {
 			m.rebuildRows()
@@ -689,7 +713,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case prChecksResult:
-		if msg.RepoSlug != m.cfg.RepoSlug {
+		if msg.RepoSlug != m.prCfg().RepoSlug {
 			return m, nil
 		}
 		delete(m.prChecksLoading, msg.SHA)
@@ -699,8 +723,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case prefetchTick:
 		return m.handlePrefetchTick(msg)
+	case configPollTick:
+		return m.handleConfigPollTick()
+	case configFileResult:
+		return m.handleConfigFile(msg)
+	case configEditorClosed:
+		return m.handleConfigEditorClosed(msg)
 	case remotePRListResult:
-		if msg.RepoSlug != m.cfg.RepoSlug {
+		if msg.RepoSlug != m.prCfg().RepoSlug {
 			return m, nil
 		}
 		m.prListLoading = false
@@ -921,47 +951,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.setup = nil
 		m.cfg = msg.Config
-		m.showAll = false
-		m.showPRBody = false
-		m.prDiffMode = false
-		m.filtering = false
-		m.creatingWorktree = false
-		m.selectingAgent = false
-		m.selectingEnterAction = false
-		m.selectingProfile = false
-		m.confirmingPRApproval = false
-		m.prApprovalPendingNumber = 0
-		m.prApprovalAwaitingDetailNumber = 0
-		m.prApprovalWarnings = nil
-		m.mode = modeWorktrees
-		m.cancelTicketDetailLoad()
-		m.tickets = nil
-		m.visibleTickets = nil
-		m.ticketDetail = nil
-		m.ticketReadMode = false
-		m.ticketBoard = JiraBoard{}
-		m.ticketMineOnly = true
-		m.ticketSprintOnly = true
-		m.ticketOpenOnly = true
-		if jira := m.cfg.ActiveProfile.Jira; jira != nil {
-			if jira.FiltersConfigured {
-				m.ticketMineOnly = jira.MineOnly
-				m.ticketSprintOnly = jira.SprintOnly
-				m.ticketOpenOnly = jira.OpenOnly
-			}
-			if board := jira.ActiveBoard(); board != nil {
-				m.ticketBoard = *board
-			}
-		}
-		m.filterQuery = ""
-		m.filterInput.SetValue("")
-		m.selectedPath = ""
-		m.selectedIndex = 0
-		m.clearDeleteArm()
-		m.allWorktrees = nil
-		m.visibleWorktrees = nil
-		prefetch := m.resetProfileData()
-		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, msg.Message+". Loading worktrees..."), prefetch)
+		m.configSaveState.markSynced(m.services, m.cfg.App)
+		load := m.resetForProject()
+		return m, tea.Batch(load, m.startLoading(loadingWorktrees, msg.Message+". Loading worktrees..."))
 	case deleteResult:
 		if msg.Err != nil {
 			m.restorePendingDelete(msg.Path)
@@ -1081,6 +1073,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.selectingProfile {
 			return m.updateProfileSelector(msg)
+		}
+
+		if m.pickingRepository {
+			return m.updateRepositoryPicker(msg)
+		}
+
+		if m.addingRepository != nil {
+			return m.updateAddRepository(msg)
 		}
 
 		if m.showingHelp {
@@ -1239,7 +1239,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.prApprovalAwaitingDetailNumber = 0
 				m.prApprovalWarnings = nil
 				m.prListLoading = true
-				return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg, false), m.startLoading(loadingPRs, "Refreshing remote PRs..."))
+				return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.prCfg(), false), m.startLoading(loadingPRs, "Refreshing remote PRs..."))
 			}
 			m.rememberSelection()
 			m.refreshPRIndex = true
@@ -1255,6 +1255,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if next, cmd, handled := m.updateTicketMode(msg); handled {
 				return next, cmd
 			}
+		}
+		if m.isPRMode() && key.Matches(msg, m.keys.PRRepository) {
+			if !m.cfg.MultiRepository() {
+				return m, m.setTransientStatus("This project has one repository; add another from the command palette")
+			}
+			return m.openRepositoryPicker(pickRepoForPRRadar, Ticket{}, "")
 		}
 		if m.isPRMode() && key.Matches(msg, m.keys.StateFilter) {
 			m.cyclePRStateFilter()
@@ -1437,10 +1443,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusError = true
 					return m, nil
 				}
-				if m.deferPendingWorktreeAction(m.services.CreateWorktreePath(m.cfg, selected.HeadRefName), core.EnterActionVSCode) {
+				prCfg := m.prCfg()
+				if m.deferPendingWorktreeAction(m.services.CreateWorktreePath(prCfg, selected.HeadRefName), core.EnterActionVSCode) {
 					return m, nil
 				}
-				return m, tea.Batch(m.ops.enqueue(gitQueueKey(m.cfg), openPRWorktreeInEditorCmd(m.services, m.services, m.cfg, *selected, m.configuredEditor())), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for %s...", selected.Number, m.configuredEditor().Name)))
+				return m, tea.Batch(m.ops.enqueue(gitQueueKey(prCfg), openPRWorktreeInEditorCmd(m.services, m.services, prCfg, *selected, m.configuredEditor())), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for %s...", selected.Number, m.configuredEditor().Name)))
 			}
 			selected := m.selectedWorktree()
 			if selected == nil {
@@ -1466,7 +1473,8 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusError = true
 					return m, nil
 				}
-				if m.deferPendingWorktreeAction(m.services.CreateWorktreePath(m.cfg, selected.HeadRefName), core.EnterActionAgent) {
+				prCfg := m.prCfg()
+				if m.deferPendingWorktreeAction(m.services.CreateWorktreePath(prCfg, selected.HeadRefName), core.EnterActionAgent) {
 					return m, nil
 				}
 				agent := m.defaultAgent()
@@ -1475,7 +1483,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusError = true
 					return m, nil
 				}
-				return m, tea.Batch(m.ops.enqueue(gitQueueKey(m.cfg), openPRWorktreeAgentCmd(m.services, m.services, m.cfg, *selected, *agent)), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for %s...", selected.Number, agent.Name)))
+				return m, tea.Batch(m.ops.enqueue(gitQueueKey(prCfg), openPRWorktreeAgentCmd(m.services, m.services, prCfg, *selected, *agent)), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for %s...", selected.Number, agent.Name)))
 			}
 			selected := m.selectedWorktree()
 			if selected == nil {
@@ -1500,20 +1508,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if key.Matches(msg, m.keys.Setup) {
-			m.clearDeleteArm()
-			setupCfg := m.cfg
-			if currentRepo, ok := m.services.InferRepoFromCWD(); ok {
-				setupCfg.SetupRepo = currentRepo
-			} else {
-				setupCfg.SetupRepo = m.cfg.ActiveProfile.RepositoryPath
-			}
-			setupCfg.SetupReason = "Add or update a repository profile"
-			setup := newSetupModel(setupCfg, false, m.services)
-			m.setup = &setup
-			m.loading = false
-			m.statusMessage = "Setup"
-			m.statusError = false
-			return m, nil
+			return m.openSetup(m.projectSetup())
 		}
 		if key.Matches(msg, m.keys.New) {
 			m.clearDeleteArm()
@@ -1534,20 +1529,20 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				branch := selected.HeadRefName
+				prCfg := m.prCfg()
 				m.beginWorktreeCreation(Worktree{
-					Name:    branch,
-					Branch:  branch,
-					Path:    m.services.CreateWorktreePath(m.cfg, branch),
-					Managed: true,
+					Name:       branch,
+					Branch:     branch,
+					Path:       m.services.CreateWorktreePath(prCfg, branch),
+					Managed:    true,
+					Repository: prCfg.RepositoryName(),
 				}, "")
-				return m, tea.Batch(m.ops.enqueue(gitQueueKey(m.cfg), createWorktreeCmd(m.services, m.cfg, branch)), m.startLoading(loadingMutation, fmt.Sprintf("Creating worktree for PR #%d (%s)...", selected.Number, branch)))
+				return m, tea.Batch(m.ops.enqueue(gitQueueKey(prCfg), createWorktreeCmd(m.services, prCfg, branch)), m.startLoading(loadingMutation, fmt.Sprintf("Creating worktree for PR #%d (%s)...", selected.Number, branch)))
 			}
-			m.creatingWorktree = true
-			m.newInput.SetValue("")
-			m.newInput.Focus()
-			m.statusMessage = "Enter branch/worktree name"
-			m.statusError = false
-			return m, nil
+			if m.cfg.MultiRepository() {
+				return m.openRepositoryPicker(pickRepoForWorktree, Ticket{}, "")
+			}
+			return m.openNewWorktreeInput("")
 		}
 		if key.Matches(msg, m.keys.Delete) {
 			if !m.isWorktreeMode() {
@@ -1575,7 +1570,8 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.pendingDeletes[wt.Path] = pendingDelete{Worktree: wt, Index: m.worktreeIndex(wt.Path)}
 				m.optimisticRemove(wt.Path)
-				return m, tea.Batch(m.ops.enqueue(gitQueueKey(m.cfg), removeWorktreeCmd(m.services, m.cfg, wt)), m.startLoading(loadingMutation, fmt.Sprintf("Deleting %s...", wt.Name)))
+				wtCfg := m.worktreeCfg(wt)
+				return m, tea.Batch(m.ops.enqueue(gitQueueKey(wtCfg), removeWorktreeCmd(m.services, wtCfg, wt)), m.startLoading(loadingMutation, fmt.Sprintf("Deleting %s...", wt.Name)))
 			}
 
 			m.deleteArmedPath = selected.Path
@@ -1594,6 +1590,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.editingEditor {
 		return m.updateEditorInputMessage(msg)
+	}
+	if m.addingRepository != nil {
+		return m.updateAddRepositoryMessage(msg)
 	}
 	if m.focusTable {
 		before := m.table.Cursor()
@@ -1643,13 +1642,19 @@ func (m model) updateNewWorktree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		m.creatingWorktree = false
 		m.newInput.Blur()
+		cfg := m.cfg.ForRepository(m.newWorktreeRepository)
 		m.beginWorktreeCreation(Worktree{
-			Name:    name,
-			Branch:  name,
-			Path:    m.services.CreateWorktreePath(m.cfg, name),
-			Managed: true,
+			Name:       name,
+			Branch:     name,
+			Path:       m.services.CreateWorktreePath(cfg, name),
+			Managed:    true,
+			Repository: cfg.RepositoryName(),
 		}, "")
-		return m, tea.Batch(m.ops.enqueue(gitQueueKey(m.cfg), createWorktreeCmd(m.services, m.cfg, name)), m.startLoading(loadingMutation, fmt.Sprintf("Creating %s...", name)))
+		creating := fmt.Sprintf("Creating %s...", name)
+		if m.cfg.MultiRepository() {
+			creating = fmt.Sprintf("Creating %s in %s...", name, cfg.RepositoryName())
+		}
+		return m, tea.Batch(m.ops.enqueue(gitQueueKey(cfg), createWorktreeCmd(m.services, cfg, name)), m.startLoading(loadingMutation, creating), m.rememberRepository(m.newWorktreeRepository))
 	}
 
 	var cmd tea.Cmd
@@ -1686,7 +1691,7 @@ func (m model) updatePRQuestion(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.askingPR = false
 		m.prQuestionInput.Blur()
-		return m, tea.Batch(askPullRequestAgentCmd(m.services, m.cfg, *agent, *selected, question), m.startLoading(loadingAgent, fmt.Sprintf("Asking %s about PR #%d...", agent.Name, selected.Number)))
+		return m, tea.Batch(askPullRequestAgentCmd(m.services, m.prCfg(), *agent, *selected, question), m.startLoading(loadingAgent, fmt.Sprintf("Asking %s about PR #%d...", agent.Name, selected.Number)))
 	}
 
 	var cmd tea.Cmd
@@ -1731,7 +1736,7 @@ func (m model) updatePRDiffMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.prApprovalAwaitingDetailNumber = 0
 		m.prApprovalWarnings = nil
 		m.prListLoading = true
-		return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg, false), m.startLoading(loadingPRs, "Refreshing remote PRs..."))
+		return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.prCfg(), false), m.startLoading(loadingPRs, "Refreshing remote PRs..."))
 	case key.Matches(msg, m.keys.ApprovePR):
 		return m.beginPRApproval()
 	case key.Matches(msg, m.keys.OpenPR):
@@ -1892,61 +1897,76 @@ func (m model) updateProfileSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		m.profileCursor = min(max(m.profileCursor, 0), len(m.cfg.App.Profiles)-1)
 		profile := m.cfg.App.Profiles[m.profileCursor]
-		resolved := m.services.ResolveProfilePaths(profile, m.cfg.HomeDir)
 		m.cfg.App.DefaultProfile = profile.Name
-		m.cfg.ActiveProfile = resolved
-		m.allWorktrees = nil
-		m.visibleWorktrees = nil
-		m.paletteWorktrees = nil
-		m.pendingWorktreePath = ""
-		m.table.SetRows(nil)
-		m.cfg.RepoSlug = resolved.GitHubRepo
-		if m.cfg.RepoSlug == "" {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			m.cfg.RepoSlug = m.services.InferGitHubRepo(ctx, resolved)
-			cancel()
-		}
-		m.selectingProfile = false
-		m.showAll = false
-		m.showPRBody = false
-		m.prDiffMode = false
-		m.filtering = false
-		m.creatingWorktree = false
-		m.selectingEnterAction = false
-		m.confirmingPRApproval = false
-		m.prApprovalPendingNumber = 0
-		m.prApprovalAwaitingDetailNumber = 0
-		m.prApprovalWarnings = nil
-		m.mode = modeWorktrees
-		m.cancelTicketDetailLoad()
-		m.tickets = nil
-		m.visibleTickets = nil
-		m.ticketDetail = nil
-		m.ticketReadMode = false
-		m.ticketBoard = JiraBoard{}
-		m.ticketMineOnly = true
-		m.ticketSprintOnly = true
-		m.ticketOpenOnly = true
-		if jira := resolved.Jira; jira != nil {
-			if jira.FiltersConfigured {
-				m.ticketMineOnly = jira.MineOnly
-				m.ticketSprintOnly = jira.SprintOnly
-				m.ticketOpenOnly = jira.OpenOnly
-			}
-			if board := jira.ActiveBoard(); board != nil {
-				m.ticketBoard = *board
-			}
-		}
-		m.filterQuery = ""
-		m.filterInput.SetValue("")
-		m.selectedPath = ""
-		m.selectedIndex = 0
-		m.clearDeleteArm()
-		prefetch := m.resetProfileData()
-		return m, tea.Batch(m.persistConfig("Saved config "+m.cfg.ConfigPath), loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, fmt.Sprintf("Switching to %s...", profile.Name)), prefetch)
+		load := m.activateProject(profile)
+		return m, tea.Batch(m.persistConfig("Saved config "+m.cfg.ConfigPath), load, m.startLoading(loadingWorktrees, fmt.Sprintf("Switching to %s...", profile.Name)))
 	}
 
 	return m, nil
+}
+
+// activateProject makes profile the active project, resolving its
+// repositories, and returns the commands that load it.
+func (m *model) activateProject(profile RepositoryProfile) tea.Cmd {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	resolved := m.services.ResolveProject(ctx, profile, m.cfg.HomeDir)
+	cancel()
+	m.cfg.ActiveProfile = resolved
+	m.cfg.RepoSlug = resolved.GitHubRepo
+	return m.resetForProject()
+}
+
+// resetForProject forgets every row, overlay and selection of the previous
+// project and returns the commands that load the active one.
+func (m *model) resetForProject() tea.Cmd {
+	m.allWorktrees = nil
+	m.visibleWorktrees = nil
+	m.paletteWorktrees = nil
+	m.pendingWorktreePath = ""
+	m.table.SetRows(nil)
+	m.selectingProfile = false
+	m.pickingRepository = false
+	m.repoRemoveArmed = ""
+	m.addingRepository = nil
+	m.newWorktreeRepository = ""
+	m.showAll = false
+	m.showPRBody = false
+	m.prDiffMode = false
+	m.filtering = false
+	m.creatingWorktree = false
+	m.selectingAgent = false
+	m.selectingEnterAction = false
+	m.confirmingPRApproval = false
+	m.prApprovalPendingNumber = 0
+	m.prApprovalAwaitingDetailNumber = 0
+	m.prApprovalWarnings = nil
+	m.mode = modeWorktrees
+	m.cancelTicketDetailLoad()
+	m.tickets = nil
+	m.visibleTickets = nil
+	m.ticketDetail = nil
+	m.ticketReadMode = false
+	m.ticketBoard = JiraBoard{}
+	m.ticketMineOnly = true
+	m.ticketSprintOnly = true
+	m.ticketOpenOnly = true
+	if jira := m.cfg.ActiveProfile.Jira; jira != nil {
+		if jira.FiltersConfigured {
+			m.ticketMineOnly = jira.MineOnly
+			m.ticketSprintOnly = jira.SprintOnly
+			m.ticketOpenOnly = jira.OpenOnly
+		}
+		if board := jira.ActiveBoard(); board != nil {
+			m.ticketBoard = *board
+		}
+	}
+	m.filterQuery = ""
+	m.filterInput.SetValue("")
+	m.selectedPath = ""
+	m.selectedIndex = 0
+	m.clearDeleteArm()
+	prefetch := m.resetProfileData()
+	return tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), prefetch)
 }
 
 func (m model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2007,8 +2027,10 @@ func (m *model) applyFilter() {
 		m.visibleWorktrees = append([]Worktree(nil), m.allWorktrees...)
 	} else {
 		filtered := make([]Worktree, 0, len(m.allWorktrees))
+		multi := m.cfg.MultiRepository()
 		for _, wt := range m.allWorktrees {
-			if strings.Contains(strings.ToLower(wt.Name), query) || strings.Contains(strings.ToLower(wt.Branch), query) {
+			if strings.Contains(strings.ToLower(wt.Name), query) || strings.Contains(strings.ToLower(wt.Branch), query) ||
+				(multi && strings.Contains(strings.ToLower(m.worktreeRepository(wt)), query)) {
 				filtered = append(filtered, wt)
 			}
 		}
@@ -2255,17 +2277,19 @@ func (m *model) rebuildRows() {
 		m.rebuildPRRows()
 		return
 	}
+	// Adding or removing a project repository changes the column count; the
+	// table must never hold rows wider than its columns.
+	if columns := m.activeColumns(); len(columns) != len(m.table.Columns()) {
+		m.table.SetRows(nil)
+		m.table.SetColumns(columns)
+	}
 	rows := make([]table.Row, 0, len(m.visibleWorktrees))
 	compact := m.table.Width() <= 70
 	for _, wt := range m.visibleWorktrees {
-		rows = append(rows, table.Row(worktreeRowCells(wt, compact)))
+		rows = append(rows, table.Row(m.worktreeRow(wt, compact)))
 	}
 	if len(rows) == 0 {
-		columnCount := 6
-		if compact {
-			columnCount = 4
-		}
-		rows = append(rows, table.Row(emptyTableRow(columnCount, m.emptyWorktreesMessage())))
+		rows = append(rows, table.Row(emptyTableRow(len(m.activeColumns()), m.emptyWorktreesMessage())))
 	}
 	m.table.SetRows(rows)
 }
@@ -2349,7 +2373,23 @@ func (m model) activeColumns() []table.Column {
 	if m.isPRMode() {
 		return buildPRColumns(m.table.Width())
 	}
+	if m.cfg.MultiRepository() {
+		return buildRepositoryColumns(m.table.Width())
+	}
 	return buildColumns(m.table.Width())
+}
+
+// worktreeRow leads with the repository when the project has several.
+func (m model) worktreeRow(wt Worktree, compact bool) []string {
+	cells := worktreeRowCells(wt, compact)
+	if !m.cfg.MultiRepository() {
+		return cells
+	}
+	if compact {
+		// Worktree folders are usually named after their branch.
+		cells = append(cells[:1:1], cells[2:]...)
+	}
+	return append([]string{m.worktreeRepository(wt)}, cells...)
 }
 
 func (m *model) selectedWorktree() *Worktree {
@@ -2623,7 +2663,11 @@ func (m *model) updateDetailContent() {
 			m.detail.GotoTop()
 			return
 		}
-		m.detail.SetContent(ticketDetailViewContent(selected, m.ticketDetailLoading, m.detail.Width))
+		var worktrees []Worktree
+		if m.cfg.MultiRepository() {
+			worktrees = m.ticketWorktrees(selected.Key)
+		}
+		m.detail.SetContent(ticketDetailViewContentWithWorktrees(selected, worktrees, m.ticketDetailLoading, m.detail.Width))
 		m.detail.GotoTop()
 		return
 	}
@@ -2639,7 +2683,11 @@ func (m *model) updateDetailContent() {
 		return
 	}
 
-	m.detail.SetContent(detailViewContent(selected, m.showPRBody, m.detail.Width))
+	repository := ""
+	if m.cfg.MultiRepository() {
+		repository = m.worktreeRepository(*selected)
+	}
+	m.detail.SetContent(worktreeDetailViewContent(selected, repository, m.showPRBody, m.detail.Width))
 	m.detail.GotoTop()
 }
 
@@ -2676,7 +2724,7 @@ func (m model) movePRSelectionAndLoad(delta int) (tea.Model, tea.Cmd) {
 // only when the PR changed since, or the cached copy has aged out.
 func (m model) startPRDetailLoad(number int) (tea.Model, tea.Cmd) {
 	m.cancelPRDetailLoad()
-	if cached, fetchedAt, ok := m.services.PeekRemotePullRequestDetail(m.cfg, number); ok {
+	if cached, fetchedAt, ok := m.services.PeekRemotePullRequestDetail(m.prCfg(), number); ok {
 		listed := m.remotePRByNumber(number)
 		if listed != nil && listed.ChecksKnown {
 			// Checks streamed into the list are at least as new as the cache.
@@ -2699,7 +2747,7 @@ func (m model) startPRDetailLoad(number int) (tea.Model, tea.Cmd) {
 		m.applySpinnerForKind(loadingDetail)
 	}
 	m.updateDetailContent()
-	return m, tea.Batch(loadRemotePullRequestDetailCmd(m.services, ctx, m.cfg, number, m.prDetailRequest), m.spinner.Tick)
+	return m, tea.Batch(loadRemotePullRequestDetailCmd(m.services, ctx, m.prCfg(), number, m.prDetailRequest), m.spinner.Tick)
 }
 
 // prDetailCurrent reports whether the shown detail already matches the PR as
@@ -2838,6 +2886,17 @@ func buildColumns(totalWidth int) []table.Column {
 	}
 	widths := distributeColumnWidths(totalWidth-tableCellStyle.GetHorizontalFrameSize()*6, []int{14, 16, 7, 6, 8, 12}, []int{20, 26, 10, 9, 13, 18}, []int{5, 1, 0, 4, 2, 3})
 	return []table.Column{{Title: "Worktree", Width: widths[0]}, {Title: "Branch", Width: widths[1]}, {Title: "State", Width: widths[2]}, {Title: "Delta", Width: widths[3]}, {Title: "PR", Width: widths[4]}, {Title: "Last Commit", Width: widths[5]}}
+}
+
+// buildRepositoryColumns adds a leading Repo column for projects with several
+// repositories; compact tables drop Branch to make room for it.
+func buildRepositoryColumns(totalWidth int) []table.Column {
+	if totalWidth <= 70 {
+		widths := distributeColumnWidths(totalWidth-tableCellStyle.GetHorizontalFrameSize()*4, []int{8, 10, 7, 7}, []int{12, 22, 12, 14}, []int{1, 0, 3, 2})
+		return []table.Column{{Title: "Repo", Width: widths[0]}, {Title: "Worktree", Width: widths[1]}, {Title: "State", Width: widths[2]}, {Title: "PR", Width: widths[3]}}
+	}
+	widths := distributeColumnWidths(totalWidth-tableCellStyle.GetHorizontalFrameSize()*7, []int{6, 12, 12, 7, 6, 7, 8}, []int{12, 20, 26, 10, 9, 13, 18}, []int{6, 2, 1, 0, 5, 3, 4})
+	return []table.Column{{Title: "Repo", Width: widths[0]}, {Title: "Worktree", Width: widths[1]}, {Title: "Branch", Width: widths[2]}, {Title: "State", Width: widths[3]}, {Title: "Delta", Width: widths[4]}, {Title: "PR", Width: widths[5]}, {Title: "Last Commit", Width: widths[6]}}
 }
 
 func buildPRColumns(totalWidth int) []table.Column {
@@ -3047,11 +3106,19 @@ func sumInts(values []int) int {
 }
 
 func detailViewContent(wt *Worktree, showPRBody bool, width int) string {
+	return worktreeDetailViewContent(wt, "", showPRBody, width)
+}
+
+// worktreeDetailViewContent names the worktree's repository when one is given.
+func worktreeDetailViewContent(wt *Worktree, repository string, showPRBody bool, width int) string {
 	if wt == nil {
 		return "No worktree selected"
 	}
 
 	var lines []string
+	if repository != "" {
+		lines = append(lines, fmt.Sprintf("Repository: %s", repository))
+	}
 	lines = append(lines,
 		fmt.Sprintf("Worktree: %s", wt.Name),
 		fmt.Sprintf("Path: %s", wt.Path),

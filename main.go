@@ -5,9 +5,15 @@ import (
 	"os"
 
 	"github.com/VashingMachine/wt-manager/internal/app"
+	"github.com/VashingMachine/wt-manager/internal/cli"
 )
 
+const usage = "usage: wt-manager [--init]\n" + cli.Usage
+
 func main() {
+	if cli.IsCommand(os.Args[1:]) {
+		os.Exit(cli.Main(os.Args[1:]))
+	}
 	forceSetup := false
 	for _, arg := range os.Args[1:] {
 		if arg == "--init" {
@@ -15,10 +21,10 @@ func main() {
 			continue
 		}
 		if arg == "-h" || arg == "--help" {
-			fmt.Println("usage: wt-manager [--init]")
+			fmt.Println(usage)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "unknown argument: %s\nusage: wt-manager [--init]\n", arg)
+		fmt.Fprintf(os.Stderr, "unknown argument: %s\n%s\n", arg, usage)
 		os.Exit(2)
 	}
 

@@ -117,49 +117,97 @@ func (m model) switchMode(target viewMode) (tea.Model, tea.Cmd) {
 }
 
 func (m model) startTicketWorktreeCreation(ticket Ticket, action string) (tea.Model, tea.Cmd) {
-	if ticket.Worktree != nil && !ticket.Worktree.Missing && !ticket.Worktree.Prunable {
+	present := ticket.Worktree != nil && !ticket.Worktree.Missing && !ticket.Worktree.Prunable
+	if m.cfg.MultiRepository() {
+		// Opening the ticket's worktree needs no repository; making one does,
+		// even when the ticket already has a worktree in another repository.
+		if present && action != "" {
+			return m.openWorktreeWithAction(*ticket.Worktree, action)
+		}
+		return m.openRepositoryPicker(pickRepoForTicket, ticket, action)
+	}
+	if present {
 		if action != "" {
 			return m.openWorktreeWithAction(*ticket.Worktree, action)
 		}
-		m.selectedTicketKey = ticket.Key
-		m.pendingWorktreePath = ticket.Worktree.Path
-		m.statusMessage = fmt.Sprintf("Selected existing worktree %s. Refreshing tickets...", ticket.Worktree.Name)
-		return m, tea.Batch(m.loadTicketsCmd(false), m.startLoading(loadingTickets, m.statusMessage))
+		return m.selectTicketWorktree(ticket.Key, *ticket.Worktree)
 	}
+	return m.createTicketWorktree(ticket, m.cfg, action)
+}
+
+// startTicketWorktreeInRepository reuses the ticket's worktree in repository
+// or creates one there, then runs action on it.
+func (m model) startTicketWorktreeInRepository(ticket Ticket, repository string, action string) (tea.Model, tea.Cmd) {
+	remember := m.rememberRepository(repository)
+	if existing := m.ticketWorktreeIn(ticket.Key, repository); existing != nil {
+		var next tea.Model
+		var cmd tea.Cmd
+		if action != "" {
+			next, cmd = m.openWorktreeWithAction(*existing, action)
+		} else {
+			next, cmd = m.selectTicketWorktree(ticket.Key, *existing)
+		}
+		return next, tea.Batch(cmd, remember)
+	}
+	ticket.Worktree = nil
+	next, cmd := m.createTicketWorktree(ticket, m.cfg.ForRepository(repository), action)
+	return next, tea.Batch(cmd, remember)
+}
+
+func (m model) selectTicketWorktree(key string, worktree Worktree) (tea.Model, tea.Cmd) {
+	m.selectedTicketKey = key
+	m.pendingWorktreePath = worktree.Path
+	m.statusMessage = fmt.Sprintf("Selected existing worktree %s. Refreshing tickets...", worktree.Name)
+	return m, tea.Batch(m.loadTicketsCmd(false), m.startLoading(loadingTickets, m.statusMessage))
+}
+
+// createTicketWorktree creates the ticket's worktree in the repository cfg is
+// scoped to.
+func (m model) createTicketWorktree(ticket Ticket, cfg Config, action string) (tea.Model, tea.Cmd) {
 	branch := m.services.TicketBranchName(ticket)
 	worktree := Worktree{
-		Name:    branch,
-		Branch:  branch,
-		Path:    m.services.CreateWorktreePath(m.cfg, branch),
-		Managed: true,
+		Name:       branch,
+		Branch:     branch,
+		Path:       m.services.CreateWorktreePath(cfg, branch),
+		Managed:    true,
+		Repository: cfg.RepositoryName(),
 	}
 	m.beginWorktreeCreation(worktree, ticket.Key)
 	if action != "" {
 		m.deferPendingWorktreeAction(worktree.Path, action)
 	}
+	preparing := fmt.Sprintf("Preparing worktree for %s...", ticket.Key)
+	if m.cfg.MultiRepository() {
+		preparing = fmt.Sprintf("Preparing %s worktree for %s...", worktree.Repository, ticket.Key)
+	}
 	return m, tea.Batch(
-		m.ops.enqueue(gitQueueKey(m.cfg), ensureTicketWorktreeCmd(m.services, m.cfg, ticket)),
-		m.startLoading(loadingMutation, fmt.Sprintf("Preparing worktree for %s...", ticket.Key)),
+		m.ops.enqueue(gitQueueKey(cfg), ensureTicketWorktreeCmd(m.services, cfg, ticket)),
+		m.startLoading(loadingMutation, preparing),
 	)
 }
 
 // enterPRMode reuses prefetched or cached PRs when there are any, so the list
 // paints at once and is only revalidated in the background once it ages out.
 func (m model) enterPRMode() (tea.Model, tea.Cmd) {
-	if m.prListSlug != m.cfg.RepoSlug {
+	prCfg := m.prCfg()
+	if m.prListSlug != prCfg.RepoSlug {
 		m.remotePRs = nil
 		m.prListFetchedAt = time.Time{}
 	}
 	if len(m.remotePRs) == 0 {
-		if cached, fetchedAt, ok := m.services.PeekRemotePullRequests(m.cfg); ok {
+		if cached, fetchedAt, ok := m.services.PeekRemotePullRequests(prCfg); ok {
 			m.remotePRs = cached
 			m.prListFetchedAt = fetchedAt
-			m.prListSlug = m.cfg.RepoSlug
+			m.prListSlug = prCfg.RepoSlug
 		}
 	}
 	if len(m.remotePRs) == 0 {
 		m.prListLoading = true
-		return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.cfg, false), m.startLoading(loadingPRs, "Loading remote PRs..."))
+		loading := "Loading remote PRs..."
+		if m.cfg.MultiRepository() {
+			loading = fmt.Sprintf("Loading %s PRs...", prCfg.RepositoryName())
+		}
+		return m, tea.Batch(loadRemotePullRequestsCmd(m.services, prCfg, false), m.startLoading(loadingPRs, loading))
 	}
 
 	m.applyPRFilter()
@@ -167,7 +215,7 @@ func (m model) enterPRMode() (tea.Model, tea.Cmd) {
 	cmds := []tea.Cmd{m.loadMissingChecks()}
 	if !m.prListLoading && !isRecent(m.prListFetchedAt, prListTTL) {
 		m.prListLoading = true
-		cmds = append(cmds, loadRemotePullRequestsCmd(m.services, m.cfg, true), m.spinner.Tick)
+		cmds = append(cmds, loadRemotePullRequestsCmd(m.services, prCfg, true), m.spinner.Tick)
 	}
 	if selected := m.selectedRemotePR(); selected != nil {
 		next, cmd := m.startPRDetailLoad(selected.Number)
@@ -910,6 +958,9 @@ func (m model) ticketRowCells(ticket Ticket, compact bool) []string {
 	worktreeCell := "-"
 	if ticket.Worktree != nil {
 		worktreeCell = icons.Link + " " + ticket.Worktree.Name
+		if m.cfg.MultiRepository() {
+			worktreeCell = icons.Link + " " + m.worktreeRepository(*ticket.Worktree) + "/" + ticket.Worktree.Name
+		}
 	}
 	prCell := "-"
 	if ticket.PR != nil {
@@ -924,6 +975,12 @@ func (m model) ticketRowCells(ticket Ticket, compact bool) []string {
 }
 
 func ticketDetailViewContent(ticket *Ticket, loading bool, width int) string {
+	return ticketDetailViewContentWithWorktrees(ticket, nil, loading, width)
+}
+
+// ticketDetailViewContentWithWorktrees lists the ticket's worktrees in every
+// repository of a multi-repository project instead of its single worktree.
+func ticketDetailViewContentWithWorktrees(ticket *Ticket, worktrees []Worktree, loading bool, width int) string {
 	if ticket == nil {
 		return "No JIRA ticket selected"
 	}
@@ -941,7 +998,12 @@ func ticketDetailViewContent(ticket *Ticket, loading bool, width int) string {
 	if len(ticket.Labels) > 0 {
 		lines = append(lines, styledWrappedLine("Labels: "+strings.Join(ticket.Labels, ", "), subtleStyle, contentWidth))
 	}
-	if ticket.Worktree != nil {
+	if len(worktrees) > 0 {
+		lines = append(lines, styledWrappedLine("Worktrees:", infoStyle, contentWidth))
+		for _, wt := range worktrees {
+			lines = append(lines, styledWrappedLine("  "+icons.Repo+" "+wt.Repository+"  "+wt.Name+"  "+wt.Path, infoStyle, contentWidth))
+		}
+	} else if ticket.Worktree != nil {
 		lines = append(lines, styledWrappedLine("Worktree: "+ticket.Worktree.Name+"  "+ticket.Worktree.Path, infoStyle, contentWidth))
 	}
 	if ticket.PR != nil {

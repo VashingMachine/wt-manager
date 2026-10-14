@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/VashingMachine/wt-manager/internal/services"
 	tea "github.com/charmbracelet/bubbletea"
@@ -74,48 +75,47 @@ func TestSetupWizardSelectsCreatedProjectsFolderWhenTypingJ(t *testing.T) {
 		SetupRepo:  repo,
 	}
 	setup := newSetupModel(setupCfg, true, svc)
-	if setup.step != setupStepProfile {
-		t.Fatalf("initial step = %v, want profile", setup.step)
+	if setup.step != setupStepProject {
+		t.Fatalf("initial step = %v, want project", setup.step)
 	}
 
 	setup = updateSetupForTest(t, setup, teaKey("enter"))
-	if setup.step != setupStepWorktrees {
-		t.Fatalf("step = %v, want worktrees", setup.step)
+	if setup.step != setupStepRepositories || len(setup.repositories) != 1 {
+		t.Fatalf("step = %v with %d repositories, want the repository list with app", setup.step, len(setup.repositories))
 	}
-	setup.worktreePicker.input.SetValue("")
-	setup.worktreePicker.input.CursorEnd()
-	setup.worktreePicker.refilter()
+	setup = openRepositoryForEdit(t, setup, 0)
 	for _, key := range strings.Split("~/projects", "") {
 		setup = updateSetupForTest(t, setup, teaKey(key))
 	}
-	if got := setup.worktreePicker.input.Value(); got != "~/projects" {
+	if got := setup.editor.worktrees.input.Value(); got != "~/projects" {
 		t.Fatalf("worktree input = %q, want ~/projects", got)
 	}
-	if len(setup.worktreePicker.filtered) == 0 {
+	if len(setup.editor.worktrees.filtered) == 0 {
 		t.Fatal("worktree picker has no matches for ~/projects")
 	}
-	if svc.CanonicalPath(setup.worktreePicker.filtered[0]) != svc.CanonicalPath(projects) {
-		t.Fatalf("first match = %q, want %q", setup.worktreePicker.filtered[0], projects)
+	if svc.CanonicalPath(setup.editor.worktrees.filtered[0]) != svc.CanonicalPath(projects) {
+		t.Fatalf("first match = %q, want %q", setup.editor.worktrees.filtered[0], projects)
 	}
 
 	setup = updateSetupForTest(t, setup, teaKey("enter"))
+	if setup.editor != nil || svc.CanonicalPath(setup.repositories[0].WorktreesDir) != svc.CanonicalPath(projects) {
+		t.Fatalf("editor open = %v, worktreesDir = %q, want %q", setup.editor != nil, setup.repositories[0].WorktreesDir, projects)
+	}
+	setup = updateSetupForTest(t, setup, tea.KeyMsg{Type: tea.KeyTab})
 	if setup.step != setupStepAgents {
 		t.Fatalf("step = %v, want agents", setup.step)
-	}
-	if svc.CanonicalPath(setup.worktreesDir) != svc.CanonicalPath(projects) {
-		t.Fatalf("worktreesDir = %q, want %q", setup.worktreesDir, projects)
 	}
 	for i := range setup.agentOptions {
 		setup.agentOptions[i].Selected = setup.agentOptions[i].Name == "codex"
 	}
 	setup = updateSetupForTest(t, setup, teaKey("enter"))
-	if setup.step != setupStepGitHub {
-		t.Fatalf("step = %v, want github review", setup.step)
+	if setup.step != setupStepJira {
+		t.Fatalf("step = %v, want JIRA", setup.step)
 	}
 
 	next, cmd := setup.Update(teaKey("enter"))
-	if cmd != nil || next.step != setupStepJira {
-		t.Fatalf("github review did not continue to JIRA setup: step=%v cmd=%v", next.step, cmd)
+	if cmd != nil || next.step != setupStepReview {
+		t.Fatalf("JIRA did not continue to the review: step=%v cmd=%v", next.step, cmd)
 	}
 	next, cmd = next.Update(teaKey("enter"))
 	if cmd == nil {
@@ -182,20 +182,18 @@ func TestSetupWizardTypoSearchSelectsProjectsFolder(t *testing.T) {
 		SetupRepo:  repo,
 	}, true, svc)
 	setup = updateSetupForTest(t, setup, teaKey("enter"))
-	setup.worktreePicker.input.SetValue("")
-	setup.worktreePicker.input.CursorEnd()
-	setup.worktreePicker.refilter()
+	setup = openRepositoryForEdit(t, setup, 0)
 	for _, key := range strings.Split("~/proects", "") {
 		setup = updateSetupForTest(t, setup, teaKey(key))
 	}
 
-	if len(setup.worktreePicker.filtered) == 0 {
+	if len(setup.editor.worktrees.filtered) == 0 {
 		t.Fatal("worktree picker has no matches for ~/proects")
 	}
-	if svc.CanonicalPath(setup.worktreePicker.filtered[0]) != svc.CanonicalPath(projects) {
-		t.Fatalf("first match = %q, want %q", setup.worktreePicker.filtered[0], projects)
+	if svc.CanonicalPath(setup.editor.worktrees.filtered[0]) != svc.CanonicalPath(projects) {
+		t.Fatalf("first match = %q, want %q", setup.editor.worktrees.filtered[0], projects)
 	}
-	selected := setup.worktreePicker.SelectedPath()
+	selected := setup.editor.worktrees.SelectedPath()
 	if svc.CanonicalPath(selected) != svc.CanonicalPath(projects) {
 		t.Fatalf("SelectedPath() = %q, want %q", selected, projects)
 	}
@@ -222,21 +220,20 @@ func TestCompleteSetupWritesConfigAndCreatesWorktreesDir(t *testing.T) {
 	worktreesDir := filepath.Join(homeDir, "new-worktrees")
 	setupCfg := Config{HomeDir: homeDir, ConfigPath: configPath, App: svc.DefaultAppConfig(), SetupRepo: cfg.ActiveProfile.RepositoryPath}
 	setup := newSetupModel(setupCfg, true, svc)
-	setup.repoPath = cfg.ActiveProfile.RepositoryPath
-	setup.worktreesDir = worktreesDir
-	setup.profileInput.SetValue("app")
+	setup.repositories[0].WorktreesDir = worktreesDir
+	setup.projectInput.SetValue("app")
 	for i := range setup.agentOptions {
 		setup.agentOptions[i].Selected = setup.agentOptions[i].Name == "codex"
 	}
-	setup.step = setupStepGitHub
+	setup.step = setupStepJira
 
-	next, cmd := setup.updateGitHubStep(teaKey("enter"))
-	if cmd != nil || next.step != setupStepJira {
-		t.Fatalf("github review did not continue to JIRA setup: step=%v cmd=%v", next.step, cmd)
+	next, cmd := setup.updateJiraStep(teaKey("enter"))
+	if cmd != nil || next.step != setupStepReview {
+		t.Fatalf("JIRA did not continue to the review: step=%v cmd=%v", next.step, cmd)
 	}
-	next, cmd = next.updateJiraStep(teaKey("enter"))
+	next, cmd = next.updateReviewStep(teaKey("enter"))
 	if cmd == nil {
-		t.Fatalf("updateJiraStep() cmd = nil, status = %s", next.status)
+		t.Fatalf("updateReviewStep() cmd = nil, status = %s", next.status)
 	}
 	msg := cmd()
 	result, ok := msg.(setupResult)
@@ -257,13 +254,39 @@ func TestCompleteSetupWritesConfigAndCreatesWorktreesDir(t *testing.T) {
 	}
 }
 
+// openRepositoryForEdit opens the repository editor for the idx-th repository
+// and focuses its emptied worktrees folder search.
+func openRepositoryForEdit(t *testing.T, setup setupModel, idx int) setupModel {
+	t.Helper()
+	for setup.repoCursor > idx {
+		setup = updateSetupForTest(t, setup, teaKey("k"))
+	}
+	setup = updateSetupForTest(t, setup, teaKey("enter"))
+	if setup.editor == nil || setup.editor.choosingFolder {
+		t.Fatalf("enter on a repository did not open its details")
+	}
+	setup = updateSetupForTest(t, setup, tea.KeyMsg{Type: tea.KeyTab})
+	setup.editor.worktrees.input.SetValue("")
+	setup.editor.worktrees.input.CursorEnd()
+	setup.editor.worktrees.refilter()
+	return setup
+}
+
 func updateSetupForTest(t *testing.T, setup setupModel, key tea.KeyMsg) setupModel {
 	t.Helper()
 	next, cmd := setup.Update(key)
-	if cmd != nil {
-		if result, ok := cmd().(setupResult); ok && result.Err != nil {
+	if cmd == nil {
+		return next
+	}
+	// Setup results arrive at once; cursor blink timers are left to expire.
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	select {
+	case msg := <-done:
+		if result, ok := msg.(setupResult); ok && result.Err != nil {
 			t.Fatalf("setup command error = %v", result.Err)
 		}
+	case <-time.After(100 * time.Millisecond):
 	}
 	return next
 }

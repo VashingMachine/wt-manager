@@ -44,6 +44,9 @@ type worktreeStatusResult struct {
 }
 
 type prIndexResult struct {
+	// Repository names the project repository the PRs label; empty means the
+	// first one.
+	Repository   string
 	RepoSlug     string
 	PullRequests []PullRequest
 	Warning      string
@@ -117,8 +120,38 @@ func loadPRIndexCmd(services core.PullRequestService, cfg Config, refresh bool) 
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
 		prs, warning, err := services.LoadPullRequestIndex(ctx, cfg, refresh)
-		return prIndexResult{RepoSlug: cfg.RepoSlug, PullRequests: prs, Warning: warning, Err: err}
+		return prIndexResult{Repository: cfg.RepositoryName(), RepoSlug: cfg.RepoSlug, PullRequests: prs, Warning: warning, Err: err}
 	}
+}
+
+// loadPRIndexesCmd requests the PR labels of every repository with GitHub.
+// Background revalidation skips repositories whose labels are still loading.
+func (m *model) loadPRIndexesCmd(refresh bool, background bool) tea.Cmd {
+	if m.prIndexLoading == nil {
+		m.prIndexLoading = map[string]bool{}
+	}
+	var cmds []tea.Cmd
+	for _, repository := range m.cfg.Repositories() {
+		if repository.GitHubRepo == "" || (background && m.prIndexLoading[repository.Name]) {
+			continue
+		}
+		m.prIndexLoading[repository.Name] = true
+		cmds = append(cmds, loadPRIndexCmd(m.services, m.cfg.ForRepository(repository.Name), refresh))
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m model) prIndexBusy() bool {
+	return len(m.prIndexLoading) > 0
+}
+
+// allPRIndexes joins every repository's PR labels, for matching tickets.
+func (m model) allPRIndexes() []PullRequest {
+	var prs []PullRequest
+	for _, repository := range m.cfg.Repositories() {
+		prs = append(prs, m.prIndexes[repository.Name]...)
+	}
+	return prs
 }
 
 func loadPRChecksCmd(services core.PullRequestService, cfg Config, sha string) tea.Cmd {
@@ -140,17 +173,23 @@ func (m *model) hydrateFromCache() {
 	if m.cfg.ActiveProfile.RepositoryPath == "" {
 		return
 	}
-	if worktrees, ok := m.services.PeekWorktrees(m.cfg, m.showAll); ok {
+	if worktrees, ok := peekProjectWorktrees(m.services, m.cfg, m.showAll); ok {
 		m.allWorktrees = worktrees
 	}
-	if prs, _, ok := m.services.PeekPullRequestIndex(m.cfg); ok {
-		m.prIndex = prs
+	for _, repository := range m.cfg.Repositories() {
+		if prs, _, ok := m.services.PeekPullRequestIndex(m.cfg.ForRepository(repository.Name)); ok {
+			if m.prIndexes == nil {
+				m.prIndexes = map[string][]PullRequest{}
+			}
+			m.prIndexes[repository.Name] = prs
+		}
 	}
 	m.attachPRIndex()
-	if prs, fetchedAt, ok := m.services.PeekRemotePullRequests(m.cfg); ok {
+	prCfg := m.prCfg()
+	if prs, fetchedAt, ok := m.services.PeekRemotePullRequests(prCfg); ok {
 		m.remotePRs = prs
 		m.prListFetchedAt = fetchedAt
-		m.prListSlug = m.cfg.RepoSlug
+		m.prListSlug = prCfg.RepoSlug
 	}
 	m.paintCachedTickets()
 	if len(m.allWorktrees) > 0 {
@@ -170,8 +209,9 @@ func (m *model) resetProfileData() tea.Cmd {
 	m.selectedPRNumber = 0
 	m.selectedPRIndex = 0
 	m.cancelPRDetailLoad()
-	m.prIndex = nil
-	m.prIndexLoading = false
+	m.prRepository = ""
+	m.prIndexes = nil
+	m.prIndexLoading = nil
 	m.worktreeStatusTotal = 0
 	m.worktreeStatusDone = 0
 	m.ticketsSource = ""
@@ -196,11 +236,10 @@ func (m *model) startWorktreeEnrichment() tea.Cmd {
 			continue
 		}
 		m.worktreeStatusTotal++
-		cmds = append(cmds, loadWorktreeStatusCmd(m.services, m.cfg, wt, seq))
+		cmds = append(cmds, loadWorktreeStatusCmd(m.services, m.worktreeCfg(wt), wt, seq))
 	}
-	if m.cfg.RepoSlug != "" {
-		m.prIndexLoading = true
-		cmds = append(cmds, loadPRIndexCmd(m.services, m.cfg, m.refreshPRIndex))
+	if labels := m.loadPRIndexesCmd(m.refreshPRIndex, false); labels != nil {
+		cmds = append(cmds, labels)
 	}
 	m.refreshPRIndex = false
 	if len(cmds) == 0 {
@@ -240,14 +279,23 @@ func (m *model) mergeWorktreeStatus(loaded Worktree) {
 	}
 }
 
-// attachPRIndex labels worktrees with their branch's PR from the latest index.
+// attachPRIndex labels worktrees with their branch's PR from the latest index
+// of their own repository: the same branch often exists in several
+// repositories of a project, each with its own PR.
 func (m *model) attachPRIndex() {
-	index := make(map[string]*PullRequest, len(m.prIndex))
-	for i := range m.prIndex {
-		if m.prIndex[i].HeadRefName != "" {
-			pr := m.prIndex[i]
-			index[pr.HeadRefName] = &pr
+	indexes := make(map[string]map[string]*PullRequest, len(m.prIndexes))
+	for repository, prs := range m.prIndexes {
+		if prs == nil {
+			continue
 		}
+		index := make(map[string]*PullRequest, len(prs))
+		for i := range prs {
+			if prs[i].HeadRefName != "" {
+				pr := prs[i]
+				index[pr.HeadRefName] = &pr
+			}
+		}
+		indexes[repository] = index
 	}
 	attach := func(list []Worktree) {
 		for i := range list {
@@ -255,11 +303,11 @@ func (m *model) attachPRIndex() {
 			if wt.Detached || wt.Branch == "" || wt.Branch == "detached" {
 				continue
 			}
-			if pr, ok := index[wt.Branch]; ok {
-				wt.PR = pr
-			} else if m.prIndex != nil {
-				wt.PR = nil
+			index, loaded := indexes[m.worktreeRepository(*wt)]
+			if !loaded {
+				continue
 			}
+			wt.PR = index[wt.Branch]
 		}
 	}
 	attach(m.allWorktrees)
@@ -290,7 +338,7 @@ func (m *model) loadMissingChecks() tea.Cmd {
 			continue
 		}
 		m.prChecksLoading[pr.HeadSHA] = true
-		cmds = append(cmds, loadPRChecksCmd(m.services, m.cfg, pr.HeadSHA))
+		cmds = append(cmds, loadPRChecksCmd(m.services, m.prCfg(), pr.HeadSHA))
 	}
 	if len(cmds) == 0 {
 		return nil
@@ -328,9 +376,9 @@ func (m model) handlePrefetchTick(msg prefetchTick) (tea.Model, tea.Cmd) {
 	if m.setup != nil {
 		return m, cmds[0]
 	}
-	if !m.isPRMode() && m.cfg.RepoSlug != "" && !m.prListLoading && !isRecent(m.prListFetchedAt, prefetchInterval) {
+	if prCfg := m.prCfg(); !m.isPRMode() && prCfg.RepoSlug != "" && !m.prListLoading && !isRecent(m.prListFetchedAt, prefetchInterval) {
 		m.prListLoading = true
-		cmds = append(cmds, loadRemotePullRequestsCmd(m.services, m.cfg, true))
+		cmds = append(cmds, loadRemotePullRequestsCmd(m.services, prCfg, true))
 	}
 	if !m.isTicketMode() && m.ticketBoard.ID != 0 && m.cfg.ActiveProfile.Jira != nil && !m.ticketsLoading && !isRecent(m.ticketsFetchedAt, prefetchInterval) {
 		m.ticketsLoading = true
@@ -338,9 +386,8 @@ func (m model) handlePrefetchTick(msg prefetchTick) (tea.Model, tea.Cmd) {
 	}
 	// Keep worktree PR labels current while the user stays on worktrees; the
 	// service answers from its cache unless the index has aged out.
-	if m.isWorktreeMode() && m.cfg.RepoSlug != "" && !m.prIndexLoading {
-		m.prIndexLoading = true
-		cmds = append(cmds, loadPRIndexCmd(m.services, m.cfg, false))
+	if m.isWorktreeMode() {
+		cmds = append(cmds, m.loadPRIndexesCmd(false, true))
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -365,7 +412,7 @@ func (m model) backgroundBusy() bool {
 	case modeTickets:
 		return m.ticketsLoading
 	default:
-		return m.worktreeStatusDone < m.worktreeStatusTotal || m.prIndexLoading
+		return m.worktreeStatusDone < m.worktreeStatusTotal || m.prIndexBusy()
 	}
 }
 
@@ -388,7 +435,7 @@ func (m model) progressHint() string {
 		if m.worktreeStatusDone < m.worktreeStatusTotal {
 			parts = append(parts, fmt.Sprintf("status %d/%d", m.worktreeStatusDone, m.worktreeStatusTotal))
 		}
-		if m.prIndexLoading {
+		if m.prIndexBusy() {
 			parts = append(parts, "PR labels")
 		}
 	}

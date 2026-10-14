@@ -56,6 +56,20 @@ func (s *Service) ResolveProfilePaths(profile RepositoryProfile, homeDir string)
 	return resolveProfilePaths(profile, homeDir)
 }
 
+func (s *Service) ResolveProject(ctx context.Context, profile RepositoryProfile, homeDir string) RepositoryProfile {
+	ctx = s.commandContext(ctx)
+	return resolveProject(ctx, profile, homeDir)
+}
+
+func (s *Service) GitRemotes(ctx context.Context, repoPath string) []string {
+	ctx = s.commandContext(ctx)
+	return gitRemotes(ctx, repoPath)
+}
+
+func (s *Service) ReadAppConfig(configPath string) (AppConfig, error) {
+	return readAppConfig(configPath)
+}
+
 func (s *Service) FindAgent(agents []AgentTool, name string) *AgentTool {
 	return findAgent(agents, name)
 }
@@ -171,6 +185,11 @@ func (s *Service) OpenVSCodeWorktree(ctx context.Context, wt Worktree) error {
 func (s *Service) OpenEditorWorktree(ctx context.Context, wt Worktree, editor EditorTool) error {
 	ctx = s.commandContext(ctx)
 	return openEditorWorktree(ctx, wt, editor)
+}
+
+func (s *Service) OpenEditorFile(ctx context.Context, path string, editor EditorTool) error {
+	ctx = s.commandContext(ctx)
+	return openEditorFile(ctx, path, editor)
 }
 
 func (s *Service) OpenAgent(ctx context.Context, wt Worktree, agent AgentTool) error {

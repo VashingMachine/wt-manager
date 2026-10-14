@@ -4,11 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,18 +17,33 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// Setup is a wizard for one project: its name, its repositories, the agent
+// tools, JIRA, and a review before anything is saved. esc steps back.
+
 type setupStep int
 
 const (
-	setupStepRepo setupStep = iota
-	setupStepProfile
-	setupStepWorktrees
+	setupStepProject setupStep = iota
+	setupStepRepositories
 	setupStepAgents
 	setupStepCustomName
 	setupStepCustomCommand
-	setupStepGitHub
 	setupStepJira
+	setupStepReview
 )
+
+// setupStages are the steps shown in the wizard's progress line; the custom
+// agent steps belong to Agents.
+var setupStages = []struct {
+	step  setupStep
+	title string
+}{
+	{setupStepProject, "Project"},
+	{setupStepRepositories, "Repositories"},
+	{setupStepAgents, "Agents"},
+	{setupStepJira, "JIRA"},
+	{setupStepReview, "Review"},
+}
 
 type setupResult struct {
 	Config    Config
@@ -40,23 +54,33 @@ type setupResult struct {
 }
 
 type setupModel struct {
-	services       core.Services
-	cfg            Config
-	startup        bool
-	step           setupStep
-	repoPicker     directoryPicker
-	worktreePicker directoryPicker
-	profileInput   textinput.Model
+	services     core.Services
+	cfg          Config
+	startup      bool
+	step         setupStep
+	projectInput textinput.Model
+	// editing names the configured project being changed; it is empty while
+	// setting up a new project.
+	editing string
+	// seededFor is the project name the repository list was built for.
+	seededFor string
+	// setupRepo is the repository setup was opened for. It joins whichever
+	// project is chosen.
+	setupRepo      string
+	repositories   []core.Repository
+	repoCursor     int
+	editor         *repositoryEditor
+	editIndex      int
 	customName     textinput.Model
 	customCommand  textinput.Model
 	jiraBoardInput textinput.Model
 	agentOptions   []setupAgentOption
 	agentCursor    int
-	repoPath       string
-	worktreesDir   string
 	jiraConfig     *JiraConfig
-	warnings       []string
+	review         *Config
+	reviewErr      error
 	status         string
+	statusErr      bool
 }
 
 type setupAgentOption struct {
@@ -67,51 +91,56 @@ type setupAgentOption struct {
 	Custom    bool
 }
 
-type directoryPicker struct {
-	services core.Services
-	input    textinput.Model
-	dirs     []string
-	filtered []string
-	cursor   int
-	homeDir  string
-}
-
+// newSetupModel sets up the project of the repository setup was opened for
+// (cfg.SetupRepo, else the current directory's): the project containing it,
+// or a new project named after it.
 func newSetupModel(cfg Config, startup bool, services core.Services) setupModel {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
 	repoPath := cfg.SetupRepo
 	if repoPath == "" {
 		if found, ok := services.InferRepoFromCWD(); ok {
 			repoPath = found
 		}
 	}
-
-	defaultRepo := repoPath
-	if defaultRepo == "" {
-		defaultRepo = cfg.HomeDir
-	}
-
-	profileName := ""
-	worktreesDir := ""
+	projectName := ""
 	if repoPath != "" {
-		profile := services.ProfileFromRepo(ctx, cfg.HomeDir, repoPath)
-		profileName = profile.Name
-		worktreesDir = profile.WorktreesDir
+		projectName = core.RepositoryNameFromPath(repoPath)
+		if idx, _, ok := findRepositoryOwner(services, cfg.App.Profiles, cfg.HomeDir, repoPath); ok {
+			projectName = cfg.App.Profiles[idx].Name
+		}
 	}
-	if profileName == "" {
-		profileName = "default"
+	s := newSetupModelFor(cfg, startup, services, repoPath, projectName)
+	if s.jiraConfig == nil && cfg.ActiveProfile.Jira != nil && repoPath != "" &&
+		services.CanonicalPath(services.ExpandPath(cfg.ActiveProfile.RepositoryPath, cfg.HomeDir)) == services.CanonicalPath(repoPath) {
+		s.jiraConfig = copyJiraConfig(cfg.ActiveProfile.Jira)
 	}
-	if worktreesDir == "" {
-		worktreesDir = cfg.HomeDir
-	}
+	return s
+}
 
-	profileInput := textinput.New()
-	profileInput.Prompt = "profile: "
-	profileInput.Placeholder = "repo-name"
-	profileInput.CharLimit = 80
-	profileInput.Width = 48
-	profileInput.SetValue(profileName)
+// newProjectSetupModel sets up another project. The current directory's
+// repository is offered when no project has it yet.
+func newProjectSetupModel(cfg Config, services core.Services) setupModel {
+	repoPath := ""
+	if found, ok := services.InferRepoFromCWD(); ok {
+		if _, _, owned := findRepositoryOwner(services, cfg.App.Profiles, cfg.HomeDir, found); !owned {
+			repoPath = found
+		}
+	}
+	projectName := core.RepositoryNameFromPath(repoPath)
+	if services.FindProfile(cfg.App.Profiles, projectName) != nil {
+		projectName = ""
+	}
+	cfg.SetupReason = "Set up a new project"
+	return newSetupModelFor(cfg, false, services, repoPath, projectName)
+}
+
+func newSetupModelFor(cfg Config, startup bool, services core.Services, repoPath string, projectName string) setupModel {
+	projectInput := textinput.New()
+	projectInput.Prompt = ""
+	projectInput.Placeholder = "my-project"
+	projectInput.CharLimit = 80
+	projectInput.Width = 48
+	projectInput.SetValue(projectName)
+	projectInput.CursorEnd()
 
 	customName := textinput.New()
 	customName.Prompt = "name: "
@@ -131,61 +160,102 @@ func newSetupModel(cfg Config, startup bool, services core.Services) setupModel 
 	jiraBoardInput.CharLimit = 300
 	jiraBoardInput.Width = 76
 
-	step := setupStepProfile
-	if repoPath == "" {
-		step = setupStepRepo
-	}
-	focusSetupInput(step, &profileInput, &customName, &customCommand)
-
-	var jiraConfig *JiraConfig
-	activeRepo := services.CanonicalPath(services.ExpandPath(cfg.ActiveProfile.RepositoryPath, cfg.HomeDir))
-	selectedRepo := services.CanonicalPath(services.ExpandPath(repoPath, cfg.HomeDir))
-	if cfg.ActiveProfile.Jira != nil && activeRepo != "" && activeRepo == selectedRepo {
-		copyConfig := *cfg.ActiveProfile.Jira
-		copyConfig.Boards = append([]JiraBoard(nil), cfg.ActiveProfile.Jira.Boards...)
-		jiraConfig = &copyConfig
-	}
-
-	seeds := setupDirectorySeeds(services, cfg.HomeDir, repoPath)
-	repoPicker := newDirectoryPicker(services, cfg.HomeDir, seeds, defaultRepo)
-	worktreePicker := newDirectoryPicker(services, cfg.HomeDir, setupDirectorySeeds(services, cfg.HomeDir, worktreesDir), worktreesDir)
-
 	existingAgents := []AgentTool(nil)
 	if cfg.ConfigExists {
 		existingAgents = cfg.App.Agents
 	}
 
-	return setupModel{
+	s := setupModel{
 		services:       services,
 		cfg:            cfg,
 		startup:        startup,
-		step:           step,
-		repoPicker:     repoPicker,
-		worktreePicker: worktreePicker,
-		profileInput:   profileInput,
+		step:           setupStepProject,
+		projectInput:   projectInput,
+		setupRepo:      repoPath,
+		editIndex:      -1,
 		customName:     customName,
 		customCommand:  customCommand,
 		jiraBoardInput: jiraBoardInput,
 		agentOptions:   detectSetupAgents(services, existingAgents, cfg.App.DefaultAgent, exec.LookPath),
-		repoPath:       repoPath,
-		worktreesDir:   worktreesDir,
-		jiraConfig:     jiraConfig,
-		status:         cfg.SetupReason,
+	}
+	s.seedRepositories(projectName)
+	s.focusStep()
+	return s
+}
+
+// seedRepositories lists the repositories of the project called name, plus
+// the repository setup was opened for.
+func (s *setupModel) seedRepositories(name string) {
+	s.seededFor = name
+	s.editing = ""
+	s.repositories = nil
+	s.jiraConfig = nil
+	if profile := s.services.FindProfile(s.cfg.App.Profiles, name); name != "" && profile != nil {
+		s.editing = profile.Name
+		s.repositories = slices.Clone(s.services.ResolveProfilePaths(*profile, s.cfg.HomeDir).Repositories)
+		s.jiraConfig = copyJiraConfig(profile.Jira)
+	}
+	if s.setupRepo != "" && s.repositoryIndex(s.setupRepo) < 0 {
+		s.repositories = append(s.repositories, s.defaultRepository(s.setupRepo))
+	}
+	s.repoCursor = 0
+}
+
+func (s setupModel) repositoryIndex(path string) int {
+	want := s.services.CanonicalPath(s.services.ExpandPath(path, s.cfg.HomeDir))
+	for idx, repository := range s.repositories {
+		if s.services.CanonicalPath(repository.RepositoryPath) == want {
+			return idx
+		}
+	}
+	return -1
+}
+
+// defaultRepository describes a repository joining the list with the same
+// defaults the repository editor offers.
+func (s setupModel) defaultRepository(repoPath string) core.Repository {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	remote := "origin"
+	if remotes := s.services.GitRemotes(ctx, repoPath); len(remotes) > 0 && !slices.Contains(remotes, "origin") {
+		remote = remotes[0]
+	}
+	name := (RepositoryProfile{Repositories: s.repositories}).UniqueRepositoryName(core.RepositoryNameFromPath(repoPath))
+	return core.Repository{
+		Name:           name,
+		RepositoryPath: repoPath,
+		WorktreesDir:   core.SuggestWorktreesDir(s.repositories, name, repoPath),
+		RemoteName:     remote,
 	}
 }
 
-func focusSetupInput(step setupStep, profileInput, customName, customCommand *textinput.Model) {
-	profileInput.Blur()
-	customName.Blur()
-	customCommand.Blur()
-	switch step {
-	case setupStepProfile:
-		profileInput.Focus()
+func (s *setupModel) focusStep() {
+	s.projectInput.Blur()
+	s.customName.Blur()
+	s.customCommand.Blur()
+	s.jiraBoardInput.Blur()
+	switch s.step {
+	case setupStepProject:
+		s.projectInput.Focus()
 	case setupStepCustomName:
-		customName.Focus()
+		s.customName.Focus()
 	case setupStepCustomCommand:
-		customCommand.Focus()
+		s.customCommand.Focus()
+	case setupStepJira:
+		s.jiraBoardInput.Focus()
 	}
+}
+
+func (s *setupModel) goTo(step setupStep, status string) {
+	s.step = step
+	s.status = status
+	s.statusErr = false
+	s.focusStep()
+}
+
+func (s *setupModel) fail(status string) {
+	s.status = status
+	s.statusErr = true
 }
 
 func (s setupModel) Update(msg tea.Msg) (setupModel, tea.Cmd) {
@@ -193,104 +263,217 @@ func (s setupModel) Update(msg tea.Msg) (setupModel, tea.Cmd) {
 	if !ok {
 		return s, nil
 	}
-
-	switch key.String() {
-	case "ctrl+c":
+	if key.String() == "ctrl+c" {
 		return s, func() tea.Msg { return setupResult{Startup: s.startup, Cancelled: true} }
-	case "esc":
-		if s.startup {
-			s.status = "Setup is required before wt-manager can start"
-			return s, nil
-		}
-		return s, func() tea.Msg { return setupResult{Startup: s.startup, Cancelled: true} }
+	}
+	if s.editor != nil {
+		return s.updateEditor(key)
+	}
+	if key.String() == "esc" {
+		return s.back()
 	}
 
 	switch s.step {
-	case setupStepRepo:
-		return s.updateRepoStep(key)
-	case setupStepProfile:
-		return s.updateProfileStep(key)
-	case setupStepWorktrees:
-		return s.updateWorktreesStep(key)
+	case setupStepProject:
+		return s.updateProjectStep(key)
+	case setupStepRepositories:
+		return s.updateRepositoriesStep(key)
 	case setupStepAgents:
 		return s.updateAgentsStep(key)
 	case setupStepCustomName:
 		return s.updateCustomNameStep(key)
 	case setupStepCustomCommand:
 		return s.updateCustomCommandStep(key)
-	case setupStepGitHub:
-		return s.updateGitHubStep(key)
 	case setupStepJira:
 		return s.updateJiraStep(key)
+	case setupStepReview:
+		return s.updateReviewStep(key)
 	}
 	return s, nil
 }
 
-func (s setupModel) updateRepoStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
-	switch key.String() {
-	case "enter":
-		selected := s.repoPicker.SelectedPath()
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		repoPath, ok := s.services.RepoRootFromDir(ctx, s.services.ExpandPath(selected, s.cfg.HomeDir))
-		if !ok {
-			s.status = fmt.Sprintf("%s is not inside a git repository", selected)
+// back returns to the previous step; leaving the first step cancels setup
+// unless the app cannot start without it.
+func (s setupModel) back() (setupModel, tea.Cmd) {
+	switch s.step {
+	case setupStepProject:
+		if s.startup {
+			s.fail("Setup is required before wt-manager can start; ctrl+c quits")
 			return s, nil
 		}
-		s.repoPath = repoPath
-		if strings.TrimSpace(s.profileInput.Value()) == "" || s.profileInput.Value() == "default" {
-			s.profileInput.SetValue(filepath.Base(repoPath))
-		}
-		if s.worktreesDir == "" || s.worktreesDir == s.cfg.HomeDir {
-			s.worktreesDir = filepath.Dir(repoPath)
-			s.worktreePicker = newDirectoryPicker(s.services, s.cfg.HomeDir, setupDirectorySeeds(s.services, s.cfg.HomeDir, s.worktreesDir), s.worktreesDir)
-		}
-		s.step = setupStepProfile
-		s.profileInput.Focus()
-		s.status = "Name this repository profile"
-		return s, nil
-	default:
+		return s, func() tea.Msg { return setupResult{Startup: s.startup, Cancelled: true} }
+	case setupStepRepositories:
+		s.goTo(setupStepProject, "")
+	case setupStepAgents:
+		s.goTo(setupStepRepositories, "")
+	case setupStepCustomName, setupStepCustomCommand:
+		s.goTo(setupStepAgents, "")
+	case setupStepJira:
+		s.goTo(setupStepAgents, "")
+	case setupStepReview:
+		s.goTo(setupStepJira, "")
+	}
+	return s, nil
+}
+
+// --- project ------------------------------------------------------------
+
+func (s setupModel) updateProjectStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
+	if key.String() != "enter" {
 		var cmd tea.Cmd
-		s.repoPicker, cmd = s.repoPicker.Update(key)
+		s.projectInput, cmd = s.projectInput.Update(key)
 		return s, cmd
+	}
+	name := strings.TrimSpace(s.projectInput.Value())
+	if name == "" {
+		s.fail("Name the project")
+		return s, nil
+	}
+	s.applyProjectName(name)
+	s.enterRepositoriesStep()
+	return s, nil
+}
+
+// applyProjectName follows a change of project name: naming another
+// configured project switches to editing it, while a new name renames the
+// edited project or names a new one.
+func (s *setupModel) applyProjectName(name string) {
+	if name == s.seededFor || name == s.editing {
+		return
+	}
+	if s.services.FindProfile(s.cfg.App.Profiles, name) != nil {
+		s.seedRepositories(name)
+		return
+	}
+	if s.editing == "" {
+		s.seededFor = name
 	}
 }
 
-func (s setupModel) updateProfileStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
-	switch key.String() {
-	case "enter":
-		name := strings.TrimSpace(s.profileInput.Value())
-		if name == "" {
-			s.status = "Profile name is required"
-			return s, nil
+// projectHint says what saving under the typed name does.
+func (s setupModel) projectHint() string {
+	name := strings.TrimSpace(s.projectInput.Value())
+	existing := s.services.FindProfile(s.cfg.App.Profiles, name)
+	switch {
+	case name == "":
+		return "Name the project its repositories are managed under."
+	case existing != nil:
+		hint := fmt.Sprintf("Edits project %s (%s)", name, strings.Join(repositoryNames(existing.RepositoryList()), ", "))
+		if s.setupRepo != "" {
+			if _, _, owned := findRepositoryOwner(s.services, []RepositoryProfile{*existing}, s.cfg.HomeDir, s.setupRepo); !owned {
+				hint += " and adds " + core.RepositoryNameFromPath(s.setupRepo)
+			}
 		}
-		s.step = setupStepWorktrees
-		s.profileInput.Blur()
-		s.status = "Choose a folder for managed worktrees"
-		return s, nil
+		return hint
+	case s.editing != "":
+		return fmt.Sprintf("Renames project %s to %s", s.editing, name)
 	default:
-		var cmd tea.Cmd
-		s.profileInput, cmd = s.profileInput.Update(key)
-		return s, cmd
+		return "Creates a new project"
 	}
 }
 
-func (s setupModel) updateWorktreesStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
-	switch key.String() {
-	case "enter":
-		s.worktreesDir = s.services.ExpandPath(s.worktreePicker.SelectedPath(), s.cfg.HomeDir)
-		if strings.TrimSpace(s.worktreesDir) == "" {
-			s.status = "Worktrees folder is required"
-			return s, nil
-		}
-		s.step = setupStepAgents
-		s.status = "Select agent tools"
-		return s, nil
-	default:
-		var cmd tea.Cmd
-		s.worktreePicker, cmd = s.worktreePicker.Update(key)
-		return s, cmd
+// --- repositories -----------------------------------------------------------
+
+// Rows of the repositories step: one per repository, then two actions.
+func (s setupModel) addRow() int      { return len(s.repositories) }
+func (s setupModel) continueRow() int { return len(s.repositories) + 1 }
+
+func (s *setupModel) enterRepositoriesStep() {
+	s.goTo(setupStepRepositories, "")
+	if len(s.repositories) == 0 {
+		s.repoCursor = s.addRow()
+		s.openAddEditor()
+		return
 	}
+	s.repoCursor = s.continueRow()
+}
+
+func (s *setupModel) openAddEditor() {
+	initial := s.cfg.HomeDir
+	if len(s.repositories) > 0 {
+		initial = filepath.Dir(s.repositories[0].RepositoryPath)
+	}
+	editor := newRepositoryEditor(s.services, s.cfg.HomeDir, s.repositories, initial)
+	s.editor = &editor
+	s.editIndex = -1
+}
+
+func (s *setupModel) openEditEditor(idx int) {
+	siblings := slices.Delete(slices.Clone(s.repositories), idx, idx+1)
+	editor := editRepositoryEditor(s.services, s.cfg.HomeDir, siblings, s.repositories[idx])
+	s.editor = &editor
+	s.editIndex = idx
+}
+
+func (s setupModel) updateEditor(key tea.KeyMsg) (setupModel, tea.Cmd) {
+	editor, cmd := s.editor.Update(key)
+	switch {
+	case editor.cancelled:
+		s.editor = nil
+		s.status, s.statusErr = "", false
+	case editor.done:
+		s.editor = nil
+		if s.editIndex >= 0 && s.editIndex < len(s.repositories) {
+			s.repositories[s.editIndex] = editor.result
+			s.status = "Updated " + editor.result.Name
+		} else {
+			s.repositories = append(s.repositories, editor.result)
+			s.status = "Added " + editor.result.Name
+		}
+		s.statusErr = false
+		s.repoCursor = s.continueRow()
+	default:
+		s.editor = &editor
+	}
+	return s, cmd
+}
+
+func (s setupModel) updateRepositoriesStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
+	switch key.String() {
+	case "up", "k":
+		s.repoCursor = max(0, s.repoCursor-1)
+	case "down", "j":
+		s.repoCursor = min(s.continueRow(), s.repoCursor+1)
+	case "a":
+		s.openAddEditor()
+	case "d", "x", "backspace", "delete":
+		if s.repoCursor < len(s.repositories) {
+			removed := s.repositories[s.repoCursor].Name
+			s.repositories = slices.Delete(s.repositories, s.repoCursor, s.repoCursor+1)
+			s.repoCursor = min(s.repoCursor, s.continueRow())
+			s.status, s.statusErr = "Removed "+removed+" from the list; nothing on disk changes", false
+		}
+	case "tab":
+		return s.continueFromRepositories()
+	case "enter":
+		switch {
+		case s.repoCursor < len(s.repositories):
+			s.openEditEditor(s.repoCursor)
+		case s.repoCursor == s.addRow():
+			s.openAddEditor()
+		default:
+			return s.continueFromRepositories()
+		}
+	}
+	return s, nil
+}
+
+func (s setupModel) continueFromRepositories() (setupModel, tea.Cmd) {
+	if len(s.repositories) == 0 {
+		s.fail("Add at least one repository")
+		s.repoCursor = s.addRow()
+		return s, nil
+	}
+	s.goTo(setupStepAgents, "")
+	return s, nil
+}
+
+// --- agents -----------------------------------------------------------------
+
+func (s *setupModel) openCustomAgent() {
+	s.customName.SetValue("")
+	s.customCommand.SetValue("")
+	s.goTo(setupStepCustomName, "")
 }
 
 func (s setupModel) updateAgentsStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
@@ -299,126 +482,91 @@ func (s setupModel) updateAgentsStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
 		if s.agentCursor > 0 {
 			s.agentCursor--
 		}
-		return s, nil
 	case "down", "j":
 		if s.agentCursor < len(s.agentOptions) {
 			s.agentCursor++
 		}
-		return s, nil
 	case " ":
 		if s.agentCursor < len(s.agentOptions) {
 			s.agentOptions[s.agentCursor].Selected = !s.agentOptions[s.agentCursor].Selected
 		} else {
-			s.step = setupStepCustomName
-			s.customName.SetValue("")
-			s.customCommand.SetValue("")
-			s.customName.Focus()
-			s.status = "Enter custom agent name"
+			s.openCustomAgent()
 		}
-		return s, nil
 	case "a":
-		s.step = setupStepCustomName
-		s.customName.SetValue("")
-		s.customCommand.SetValue("")
-		s.customName.Focus()
-		s.status = "Enter custom agent name"
-		return s, nil
-	case "enter":
-		if s.agentCursor == len(s.agentOptions) {
-			s.step = setupStepCustomName
-			s.customName.SetValue("")
-			s.customCommand.SetValue("")
-			s.customName.Focus()
-			s.status = "Enter custom agent name"
+		s.openCustomAgent()
+	case "enter", "tab":
+		if key.String() == "enter" && s.agentCursor == len(s.agentOptions) {
+			s.openCustomAgent()
 			return s, nil
 		}
 		if len(selectedSetupAgents(s.agentOptions)) == 0 {
-			s.status = "Select at least one agent tool"
+			s.fail("Select at least one agent tool")
 			return s, nil
 		}
-		s.step = setupStepGitHub
-		s.status = "Review GitHub CLI status"
-		return s, nil
+		s.jiraBoardInput.SetValue("")
+		s.goTo(setupStepJira, "")
 	}
 	return s, nil
 }
 
 func (s setupModel) updateCustomNameStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
-	switch key.String() {
-	case "enter":
-		if strings.TrimSpace(s.customName.Value()) == "" {
-			s.status = "Custom agent name is required"
-			return s, nil
-		}
-		s.step = setupStepCustomCommand
-		s.customName.Blur()
-		s.customCommand.Focus()
-		s.status = "Enter custom agent command"
-		return s, nil
-	default:
+	if key.String() != "enter" {
 		var cmd tea.Cmd
 		s.customName, cmd = s.customName.Update(key)
 		return s, cmd
 	}
+	if strings.TrimSpace(s.customName.Value()) == "" {
+		s.fail("Name the agent")
+		return s, nil
+	}
+	s.goTo(setupStepCustomCommand, "")
+	return s, nil
 }
 
 func (s setupModel) updateCustomCommandStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
-	switch key.String() {
-	case "enter":
-		name := strings.TrimSpace(s.customName.Value())
-		command := strings.TrimSpace(s.customCommand.Value())
-		if command == "" {
-			s.status = "Custom agent command is required"
-			return s, nil
-		}
-		s.agentOptions = upsertSetupAgent(s.agentOptions, setupAgentOption{Name: name, Command: command, Installed: true, Selected: true, Custom: true})
-		s.agentCursor = len(s.agentOptions) - 1
-		s.step = setupStepAgents
-		s.customCommand.Blur()
-		s.status = fmt.Sprintf("Added %s", name)
-		return s, nil
-	default:
+	if key.String() != "enter" {
 		var cmd tea.Cmd
 		s.customCommand, cmd = s.customCommand.Update(key)
 		return s, cmd
 	}
-}
-
-func (s setupModel) updateGitHubStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
-	switch key.String() {
-	case "enter":
-		s.step = setupStepJira
-		s.jiraBoardInput.SetValue("")
-		s.jiraBoardInput.Focus()
-		s.status = "Configure JIRA boards, or press enter with an empty input to continue"
+	name := strings.TrimSpace(s.customName.Value())
+	command := strings.TrimSpace(s.customCommand.Value())
+	if command == "" {
+		s.fail("Enter the command that starts the agent")
 		return s, nil
 	}
+	s.agentOptions = upsertSetupAgent(s.agentOptions, setupAgentOption{Name: name, Command: command, Installed: true, Selected: true, Custom: true})
+	s.agentCursor = len(s.agentOptions) - 1
+	s.goTo(setupStepAgents, "Added "+name)
 	return s, nil
 }
+
+// --- JIRA -------------------------------------------------------------------
 
 func (s setupModel) updateJiraStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
 	switch key.String() {
 	case "ctrl+x":
 		s.jiraConfig = nil
 		s.jiraBoardInput.SetValue("")
-		s.status = "JIRA disabled for this profile; press enter to save"
+		s.status, s.statusErr = "JIRA turned off for this project", false
 		return s, nil
 	case "enter":
 		input := strings.TrimSpace(s.jiraBoardInput.Value())
 		if input == "" {
-			return s.finishSetup()
+			s.enterReviewStep()
+			return s, nil
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		board, err := s.services.ResolveJiraBoard(ctx, input)
 		if err != nil {
-			s.status = fmt.Sprintf("Resolve JIRA board failed: %v", err)
+			s.fail(fmt.Sprintf("Resolve JIRA board failed: %v", err))
 			return s, nil
 		}
 		if s.jiraConfig == nil {
 			site, err := s.services.JiraSite(ctx)
 			if err != nil {
-				s.status = fmt.Sprintf("Determine JIRA site failed: %v", err)
+				s.fail(fmt.Sprintf("Determine JIRA site failed: %v", err))
 				return s, nil
 			}
 			s.jiraConfig = &JiraConfig{
@@ -445,7 +593,7 @@ func (s setupModel) updateJiraStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
 			s.jiraConfig.DefaultBoard = board.Name
 		}
 		s.jiraBoardInput.SetValue("")
-		s.status = fmt.Sprintf("Added JIRA board %s; paste another board or press enter to save", board.Name)
+		s.status, s.statusErr = fmt.Sprintf("Added board %s; paste another or press enter to review", board.Name), false
 		return s, nil
 	}
 	var cmd tea.Cmd
@@ -453,113 +601,280 @@ func (s setupModel) updateJiraStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
 	return s, cmd
 }
 
+// --- review -----------------------------------------------------------------
+
+// enterReviewStep builds the config once, so rendering never runs git.
+func (s *setupModel) enterReviewStep() {
+	s.goTo(setupStepReview, "")
+	cfg, err := buildSetupConfig(*s)
+	s.review, s.reviewErr = nil, err
+	if err == nil {
+		s.review = &cfg
+	}
+}
+
+func (s setupModel) updateReviewStep(key tea.KeyMsg) (setupModel, tea.Cmd) {
+	if key.String() != "enter" {
+		return s, nil
+	}
+	if s.reviewErr != nil {
+		s.fail(s.reviewErr.Error())
+		return s, nil
+	}
+	return s.finishSetup()
+}
+
 func (s setupModel) finishSetup() (setupModel, tea.Cmd) {
 	cfg, warnings, err := completeSetupConfig(s)
 	if err != nil {
-		s.status = err.Error()
+		s.fail(err.Error())
 		return s, nil
 	}
-	if err := os.MkdirAll(s.services.ExpandPath(s.worktreesDir, s.cfg.HomeDir), 0o755); err != nil {
-		s.status = fmt.Sprintf("Create worktrees folder failed: %v", err)
-		return s, nil
+	for _, repository := range cfg.Repositories() {
+		if err := os.MkdirAll(repository.WorktreesDir, 0o755); err != nil {
+			s.fail(fmt.Sprintf("Create worktrees folder failed: %v", err))
+			return s, nil
+		}
 	}
 	if err := s.services.WriteAppConfig(cfg.ConfigPath, cfg.App); err != nil {
-		s.status = fmt.Sprintf("Save config failed: %v", err)
+		s.fail(fmt.Sprintf("Save config failed: %v", err))
 		return s, nil
 	}
 	cfg.SetupNeeded = false
 	cfg.SetupReason = ""
-	message := fmt.Sprintf("Configured profile %s", cfg.ActiveProfile.Name)
+	message := fmt.Sprintf("Saved project %s", cfg.ActiveProfile.Name)
+	if cfg.MultiRepository() {
+		message += " (" + strings.Join(repositoryNames(cfg.ActiveProfile.Repositories), ", ") + ")"
+	}
 	if len(warnings) > 0 {
 		message += ": " + strings.Join(warnings, " | ")
 	}
 	return s, func() tea.Msg { return setupResult{Config: cfg, Message: message, Startup: s.startup} }
 }
 
+// --- view ---------------------------------------------------------------------
+
 func (s setupModel) View(width int) string {
-	lines := []string{titleStyle.Render("Setup wt-manager"), ""}
+	title := "Set up wt-manager"
+	if s.editing != "" {
+		title = "Edit project " + s.editing
+	}
+	lines := []string{titleStyle.Render(title)}
+	if s.cfg.SetupReason != "" && s.step == setupStepProject {
+		lines = append(lines, mutedStyle.Render(s.cfg.SetupReason))
+	}
+	lines = append(lines, "", s.stagesLine(), "")
+
+	heading, intro, body, hints := s.stepContent(width)
+	lines = append(lines, infoStyle.Bold(true).Render(heading))
+	if intro != "" {
+		lines = append(lines, subtleStyle.Render(intro))
+	}
+	lines = append(lines, "")
+	lines = append(lines, body...)
 	if s.status != "" {
-		lines = append(lines, subtleStyle.Render(s.status), "")
+		style, prefix := subtleStyle, ""
+		if s.statusErr {
+			style, prefix = errorStyle, icons.Err+" "
+		}
+		lines = append(lines, "", style.Render(prefix+s.status))
 	}
-
-	switch s.step {
-	case setupStepRepo:
-		lines = append(lines, infoStyle.Render("Repository"), "Choose a git repository folder.", "", s.repoPicker.View(width))
-	case setupStepProfile:
-		lines = append(lines, infoStyle.Render("Profile"), fmt.Sprintf("Repository: %s", s.repoPath), "", s.profileInput.View())
-	case setupStepWorktrees:
-		lines = append(lines, infoStyle.Render("Worktrees Folder"), fmt.Sprintf("Repository: %s", s.repoPath), "", s.worktreePicker.View(width))
-	case setupStepAgents:
-		lines = append(lines, infoStyle.Render("Agent Tools"), "space toggles, a adds custom, enter continues", "")
-		for idx, agent := range s.agentOptions {
-			cursor := "  "
-			style := subtleStyle
-			if idx == s.agentCursor {
-				cursor = "> "
-				style = infoStyle.Copy().Bold(true)
-			}
-			checked := "[ ]"
-			if agent.Selected {
-				checked = "[x]"
-			}
-			installed := "missing"
-			if agent.Installed {
-				installed = "found"
-			}
-			if agent.Custom {
-				installed = "custom"
-			}
-			lines = append(lines, style.Render(fmt.Sprintf("%s%s %-10s %-24s %s", cursor, checked, agent.Name, agent.Command, installed)))
-		}
-		addCursor := "  "
-		addStyle := subtleStyle
-		if s.agentCursor == len(s.agentOptions) {
-			addCursor = "> "
-			addStyle = infoStyle.Copy().Bold(true)
-		}
-		lines = append(lines, addStyle.Render(addCursor+"+ add custom agent"))
-	case setupStepCustomName:
-		lines = append(lines, infoStyle.Render("Custom Agent"), "", s.customName.View())
-	case setupStepCustomCommand:
-		lines = append(lines, infoStyle.Render("Custom Agent"), fmt.Sprintf("Name: %s", s.customName.Value()), "", s.customCommand.View())
-	case setupStepGitHub:
-		cfg, err := buildSetupConfig(s)
-		lines = append(lines, infoStyle.Render("Review"), "")
-		if err != nil {
-			lines = append(lines, errorStyle.Render(err.Error()))
-		} else {
-			lines = append(lines,
-				fmt.Sprintf("Profile: %s", cfg.ActiveProfile.Name),
-				fmt.Sprintf("Repository: %s", cfg.ActiveProfile.RepositoryPath),
-				fmt.Sprintf("Worktrees: %s", cfg.ActiveProfile.WorktreesDir),
-				fmt.Sprintf("Agents: %s", strings.Join(agentNames(cfg.App.Agents), ", ")),
-				fmt.Sprintf("Default agent: %s", cfg.App.DefaultAgent),
-			)
-			if cfg.RepoSlug != "" {
-				lines = append(lines, fmt.Sprintf("GitHub: %s", cfg.RepoSlug))
-			} else {
-				lines = append(lines, "GitHub: disabled")
-			}
-			if _, err := os.Stat(cfg.ActiveProfile.WorktreesDir); errors.Is(err, os.ErrNotExist) {
-				lines = append(lines, warnStyle.Render("Worktrees folder will be created on save."))
-			}
-			lines = append(lines, subtleStyle.Render("GitHub CLI will be checked on save; failures are warnings only."))
-			lines = append(lines, "", subtleStyle.Render("enter continues to optional JIRA setup, esc cancels"))
-		}
-	case setupStepJira:
-		lines = append(lines, infoStyle.Render("JIRA (optional)"), "Paste one or more board links. Board projects are resolved through ACLI.", "")
-		if s.jiraConfig != nil && len(s.jiraConfig.Boards) > 0 {
-			for _, board := range s.jiraConfig.Boards {
-				lines = append(lines, successStyle.Render(fmt.Sprintf("%s %s [%s]", icons.OK, board.Name, strings.Join(board.Projects, ", "))))
-			}
-			lines = append(lines, "")
-		} else {
-			lines = append(lines, mutedStyle.Render("No JIRA boards configured."), "")
-		}
-		lines = append(lines, s.jiraBoardInput.View(), "", subtleStyle.Render("enter resolves a typed board; enter again on empty input saves; ctrl+x disables JIRA"))
-	}
-
+	lines = append(lines, "", renderKeyHints(hints))
 	return setupCardStyle(width).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+// stagesLine shows the wizard's progress: done stages, the current one, and
+// those still ahead.
+func (s setupModel) stagesLine() string {
+	current := s.step
+	if current == setupStepCustomName || current == setupStepCustomCommand {
+		current = setupStepAgents
+	}
+	parts := make([]string, 0, len(setupStages))
+	for idx, stage := range setupStages {
+		switch {
+		case stage.step == current:
+			parts = append(parts, keyHintKeyStyle.Render(fmt.Sprintf("%d %s", idx+1, stage.title)))
+		case stage.step < current:
+			parts = append(parts, successStyle.Render(icons.OK+" "+stage.title))
+		default:
+			parts = append(parts, mutedStyle.Render(fmt.Sprintf("%d %s", idx+1, stage.title)))
+		}
+	}
+	return strings.Join(parts, mutedStyle.Render("  ›  "))
+}
+
+func (s setupModel) stepContent(width int) (string, string, []string, []keyHint) {
+	switch s.step {
+	case setupStepProject:
+		body := []string{keyHintKeyStyle.Render("Name  ") + s.projectInput.View(), "", subtleStyle.Render(s.projectHint())}
+		if others := s.otherProjects(); len(others) > 0 {
+			body = append(body, mutedStyle.Render("Existing projects: "+strings.Join(others, ", ")+" — type one to edit it"))
+		}
+		return "Project", "A project groups repositories whose worktrees are listed together.", body, s.projectHints()
+	case setupStepRepositories:
+		if s.editor != nil {
+			heading := "Add repository"
+			if s.editIndex >= 0 {
+				heading = "Edit repository"
+			}
+			return heading, "", s.editor.View(width), s.editor.hints()
+		}
+		return "Repositories", "Worktrees of every repository are listed together; new ones ask which repository to use.", s.repositoriesView(),
+			[]keyHint{{"enter", "edit / choose"}, {"a", "add"}, {"d", "remove"}, {"tab", "continue"}, {"esc", "back"}}
+	case setupStepAgents:
+		return "Agents", "Tools that i and the agent Enter action open in a worktree.", s.agentsView(),
+			[]keyHint{{"space", "toggle"}, {"a", "add custom"}, {"enter", "continue"}, {"esc", "back"}}
+	case setupStepCustomName:
+		return "Custom agent", "", []string{s.customName.View()}, []keyHint{{"enter", "next"}, {"esc", "back"}}
+	case setupStepCustomCommand:
+		return "Custom agent", "Name: " + s.customName.Value(), []string{s.customCommand.View()}, []keyHint{{"enter", "add"}, {"esc", "back"}}
+	case setupStepJira:
+		return "JIRA (optional)", "Paste board links to browse their tickets; boards are resolved through ACLI.", s.jiraView(),
+			[]keyHint{{"enter", "add board / review"}, {"ctrl+x", "turn off JIRA"}, {"esc", "back"}}
+	case setupStepReview:
+		return "Review", "Nothing is saved until you confirm.", s.reviewView(),
+			[]keyHint{{"enter", "save"}, {"esc", "back"}}
+	}
+	return "", "", nil, nil
+}
+
+func (s setupModel) projectHints() []keyHint {
+	if s.startup {
+		return []keyHint{{"enter", "continue"}, {"ctrl+c", "quit"}}
+	}
+	return []keyHint{{"enter", "continue"}, {"esc", "cancel"}}
+}
+
+func (s setupModel) otherProjects() []string {
+	var names []string
+	for _, profile := range s.cfg.App.Profiles {
+		if profile.Name != s.editing {
+			names = append(names, profile.Name)
+		}
+	}
+	return names
+}
+
+func (s setupModel) repositoriesView() []string {
+	nameWidth := 4
+	for _, repository := range s.repositories {
+		nameWidth = max(nameWidth, len(repository.Name))
+	}
+	var lines []string
+	for idx, repository := range s.repositories {
+		github := repository.GitHubRepo
+		if github == "" {
+			github = "from " + emptyDash(repository.RemoteName)
+		}
+		label := fmt.Sprintf("%-*s  %s", nameWidth, repository.Name, s.services.CompactPath(repository.RepositoryPath, s.cfg.HomeDir))
+		detail := fmt.Sprintf("%*s  worktrees %s · GitHub %s", nameWidth, "", s.services.CompactPath(repository.WorktreesDir, s.cfg.HomeDir), github)
+		lines = append(lines, selectorLine(idx == s.repoCursor, label, false), mutedStyle.Render("  "+detail))
+	}
+	if len(s.repositories) == 0 {
+		lines = append(lines, mutedStyle.Render("  No repositories yet."))
+	}
+	lines = append(lines,
+		"",
+		selectorLine(s.repoCursor == s.addRow(), "+ Add repository", false),
+		selectorLine(s.repoCursor == s.continueRow(), "Continue →", false),
+	)
+	return lines
+}
+
+func (s setupModel) agentsView() []string {
+	var lines []string
+	for idx, agent := range s.agentOptions {
+		checked := "[ ]"
+		if agent.Selected {
+			checked = "[x]"
+		}
+		state := mutedStyle.Render("not installed")
+		switch {
+		case agent.Custom:
+			state = purpleStyle.Render("custom")
+		case agent.Installed:
+			state = successStyle.Render("installed")
+		}
+		lines = append(lines, selectorLine(idx == s.agentCursor, fmt.Sprintf("%s %-10s %-24s", checked, agent.Name, agent.Command), false)+" "+state)
+	}
+	return append(lines, selectorLine(s.agentCursor == len(s.agentOptions), "+ Add custom agent", false))
+}
+
+func (s setupModel) jiraView() []string {
+	var lines []string
+	if s.jiraConfig != nil && len(s.jiraConfig.Boards) > 0 {
+		for _, board := range s.jiraConfig.Boards {
+			lines = append(lines, successStyle.Render(fmt.Sprintf("%s %s", icons.OK, board.Name))+mutedStyle.Render(" ["+strings.Join(board.Projects, ", ")+"]"))
+		}
+	} else {
+		lines = append(lines, mutedStyle.Render("No boards; JIRA tickets stay off for this project."))
+	}
+	return append(lines, "", s.jiraBoardInput.View())
+}
+
+func (s setupModel) reviewView() []string {
+	if s.reviewErr != nil {
+		return []string{errorStyle.Render(icons.Err + " " + s.reviewErr.Error())}
+	}
+	if s.review == nil {
+		return nil
+	}
+	cfg := *s.review
+	field := func(label string, value string) string {
+		return mutedStyle.Render(fmt.Sprintf("%-13s", label)) + value
+	}
+	project := cfg.ActiveProfile.Name
+	switch {
+	case s.editing == "":
+		project += mutedStyle.Render("  new project")
+	case s.editing != project:
+		project += mutedStyle.Render("  renamed from " + s.editing)
+	default:
+		project += mutedStyle.Render("  updates the existing project")
+	}
+	lines := []string{field("Project", project), field("Repositories", "")}
+	var notes []string
+	repositories := cfg.Repositories()
+	nameWidth := 4
+	for _, repository := range repositories {
+		nameWidth = max(nameWidth, len(repository.Name))
+	}
+	for _, repository := range repositories {
+		github := repository.GitHubRepo
+		if github == "" {
+			github = warnStyle.Render("no GitHub")
+		}
+		lines = append(lines,
+			"  "+infoStyle.Render(fmt.Sprintf("%-*s", nameWidth, repository.Name))+"  "+s.services.CompactPath(repository.RepositoryPath, cfg.HomeDir),
+			mutedStyle.Render(fmt.Sprintf("  %*s  worktrees %s · GitHub ", nameWidth, "", s.services.CompactPath(repository.WorktreesDir, cfg.HomeDir)))+github,
+		)
+		if _, err := os.Stat(repository.WorktreesDir); errors.Is(err, os.ErrNotExist) {
+			notes = append(notes, fmt.Sprintf("%s will be created", s.services.CompactPath(repository.WorktreesDir, cfg.HomeDir)))
+		}
+		if cfg.ForRepository(repository.Name).SharesWorktreesDir() {
+			notes = append(notes, fmt.Sprintf("%s shares its worktrees folder; its worktree folders start with %q", repository.Name, repository.Name+"-"))
+		}
+	}
+	jira := mutedStyle.Render("off")
+	if cfg.ActiveProfile.Jira != nil {
+		boards := make([]string, 0, len(cfg.ActiveProfile.Jira.Boards))
+		for _, board := range cfg.ActiveProfile.Jira.Boards {
+			boards = append(boards, board.Name)
+		}
+		jira = strings.Join(boards, ", ")
+	}
+	lines = append(lines,
+		field("Agents", strings.Join(agentNames(cfg.App.Agents), ", ")+mutedStyle.Render(" · default "+cfg.App.DefaultAgent)),
+		field("JIRA", jira),
+	)
+	if len(notes) > 0 {
+		lines = append(lines, "")
+		for _, note := range slices.Compact(notes) {
+			lines = append(lines, subtleStyle.Render(icons.Section+" "+note))
+		}
+	}
+	return append(lines, "", mutedStyle.Render("GitHub CLI access is checked on save; problems are only warnings."))
 }
 
 func setupCardStyle(width int) lipgloss.Style {
@@ -567,233 +882,10 @@ func setupCardStyle(width int) lipgloss.Style {
 		Border(lipgloss.DoubleBorder()).
 		BorderForeground(lipgloss.Color("62")).
 		Padding(1, 2).
-		Width(max(64, min(96, width-6)))
+		Width(max(64, min(100, width-6)))
 }
 
-func newDirectoryPicker(services core.Services, homeDir string, seeds []string, initial string) directoryPicker {
-	input := textinput.New()
-	input.Prompt = "search/path: "
-	input.Placeholder = "~/projects"
-	input.CharLimit = 240
-	input.Width = 72
-	input.SetValue(services.CompactPath(initial, homeDir))
-	input.CursorEnd()
-	input.Focus()
-
-	picker := directoryPicker{services: services, input: input, dirs: discoverDirectories(services, seeds, 3, 700), homeDir: homeDir}
-	picker.refilter()
-	return picker
-}
-
-func (p directoryPicker) Update(key tea.KeyMsg) (directoryPicker, tea.Cmd) {
-	switch key.Type {
-	case tea.KeyUp:
-		if p.cursor > 0 {
-			p.cursor--
-		}
-		return p, nil
-	case tea.KeyDown:
-		if p.cursor < len(p.filtered)-1 {
-			p.cursor++
-		}
-		return p, nil
-	}
-	var cmd tea.Cmd
-	p.input, cmd = p.input.Update(key)
-	p.refilter()
-	return p, cmd
-}
-
-func (p *directoryPicker) refilter() {
-	query := strings.TrimSpace(p.input.Value())
-	p.filtered = filterDirectories(p.services, p.dirs, query, p.homeDir)
-	if p.cursor >= len(p.filtered) {
-		p.cursor = max(0, len(p.filtered)-1)
-	}
-}
-
-func (p directoryPicker) SelectedPath() string {
-	query := strings.TrimSpace(p.input.Value())
-	if query != "" && (strings.HasPrefix(query, "~") || strings.HasPrefix(query, "/") || strings.HasPrefix(query, ".")) {
-		typed := p.services.ExpandPath(query, p.homeDir)
-		if _, err := os.Stat(typed); err == nil {
-			return typed
-		}
-		if len(p.filtered) == 0 {
-			return typed
-		}
-	}
-	if len(p.filtered) == 0 {
-		return p.services.ExpandPath(query, p.homeDir)
-	}
-	return p.filtered[min(max(p.cursor, 0), len(p.filtered)-1)]
-}
-
-func (p directoryPicker) View(width int) string {
-	lines := []string{p.input.View()}
-	limit := min(10, len(p.filtered))
-	for i := 0; i < limit; i++ {
-		cursor := "  "
-		style := subtleStyle
-		if i == p.cursor {
-			cursor = "> "
-			style = infoStyle.Copy().Bold(true)
-		}
-		lines = append(lines, style.Render(cursor+p.services.CompactPath(p.filtered[i], p.homeDir)))
-	}
-	if len(p.filtered) == 0 {
-		lines = append(lines, mutedStyle.Render("  no matching folders; enter uses typed path"))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func setupDirectorySeeds(services core.Services, homeDir string, paths ...string) []string {
-	seeds := []string{}
-	for _, path := range paths {
-		if path == "" {
-			continue
-		}
-		expanded := services.ExpandPath(path, homeDir)
-		seeds = append(seeds, expanded, filepath.Dir(expanded))
-	}
-	seeds = append(seeds,
-		filepath.Join(homeDir, "projects"),
-		filepath.Join(homeDir, "worktrees"),
-		filepath.Join(homeDir, "src"),
-		homeDir,
-	)
-	return uniqueCleanPaths(seeds)
-}
-
-func discoverDirectories(services core.Services, seeds []string, maxDepth int, maxDirs int) []string {
-	seen := map[string]struct{}{}
-	var dirs []string
-	for _, seed := range uniqueCleanPaths(seeds) {
-		walkDirectories(services, seed, 0, maxDepth, maxDirs, seen, &dirs)
-		if len(dirs) >= maxDirs {
-			break
-		}
-	}
-	sort.Strings(dirs)
-	return dirs
-}
-
-func walkDirectories(services core.Services, path string, depth int, maxDepth int, maxDirs int, seen map[string]struct{}, dirs *[]string) {
-	if len(*dirs) >= maxDirs || depth > maxDepth {
-		return
-	}
-	info, err := os.Stat(path)
-	if err != nil || !info.IsDir() {
-		return
-	}
-	clean := services.CanonicalPath(path)
-	if _, ok := seen[clean]; ok {
-		return
-	}
-	seen[clean] = struct{}{}
-	*dirs = append(*dirs, clean)
-
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if len(*dirs) >= maxDirs || !entry.IsDir() || skipSetupDir(entry) {
-			continue
-		}
-		walkDirectories(services, filepath.Join(path, entry.Name()), depth+1, maxDepth, maxDirs, seen, dirs)
-	}
-}
-
-func skipSetupDir(entry fs.DirEntry) bool {
-	name := entry.Name()
-	if strings.HasPrefix(name, ".") {
-		return true
-	}
-	return name == "node_modules" || name == "vendor" || name == "Library"
-}
-
-func uniqueCleanPaths(paths []string) []string {
-	seen := map[string]struct{}{}
-	var result []string
-	for _, path := range paths {
-		if strings.TrimSpace(path) == "" {
-			continue
-		}
-		clean := filepath.Clean(path)
-		if _, ok := seen[clean]; ok {
-			continue
-		}
-		seen[clean] = struct{}{}
-		result = append(result, clean)
-	}
-	return result
-}
-
-func filterDirectories(services core.Services, dirs []string, query string, homeDir string) []string {
-	query = strings.TrimSpace(strings.ToLower(query))
-	if query == "" {
-		return append([]string(nil), dirs...)
-	}
-	type scoredDir struct {
-		path  string
-		score int
-	}
-	var scored []scoredDir
-	for _, dir := range dirs {
-		candidate := strings.ToLower(services.CompactPath(dir, homeDir))
-		base := strings.ToLower(filepath.Base(dir))
-		score := -1
-		switch {
-		case candidate == query:
-			score = 0
-		case strings.HasPrefix(candidate, query):
-			score = 1
-		case base == query:
-			score = 2
-		case strings.HasPrefix(base, query):
-			score = 3
-		case strings.Contains(candidate, query):
-			score = 4
-		case fuzzyMatch(candidate, query):
-			score = 5
-		case fuzzyMatch(base, query):
-			score = 6
-		}
-		if score >= 0 {
-			scored = append(scored, scoredDir{path: dir, score: score})
-		}
-	}
-	sort.SliceStable(scored, func(i, j int) bool {
-		if scored[i].score != scored[j].score {
-			return scored[i].score < scored[j].score
-		}
-		left := strings.ToLower(services.CompactPath(scored[i].path, homeDir))
-		right := strings.ToLower(services.CompactPath(scored[j].path, homeDir))
-		if len(left) != len(right) {
-			return len(left) < len(right)
-		}
-		return left < right
-	})
-	result := make([]string, 0, len(scored))
-	for _, item := range scored {
-		result = append(result, item.path)
-	}
-	return result
-}
-
-func fuzzyMatch(candidate string, query string) bool {
-	if query == "" {
-		return true
-	}
-	idx := 0
-	for _, r := range candidate {
-		if idx < len(query) && byte(r) == query[idx] {
-			idx++
-		}
-	}
-	return idx == len(query)
-}
+// --- agents helpers -----------------------------------------------------------
 
 func detectSetupAgents(services core.Services, existing []AgentTool, defaultAgent string, lookup func(string) (string, error)) []setupAgentOption {
 	defaults := services.DefaultAppConfig().Agents
@@ -842,31 +934,43 @@ func upsertSetupAgent(options []setupAgentOption, next setupAgentOption) []setup
 	return append(options, next)
 }
 
+// --- building the config -----------------------------------------------------
+
 func completeSetupConfig(s setupModel) (Config, []string, error) {
 	cfg, err := buildSetupConfig(s)
 	if err != nil {
 		return Config{}, nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	warnings := s.services.CheckGitHubCLI(ctx, cfg.RepoSlug)
+	var warnings []string
+	checked := map[string]bool{}
+	for _, repository := range cfg.Repositories() {
+		if checked[repository.GitHubRepo] {
+			continue
+		}
+		checked[repository.GitHubRepo] = true
+		for _, warning := range s.services.CheckGitHubCLI(ctx, repository.GitHubRepo) {
+			if !slices.Contains(warnings, warning) {
+				warnings = append(warnings, warning)
+			}
+		}
+	}
 	if cfg.ActiveProfile.Jira != nil {
 		warnings = append(warnings, s.services.CheckAtlassianCLI(ctx)...)
 	}
 	return cfg, warnings, nil
 }
 
+// buildSetupConfig applies the wizard to the config: the edited project (or a
+// new one) gets exactly the listed repositories, and becomes the default.
 func buildSetupConfig(s setupModel) (Config, error) {
-	profileName := strings.TrimSpace(s.profileInput.Value())
-	if profileName == "" {
-		return Config{}, errors.New("profile name is required")
+	name := strings.TrimSpace(s.projectInput.Value())
+	if name == "" {
+		return Config{}, errors.New("name the project")
 	}
-	if strings.TrimSpace(s.repoPath) == "" {
-		return Config{}, errors.New("repository path is required")
-	}
-	worktreesDir := s.services.ExpandPath(s.worktreesDir, s.cfg.HomeDir)
-	if strings.TrimSpace(worktreesDir) == "" {
-		return Config{}, errors.New("worktrees folder is required")
+	if len(s.repositories) == 0 {
+		return Config{}, errors.New("add at least one repository")
 	}
 	agents := selectedSetupAgents(s.agentOptions)
 	if len(agents) == 0 {
@@ -875,66 +979,110 @@ func buildSetupConfig(s setupModel) (Config, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	profile := RepositoryProfile{
-		Name:           profileName,
-		RepositoryPath: s.services.CompactPath(s.repoPath, s.cfg.HomeDir),
-		WorktreesDir:   s.services.CompactPath(worktreesDir, s.cfg.HomeDir),
-		RemoteName:     "origin",
-	}
-	if s.jiraConfig != nil && len(s.jiraConfig.Boards) > 0 {
-		copyConfig := *s.jiraConfig
-		copyConfig.Boards = append([]JiraBoard(nil), s.jiraConfig.Boards...)
-		if copyConfig.DefaultBoard == "" {
-			copyConfig.DefaultBoard = copyConfig.Boards[0].Name
+	repositories := make([]core.Repository, 0, len(s.repositories))
+	for _, repository := range s.repositories {
+		if repository.RemoteName == "" {
+			repository.RemoteName = "origin"
 		}
-		if copyConfig.Limit <= 0 {
-			copyConfig.Limit = 100
+		if repository.GitHubRepo == "" {
+			repository.GitHubRepo = s.services.InferGitHubRepo(ctx, RepositoryProfile{RepositoryPath: repository.RepositoryPath, RemoteName: repository.RemoteName})
 		}
-		profile.Jira = &copyConfig
+		repository.RepositoryPath = s.services.CompactPath(repository.RepositoryPath, s.cfg.HomeDir)
+		repository.WorktreesDir = s.services.CompactPath(s.services.ExpandPath(repository.WorktreesDir, s.cfg.HomeDir), s.cfg.HomeDir)
+		repositories = append(repositories, repository)
 	}
-	profile.GitHubRepo = s.services.InferGitHubRepo(ctx, s.services.ResolveProfilePaths(profile, s.cfg.HomeDir))
 
-	appConfig := s.cfg.App
-	appConfig.Agents = agents
-	if s.services.FindAgent(agents, appConfig.DefaultAgent) == nil {
-		appConfig.DefaultAgent = agents[0].Name
+	app := cloneAppConfig(s.cfg.App)
+	target := -1
+	for idx, profile := range app.Profiles {
+		if s.editing != "" && profile.Name == s.editing {
+			target = idx
+		}
 	}
-	appConfig.Profiles = upsertProfile(s.services, appConfig.Profiles, profile, s.cfg.HomeDir)
-	appConfig.DefaultProfile = profile.Name
-	normalized, _, err := s.services.NormalizeAppConfig(appConfig)
+	for idx, profile := range app.Profiles {
+		if profile.Name == name && idx != target {
+			return Config{}, fmt.Errorf("a project named %s already exists", name)
+		}
+	}
+
+	profile := RepositoryProfile{Name: name, Jira: copyJiraConfig(s.jiraConfig)}
+	if profile.Jira != nil && len(profile.Jira.Boards) == 0 {
+		profile.Jira = nil
+	}
+	if profile.Jira != nil {
+		if profile.Jira.DefaultBoard == "" {
+			profile.Jira.DefaultBoard = profile.Jira.Boards[0].Name
+		}
+		if profile.Jira.Limit <= 0 {
+			profile.Jira.Limit = 100
+		}
+	}
+	// A single repository named after its folder keeps the compact form.
+	if only := repositories[0]; len(repositories) == 1 && only.Name == core.RepositoryNameFromPath(only.RepositoryPath) {
+		profile.RepositoryPath, profile.WorktreesDir, profile.RemoteName, profile.GitHubRepo = only.RepositoryPath, only.WorktreesDir, only.RemoteName, only.GitHubRepo
+	} else {
+		if target >= 0 {
+			profile.LastRepository = app.Profiles[target].LastRepository
+		}
+		profile = profile.WithRepositories(repositories)
+	}
+	if target >= 0 {
+		app.Profiles[target] = profile
+	} else {
+		app.Profiles = append(app.Profiles, profile)
+	}
+	app.Agents = agents
+	if s.services.FindAgent(agents, app.DefaultAgent) == nil {
+		app.DefaultAgent = agents[0].Name
+	}
+	app.DefaultProfile = name
+	normalized, _, err := s.services.NormalizeAppConfig(app)
 	if err != nil {
 		return Config{}, err
 	}
-
-	active, err := s.services.ActiveProfile(normalized, s.cfg.HomeDir)
-	if err != nil {
-		return Config{}, err
+	selected := s.services.FindProfile(normalized.Profiles, name)
+	if selected == nil {
+		return Config{}, fmt.Errorf("project %q not found", name)
 	}
-	repoSlug := active.GitHubRepo
-	if repoSlug == "" {
-		repoSlug = s.services.InferGitHubRepo(ctx, active)
-	}
-
+	active := s.services.ResolveProject(ctx, *selected, s.cfg.HomeDir)
 	return Config{
 		HomeDir:       s.cfg.HomeDir,
 		ConfigPath:    s.cfg.ConfigPath,
 		App:           normalized,
 		ActiveProfile: active,
-		RepoSlug:      repoSlug,
+		RepoSlug:      active.GitHubRepo,
 		ConfigExists:  true,
 	}, nil
 }
 
-func upsertProfile(services core.Services, profiles []RepositoryProfile, next RepositoryProfile, homeDir string) []RepositoryProfile {
-	nextPath := services.CanonicalPath(services.ExpandPath(next.RepositoryPath, homeDir))
-	for i := range profiles {
-		if profiles[i].Name == next.Name || services.CanonicalPath(services.ExpandPath(profiles[i].RepositoryPath, homeDir)) == nextPath {
-			profiles[i] = next
-			return profiles
+// findRepositoryOwner finds the project a repository belongs to.
+func findRepositoryOwner(services core.Services, profiles []RepositoryProfile, homeDir string, repoPath string) (int, core.Repository, bool) {
+	want := services.CanonicalPath(services.ExpandPath(repoPath, homeDir))
+	for idx, profile := range profiles {
+		for _, repository := range profile.RepositoryList() {
+			if services.CanonicalPath(services.ExpandPath(repository.RepositoryPath, homeDir)) == want {
+				return idx, repository, true
+			}
 		}
 	}
-	return append(profiles, next)
+	return -1, core.Repository{}, false
+}
+
+func copyJiraConfig(jira *JiraConfig) *JiraConfig {
+	if jira == nil {
+		return nil
+	}
+	copyConfig := *jira
+	copyConfig.Boards = append([]JiraBoard(nil), jira.Boards...)
+	return &copyConfig
+}
+
+func repositoryNames(repositories []core.Repository) []string {
+	names := make([]string, 0, len(repositories))
+	for _, repository := range repositories {
+		names = append(names, repository.Name)
+	}
+	return names
 }
 
 func agentNames(agents []AgentTool) []string {

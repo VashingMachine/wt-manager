@@ -13,6 +13,8 @@ Profiles can optionally enable a third JIRA Tickets view backed by Atlassian CLI
 - Browse managed worktrees in a Bubble Tea terminal interface.
 - See branch state, changed-file counts, PR state, and latest commit at a glance.
 - Switch between repository profiles from inside the app.
+- Group several repositories into one project: their worktrees are listed together with a Repo column, and every new worktree asks which repository it belongs to.
+- Edit the configuration from the app: open the JSON file in your editor, add or remove project repositories from the command palette, and have saved edits applied while the app runs.
 - Create worktrees from existing local branches, remote branches, or new branches.
 - Delete worktrees with a double-press confirmation.
 - Configure what `enter` does for selected worktrees.
@@ -32,7 +34,7 @@ Profiles can optionally enable a third JIRA Tickets view backed by Atlassian CLI
 - Paint worktrees, PRs, and tickets from a local cache immediately, then refresh them piece by piece in the background.
 - Prefetch PR Radar and JIRA Tickets while you work elsewhere, so switching views shows current data without waiting.
 - Apply ticket status changes, comments, assignments, and PR approvals immediately, rolling back if the remote call fails.
-- Configure everything interactively on first run, including repository path, worktree folder, GitHub repo, and agent commands.
+- Configure everything interactively on first run with a guided project setup: the project's repositories and worktree folders, GitHub repos, agent commands, and JIRA boards.
 
 ## Requirements
 
@@ -78,11 +80,21 @@ To rerun setup manually:
 wt-manager --init
 ```
 
+To add or remove a project's repositories with guided questions, see [Adding and removing repositories from the command line](#adding-and-removing-repositories-from-the-command-line).
+
 ## Configuration
 
 `wt-manager` stores configuration in `~/.wt-manager.json`.
 
-If the file is missing, has no profiles, or the current Git repository is not configured yet, the app opens an interactive setup wizard. The wizard can detect the current repository, choose a worktree folder, detect installed agent tools, infer the GitHub `owner/repo` value from `origin`, and verify `gh` access as a warning.
+If the file is missing, has no profiles, or the current Git repository is not configured yet, the app opens the setup wizard. It walks through five steps, shown at the top of the wizard; `esc` returns to the previous step and nothing is saved before the last one:
+
+1. **Project**: the project's name. It defaults to the project that already contains the current repository, or to the repository's folder name. Typing the name of another configured project edits that project instead (and adds the current repository to it); typing a new name while editing renames the project.
+2. **Repositories**: the project's repositories, starting with the current one. `a` adds another: the picker lists only git repositories (no plain folders, nothing inside a repository, no linked worktrees, nor repositories already in the project), then asks for its name and worktrees folder with defaults that follow the project's layout. `enter` on a repository edits it and `d` removes it from the list.
+3. **Agents**: the agent tools to offer, with installed ones preselected.
+4. **JIRA** (optional): board links to browse tickets for.
+5. **Review**: everything that will be saved, including each repository's GitHub repository (inferred from its remote) and worktree folders that will be created. `enter` saves; `gh` access is checked as a warning.
+
+Inside the app, `I` opens the wizard for the active project, or for the repository the app was started in when no project has it yet. **New project…** in the command palette sets up another project.
 
 Example:
 
@@ -129,6 +141,79 @@ Example:
 
 If `githubRepo` is empty, `wt-manager` tries to infer it from the configured remote when that remote points to GitHub.
 
+### Projects with several repositories
+
+A profile is a project. A project with one repository uses the flat `repositoryPath`, `worktreesDir`, `remoteName`, and `githubRepo` fields shown above. A project spanning several repositories lists them under `repositories` instead; the JIRA setup is shared by all of them:
+
+```json
+{
+  "name": "shop",
+  "repositories": [
+    { "name": "api", "repositoryPath": "~/projects/api", "worktreesDir": "~/worktrees/api", "githubRepo": "owner/api" },
+    { "name": "web", "repositoryPath": "~/projects/web", "worktreesDir": "~/worktrees/web" }
+  ],
+  "lastRepository": "api",
+  "jira": { "...": "..." }
+}
+```
+
+- `name` defaults to the repository folder name and must be unique within the project; `remoteName` defaults to `origin`; `githubRepo` is inferred from the remote when empty.
+- If a profile has both the flat fields and `repositories`, the flat repository is moved into the list as its first entry.
+- `lastRepository` is maintained by the app: it is the repository offered first the next time you create a worktree.
+- Repositories may share a `worktreesDir`. New worktree folders there are prefixed with the repository name (`api-APP-123-fix`, `web-APP-123-fix`), so the same branch can exist in every repository.
+
+With more than one repository:
+
+- The worktree list shows every repository's worktrees, grouped by repository, with a **Repo** column. `/` also matches repository names.
+- `n` asks which repository to create the worktree in. The last used repository is highlighted and preselected; use `j`/`k` and `enter`, or press its number. Projects with one repository are never asked.
+- Creating a worktree from a JIRA ticket (`n`, or `v`/`i` when the ticket has no worktree yet) asks the same question. If the ticket already has a worktree in the chosen repository, that worktree is reused. Ticket rows and details show which repository each ticket worktree belongs to.
+- PR labels come from each worktree's own repository.
+- PR Radar shows one repository at a time; press `R` to choose which.
+
+### Adding and removing repositories from the command line
+
+`wt-manager repo` changes projects without opening the UI. Every question shows its default in brackets; press enter to accept it. Invalid answers are explained and asked again, and nothing is written until you confirm the summary.
+
+```text
+$ cd ~/projects/web && wt-manager repo add
+Add a repository to a wt-manager project. Press enter to accept the [default].
+
+Repository folder [~/projects/web]:
+Projects: shop (api)
+Project [shop]:
+Repository name [web]:
+Worktrees folder [~/worktrees/web]:
+Remotes: origin, upstream
+Git remote [origin]:
+GitHub repository (owner/name) [acme/web]:
+
+  Project:     shop (api, web)
+  Repository:  web  ~/projects/web
+  Worktrees:   ~/worktrees/web
+  Remote:      origin
+  GitHub:      acme/web
+Save to ~/.wt-manager.json? [Y/n]:
+Added web to shop. A running wt-manager picks the change up within a few seconds.
+```
+
+- `wt-manager repo add [folder]` adds a repository. The defaults are the git repository you run it in, the default project, the folder name (made unique within the project), a worktrees folder following the project's layout, `origin` (or the repository's only remote), and the GitHub repository of that remote. Naming a project that does not exist creates it; with no config at all, the first project is created from the repository.
+- `wt-manager repo remove [repository]` removes a repository from a project, after a `y/N` confirmation that defaults to no. It suggests the repository you run it in and accepts a number or a name. Removing a project's only repository offers to remove the project. Folders and worktrees stay on disk.
+- `wt-manager repo list` shows every project and its repositories.
+
+### Editing the configuration from the app
+
+The command palette (`ctrl+p`) includes:
+
+- **Edit configuration file**: opens `~/.wt-manager.json` in the configured editor. When `$VISUAL` or `$EDITOR` is set, **Edit configuration file in terminal** opens it in that editor inside the terminal and applies it when the editor exits.
+- **Reload configuration**: reads the file again.
+- **Add repository to <project>…**: the same repository questions as setup: pick one of the git repositories found near the project, then confirm its name and worktrees folder. The project is converted to the `repositories` form if needed.
+- **Remove repository from <project>…**: stops listing a repository after a second `enter`; its files and worktrees stay on disk.
+- **Edit project <project>…** (`I`), **New project…**, **Choose PR Radar repository**, **Switch project**, and the editor, agent, and Enter action settings.
+
+The file is checked every two seconds while the app runs, and saved edits are applied immediately; the active project is reloaded when its own settings changed. If the file has errors, the app reports them and does not save in-app changes until the file is fixed, so a half-finished edit is never overwritten. If the file changed on disk before an in-app change was saved, the file wins: it is reloaded and the app asks you to repeat the change.
+
+Saving the setup wizard gives the project exactly the repositories listed in its Repositories step.
+
 ## Caching and Background Loading
 
 `wt-manager` keeps what it fetched in memory and in a SQLite cache at `~/.wt-manager/cache/wt-manager.db`, so every view paints immediately, also after a restart, and is then refreshed in the background:
@@ -162,9 +247,10 @@ The cache only speeds things up: deleting the file is safe, and if it cannot be 
 | `e` | Choose the default worktree Enter action |
 | `esc` | Close full-screen PR diff, clear filter, or cancel the current input |
 | `A` | Approve selected PR in PR Radar after confirmation |
-| `n` | Create a worktree |
-| `s` | Switch repository profile |
-| `I` | Open setup |
+| `n` | Create a worktree (asks for the repository when the project has several) |
+| `R` | Choose the repository PR Radar shows (projects with several repositories) |
+| `s` | Switch project (repository profile) |
+| `I` | Edit the active project in the setup wizard |
 | `p` | Toggle full PR description |
 | `o` | Open selected PR in browser |
 | `c` | Ask configured agent about the selected remote PR |
@@ -200,7 +286,7 @@ Custom commands may include flags or a quoted executable path, such as `code --n
 
 ## How Worktrees Are Created
 
-New worktrees are created under `<worktreesDir>/<branch-with-slashes-replaced-by-dashes>`.
+New worktrees are created under `<worktreesDir>/<branch-with-slashes-replaced-by-dashes>` of the chosen repository. When several repositories of a project share that folder, the folder name is prefixed with the repository name.
 
 When you create a worktree, `wt-manager`:
 
@@ -234,7 +320,7 @@ On macOS, opening a new terminal tab in other terminals uses UI automation. If m
 
 ## PR Radar
 
-Press `P` to toggle PR Radar. The app uses `gh` for GitHub access, so no separate OAuth app registration is required. If `gh` is missing, unauthenticated, or cannot access the configured repository, PR Radar shows a status error with the next action.
+Press `P` to toggle PR Radar. In a project with several repositories it shows one repository's PRs at a time; press `R` to switch. The app uses `gh` for GitHub access, so no separate OAuth app registration is required. If `gh` is missing, unauthenticated, or cannot access the configured repository, PR Radar shows a status error with the next action.
 
 In PR Radar:
 
@@ -255,10 +341,10 @@ The `c` action prefers a configured `copilot` agent when present and otherwise f
 
 ## JIRA Tickets
 
-Press `J` to toggle JIRA Tickets for the active repository profile. Run setup with `I`, paste a JIRA board link, and press enter once to resolve it and again to save. Multiple board links can be added before saving. ACLI authentication remains external to `wt-manager`; no Atlassian credentials are stored in the config.
+Press `J` to toggle JIRA Tickets for the active repository profile. Open the setup wizard with `I`, go to its JIRA step, paste a JIRA board link, and press enter to resolve it; enter on an empty input continues to the review, where enter saves. Multiple board links can be added before saving. ACLI authentication remains external to `wt-manager`; no Atlassian credentials are stored in the config.
 
 Tickets default to the current user, the active sprint, and open workflow categories. Press `f` to change these three filters in one dialog. The app caches each profile/board/scope list for five minutes, paints cached rows immediately, and refreshes in the background. A failed refresh keeps stale rows visible with a warning. Status changes, comments, and assignments appear immediately; a failed change is rolled back with an error. Successful changes update every cached copy of the ticket and mark the board's lists for revalidation.
 
-Worktrees and PRs are matched by a JIRA key such as `APP-123` in the branch name, with PR titles used as a fallback. New ticket worktrees use `<KEY>-<summary-slug>` and reuse an existing matching worktree when possible.
+Worktrees and PRs are matched by a JIRA key such as `APP-123` in the branch name, with PR titles used as a fallback. New ticket worktrees use `<KEY>-<summary-slug>` and reuse an existing matching worktree when possible. In a project with several repositories, worktrees and PRs of every repository are matched, and creating a ticket worktree asks for the repository first.
 
 ACLI currently exposes a board's associated projects but not its private board filter. Non-sprint board loading therefore searches those projects; active-sprint mode uses the board's active sprint IDs and is scoped exactly.

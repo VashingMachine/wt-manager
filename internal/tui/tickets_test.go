@@ -335,9 +335,8 @@ func TestBuildSetupConfigPersistsJira(t *testing.T) {
 		App:        svc.DefaultAppConfig(),
 		SetupRepo:  cfg.ActiveProfile.RepositoryPath,
 	}, true, svc)
-	setup.repoPath = cfg.ActiveProfile.RepositoryPath
-	setup.worktreesDir = cfg.ActiveProfile.WorktreesDir
-	setup.profileInput.SetValue("bluesteel")
+	setup.repositories[0].WorktreesDir = cfg.ActiveProfile.WorktreesDir
+	setup.projectInput.SetValue("bluesteel")
 	for idx := range setup.agentOptions {
 		setup.agentOptions[idx].Selected = setup.agentOptions[idx].Name == "codex"
 	}

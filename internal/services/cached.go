@@ -87,6 +87,8 @@ func (s *Service) PeekWorktrees(cfg Config, showAll bool) ([]Worktree, bool) {
 	if _, ok := s.cache.Get(bucketWorktreeList, cfg.ActiveProfile.RepositoryPath, &all); !ok || len(all) == 0 {
 		return nil, false
 	}
+	// Labels depend on the project, which may have gained repositories since.
+	labelWorktrees(cfg, all)
 	worktrees := filterManaged(all, showAll)
 	s.overlayWorktreeStatus(cfg, worktrees)
 	sortWorktrees(worktrees)

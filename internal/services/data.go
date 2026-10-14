@@ -86,11 +86,8 @@ func defaultConfig(forceSetup bool) (Config, error) {
 		return cfg, nil
 	}
 
-	cfg.ActiveProfile = activeProfile
-	cfg.RepoSlug = activeProfile.GitHubRepo
-	if cfg.RepoSlug == "" {
-		cfg.RepoSlug = inferGitHubRepo(context.Background(), activeProfile)
-	}
+	cfg.ActiveProfile = inferRepositorySlugs(context.Background(), activeProfile)
+	cfg.RepoSlug = cfg.ActiveProfile.GitHubRepo
 	cfg.ConfigExists = existed
 	return cfg, nil
 }
@@ -109,8 +106,13 @@ func defaultAppConfig() AppConfig {
 	}
 }
 
+// DefaultConfigPath is where the config file lives.
+func DefaultConfigPath(homeDir string) string {
+	return filepath.Join(homeDir, ".wt-manager.json")
+}
+
 func loadAppConfig(homeDir string) (AppConfig, string, bool, error) {
-	configPath := filepath.Join(homeDir, ".wt-manager.json")
+	configPath := DefaultConfigPath(homeDir)
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -135,6 +137,20 @@ func loadAppConfig(homeDir string) (AppConfig, string, bool, error) {
 	}
 
 	return appConfig, configPath, true, nil
+}
+
+// readAppConfig reads and normalizes a config file without writing it back.
+func readAppConfig(configPath string) (AppConfig, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return AppConfig{}, err
+	}
+	var appConfig AppConfig
+	if err := json.Unmarshal(data, &appConfig); err != nil {
+		return AppConfig{}, fmt.Errorf("read %s: %w", configPath, err)
+	}
+	appConfig, _, err = normalizeAppConfig(appConfig)
+	return appConfig, err
 }
 
 func loadOrCreateAppConfig(homeDir string) (AppConfig, string, error) {
@@ -178,8 +194,11 @@ func normalizeAppConfig(appConfig AppConfig) (AppConfig, bool, error) {
 		profile.WorktreesDir = strings.TrimSpace(profile.WorktreesDir)
 		profile.RemoteName = strings.TrimSpace(profile.RemoteName)
 		profile.GitHubRepo = strings.TrimSpace(profile.GitHubRepo)
-		if profile.RemoteName == "" {
-			profile.RemoteName = "origin"
+		repositoriesChanged, err := normalizeProfileRepositories(profile)
+		if err != nil {
+			return AppConfig{}, false, err
+		}
+		if repositoriesChanged {
 			changed = true
 		}
 		if normalizeJiraConfig(profile) {
@@ -206,6 +225,78 @@ func normalizeAppConfig(appConfig AppConfig) (AppConfig, bool, error) {
 	}
 
 	return appConfig, changed, nil
+}
+
+// normalizeProfileRepositories fills in repository defaults. A project keeps
+// its single repository in the flat fields until it lists repositories; flat
+// fields next to a list describe one more repository and are moved into it.
+func normalizeProfileRepositories(profile *RepositoryProfile) (bool, error) {
+	changed := false
+	if len(profile.Repositories) == 0 {
+		if profile.RemoteName == "" {
+			profile.RemoteName = "origin"
+			changed = true
+		}
+	} else {
+		if profile.RepositoryPath != "" {
+			flat := core.Repository{
+				Name:           core.RepositoryNameFromPath(profile.RepositoryPath),
+				RepositoryPath: profile.RepositoryPath,
+				WorktreesDir:   profile.WorktreesDir,
+				RemoteName:     profile.RemoteName,
+				GitHubRepo:     profile.GitHubRepo,
+			}
+			listed := false
+			for _, repository := range profile.Repositories {
+				if filepath.Clean(strings.TrimSpace(repository.RepositoryPath)) == filepath.Clean(flat.RepositoryPath) {
+					listed = true
+					break
+				}
+			}
+			if !listed {
+				profile.Repositories = append([]core.Repository{flat}, profile.Repositories...)
+			}
+		}
+		if profile.RepositoryPath != "" || profile.WorktreesDir != "" || profile.RemoteName != "" || profile.GitHubRepo != "" {
+			profile.RepositoryPath, profile.WorktreesDir, profile.RemoteName, profile.GitHubRepo = "", "", "", ""
+			changed = true
+		}
+		seen := map[string]struct{}{}
+		for i := range profile.Repositories {
+			repository := &profile.Repositories[i]
+			before := *repository
+			repository.Name = strings.TrimSpace(repository.Name)
+			repository.RepositoryPath = strings.TrimSpace(repository.RepositoryPath)
+			repository.WorktreesDir = strings.TrimSpace(repository.WorktreesDir)
+			repository.RemoteName = strings.TrimSpace(repository.RemoteName)
+			repository.GitHubRepo = strings.TrimSpace(repository.GitHubRepo)
+			if repository.Name == "" {
+				repository.Name = core.RepositoryNameFromPath(repository.RepositoryPath)
+			}
+			if repository.RemoteName == "" {
+				repository.RemoteName = "origin"
+			}
+			if *repository != before {
+				changed = true
+			}
+			if repository.RepositoryPath == "" {
+				return false, fmt.Errorf("profile %q repository %d repositoryPath is required", profile.Name, i+1)
+			}
+			if repository.WorktreesDir == "" {
+				return false, fmt.Errorf("profile %q repository %q worktreesDir is required", profile.Name, repository.Name)
+			}
+			if _, ok := seen[repository.Name]; ok {
+				return false, fmt.Errorf("profile %q has two repositories named %q; give each a unique name", profile.Name, repository.Name)
+			}
+			seen[repository.Name] = struct{}{}
+		}
+	}
+	profile.LastRepository = strings.TrimSpace(profile.LastRepository)
+	if profile.LastRepository != "" && profile.Repository(profile.LastRepository) == nil {
+		profile.LastRepository = ""
+		changed = true
+	}
+	return changed, nil
 }
 
 // normalizeJiraConfig fills in defaults for an opted-in JIRA block. It never
@@ -311,6 +402,10 @@ func validateProfile(profile RepositoryProfile) error {
 	if profile.Name == "" {
 		return errors.New("profile name is required")
 	}
+	if len(profile.Repositories) > 0 {
+		// Repositories were validated while being normalized.
+		return nil
+	}
 	if profile.RepositoryPath == "" {
 		return fmt.Errorf("profile %q repositoryPath is required", profile.Name)
 	}
@@ -334,10 +429,48 @@ func activeProfile(appConfig AppConfig, homeDir string) (RepositoryProfile, erro
 	return resolveProfilePaths(*profile, homeDir), nil
 }
 
+// resolveProfilePaths expands every path of a project, lists all of its
+// repositories under Repositories and scopes the flat fields to the first.
 func resolveProfilePaths(profile RepositoryProfile, homeDir string) RepositoryProfile {
-	profile.RepositoryPath = expandPath(profile.RepositoryPath, homeDir)
-	profile.WorktreesDir = expandPath(profile.WorktreesDir, homeDir)
+	listed := profile.RepositoryList()
+	repositories := make([]core.Repository, len(listed))
+	for i, repository := range listed {
+		repository.RepositoryPath = expandPath(repository.RepositoryPath, homeDir)
+		repository.WorktreesDir = expandPath(repository.WorktreesDir, homeDir)
+		if repository.RemoteName == "" {
+			repository.RemoteName = "origin"
+		}
+		repositories[i] = repository
+	}
+	profile.Repositories = repositories
+	if len(repositories) > 0 {
+		primary := repositories[0]
+		profile.RepositoryPath = primary.RepositoryPath
+		profile.WorktreesDir = primary.WorktreesDir
+		profile.RemoteName = primary.RemoteName
+		profile.GitHubRepo = primary.GitHubRepo
+	}
 	return profile
+}
+
+// inferRepositorySlugs fills in the GitHub slug of every repository that does
+// not configure one, from its remote.
+func inferRepositorySlugs(ctx context.Context, profile RepositoryProfile) RepositoryProfile {
+	repositories := append([]core.Repository(nil), profile.Repositories...)
+	for i := range repositories {
+		if repositories[i].GitHubRepo == "" {
+			repositories[i].GitHubRepo = inferGitHubRepo(ctx, RepositoryProfile{RepositoryPath: repositories[i].RepositoryPath, RemoteName: repositories[i].RemoteName})
+		}
+	}
+	profile.Repositories = repositories
+	if len(repositories) > 0 {
+		profile.GitHubRepo = repositories[0].GitHubRepo
+	}
+	return profile
+}
+
+func resolveProject(ctx context.Context, profile RepositoryProfile, homeDir string) RepositoryProfile {
+	return inferRepositorySlugs(ctx, resolveProfilePaths(profile, homeDir))
 }
 
 func expandPath(path string, homeDir string) string {
@@ -421,9 +554,10 @@ func inferProfileFromCurrentRepo(homeDir string) (RepositoryProfile, bool) {
 func repoConfigured(appConfig AppConfig, homeDir string, repoPath string) bool {
 	want := canonicalPath(repoPath)
 	for _, profile := range appConfig.Profiles {
-		resolved := resolveProfilePaths(profile, homeDir)
-		if canonicalPath(resolved.RepositoryPath) == want {
-			return true
+		for _, repository := range resolveProfilePaths(profile, homeDir).Repositories {
+			if canonicalPath(repository.RepositoryPath) == want {
+				return true
+			}
 		}
 	}
 	return false
@@ -1051,9 +1185,6 @@ func discoverWorktrees(ctx context.Context, cfg Config) ([]Worktree, error) {
 		current.IsMain = canonical == canonicalRepo
 		current.Managed = current.IsMain || canonicalInsideDir(canonical, canonicalWorktrees)
 		current.Name = filepath.Base(current.Path)
-		if current.IsMain {
-			current.Name = cfg.ActiveProfile.Name
-		}
 		if _, err := os.Stat(current.Path); err != nil {
 			current.Missing = errors.Is(err, os.ErrNotExist)
 		}
@@ -1090,7 +1221,25 @@ func discoverWorktrees(ctx context.Context, cfg Config) ([]Worktree, error) {
 		return nil, err
 	}
 
+	labelWorktrees(cfg, entries)
 	return entries, nil
+}
+
+// labelWorktrees records which repository the worktrees belong to and names
+// the main checkout after the project, or after its repository when the
+// project has several.
+func labelWorktrees(cfg Config, worktrees []Worktree) {
+	repository := cfg.RepositoryName()
+	mainName := cfg.ActiveProfile.Name
+	if cfg.MultiRepository() || mainName == "" {
+		mainName = repository
+	}
+	for i := range worktrees {
+		worktrees[i].Repository = repository
+		if worktrees[i].IsMain {
+			worktrees[i].Name = mainName
+		}
+	}
 }
 
 // missingWorktreeNote explains why a worktree has no status to read, or
@@ -1441,6 +1590,11 @@ func defaultRemoteRef(ctx context.Context, repoPath string, remoteName string) s
 
 func createWorktreePath(cfg Config, name string) string {
 	worktreeName := strings.ReplaceAll(name, "/", "-")
+	if cfg.SharesWorktreesDir() {
+		// The same branch (say, one JIRA ticket) is often created in several
+		// repositories of a project; a shared folder keeps them apart by name.
+		worktreeName = cfg.RepositoryName() + "-" + worktreeName
+	}
 	return filepath.Join(cfg.ActiveProfile.WorktreesDir, worktreeName)
 }
 
@@ -1539,6 +1693,15 @@ func canonicalPath(path string) string {
 		return filepath.Clean(abs)
 	}
 	return filepath.Clean(path)
+}
+
+// gitRemotes lists the remotes configured in a repository.
+func gitRemotes(ctx context.Context, repoPath string) []string {
+	output, err := runCommand(ctx, repoPath, "git", "-C", repoPath, "remote")
+	if err != nil {
+		return nil
+	}
+	return strings.Fields(output)
 }
 
 func inferGitHubRepo(ctx context.Context, profile RepositoryProfile) string {

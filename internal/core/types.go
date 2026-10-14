@@ -2,6 +2,9 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -32,13 +35,176 @@ const (
 	EnterActionTerminal = "terminal"
 )
 
+// RepositoryProfile is a project: one or more repositories managed together,
+// sharing a JIRA setup. A single-repository project keeps the flat
+// repositoryPath/worktreesDir/remoteName/githubRepo fields; a project with
+// several repositories lists them under repositories instead.
+//
+// In a resolved Config.ActiveProfile, Repositories always lists every
+// repository and the flat fields describe the repository the Config is scoped
+// to (see Config.ForRepository), so per-repository services keep reading them.
 type RepositoryProfile struct {
-	Name           string      `json:"name"`
-	RepositoryPath string      `json:"repositoryPath"`
-	WorktreesDir   string      `json:"worktreesDir"`
-	RemoteName     string      `json:"remoteName"`
-	GitHubRepo     string      `json:"githubRepo"`
+	Name           string       `json:"name"`
+	RepositoryPath string       `json:"repositoryPath,omitempty"`
+	WorktreesDir   string       `json:"worktreesDir,omitempty"`
+	RemoteName     string       `json:"remoteName,omitempty"`
+	GitHubRepo     string       `json:"githubRepo,omitempty"`
+	Repositories   []Repository `json:"repositories,omitempty"`
+	// LastRepository names the repository the last worktree was created in,
+	// offered first the next time the app asks for one.
+	LastRepository string      `json:"lastRepository,omitempty"`
 	Jira           *JiraConfig `json:"jira,omitempty"`
+}
+
+// Repository is one git repository of a project.
+type Repository struct {
+	Name           string `json:"name"`
+	RepositoryPath string `json:"repositoryPath"`
+	WorktreesDir   string `json:"worktreesDir"`
+	RemoteName     string `json:"remoteName,omitempty"`
+	GitHubRepo     string `json:"githubRepo,omitempty"`
+}
+
+// RepositoryList returns the project's repositories in configured order: the
+// repositories list, or the flat fields as the only repository.
+func (p RepositoryProfile) RepositoryList() []Repository {
+	if len(p.Repositories) > 0 {
+		return p.Repositories
+	}
+	if strings.TrimSpace(p.RepositoryPath) == "" {
+		return nil
+	}
+	return []Repository{{
+		Name:           RepositoryNameFromPath(p.RepositoryPath),
+		RepositoryPath: p.RepositoryPath,
+		WorktreesDir:   p.WorktreesDir,
+		RemoteName:     p.RemoteName,
+		GitHubRepo:     p.GitHubRepo,
+	}}
+}
+
+// Repository returns the repository with the given name, or nil.
+func (p RepositoryProfile) Repository(name string) *Repository {
+	repositories := p.RepositoryList()
+	for i := range repositories {
+		if repositories[i].Name == name {
+			return &repositories[i]
+		}
+	}
+	return nil
+}
+
+// WithRepositories returns the profile listing repositories in place of its
+// flat single-repository fields.
+func (p RepositoryProfile) WithRepositories(repositories []Repository) RepositoryProfile {
+	p.RepositoryPath, p.WorktreesDir, p.RemoteName, p.GitHubRepo = "", "", "", ""
+	p.Repositories = repositories
+	if p.LastRepository != "" && p.Repository(p.LastRepository) == nil {
+		p.LastRepository = ""
+	}
+	return p
+}
+
+// UniqueRepositoryName returns name, with a numeric suffix when the project
+// already has a repository of that name.
+func (p RepositoryProfile) UniqueRepositoryName(name string) string {
+	if name == "" {
+		name = "repository"
+	}
+	candidate := name
+	for suffix := 2; p.Repository(candidate) != nil; suffix++ {
+		candidate = fmt.Sprintf("%s-%d", name, suffix)
+	}
+	return candidate
+}
+
+// SuggestWorktreesDir proposes the worktrees folder of a repository joining a
+// project, following the project's layout: repositories keeping worktrees in
+// a folder named after themselves (~/worktrees/api) suggest a sibling named
+// after the new one; otherwise the first repository's folder is shared, where
+// worktree folders get the repository name as a prefix. A project without
+// repositories keeps worktrees next to the repository, as setup does.
+func SuggestWorktreesDir(repositories []Repository, name string, repoPath string) string {
+	for _, repository := range repositories {
+		base := filepath.Base(repository.WorktreesDir)
+		if base == repository.Name || base == filepath.Base(repository.RepositoryPath) {
+			return filepath.Join(filepath.Dir(repository.WorktreesDir), name)
+		}
+	}
+	if len(repositories) > 0 && repositories[0].WorktreesDir != "" {
+		return repositories[0].WorktreesDir
+	}
+	return filepath.Dir(repoPath)
+}
+
+// RepositoryNameFromPath is the default repository name: its folder name.
+func RepositoryNameFromPath(path string) string {
+	path = strings.TrimRight(strings.TrimSpace(path), `/\`)
+	if path == "" {
+		return ""
+	}
+	return filepath.Base(path)
+}
+
+// Repositories lists the active project's repositories.
+func (c Config) Repositories() []Repository {
+	repositories := c.ActiveProfile.RepositoryList()
+	if len(c.ActiveProfile.Repositories) == 0 && len(repositories) == 1 && repositories[0].GitHubRepo == "" {
+		repositories[0].GitHubRepo = c.RepoSlug
+	}
+	return repositories
+}
+
+// MultiRepository reports whether the active project has more than one
+// repository, which is when the UI shows and asks for repositories.
+func (c Config) MultiRepository() bool {
+	return len(c.ActiveProfile.Repositories) > 1
+}
+
+// RepositoryName names the repository the Config is scoped to.
+func (c Config) RepositoryName() string {
+	for _, repository := range c.Repositories() {
+		if repository.RepositoryPath == c.ActiveProfile.RepositoryPath {
+			return repository.Name
+		}
+	}
+	return RepositoryNameFromPath(c.ActiveProfile.RepositoryPath)
+}
+
+// ForRepository scopes the Config to one repository of the active project: the
+// profile's flat fields and RepoSlug describe that repository afterwards. An
+// unknown name leaves the Config unchanged.
+func (c Config) ForRepository(name string) Config {
+	for _, repository := range c.ActiveProfile.Repositories {
+		if repository.Name != name {
+			continue
+		}
+		c.ActiveProfile.RepositoryPath = repository.RepositoryPath
+		c.ActiveProfile.WorktreesDir = repository.WorktreesDir
+		c.ActiveProfile.RemoteName = repository.RemoteName
+		c.ActiveProfile.GitHubRepo = repository.GitHubRepo
+		c.RepoSlug = repository.GitHubRepo
+		return c
+	}
+	// A project without a repositories list has one repository, which the
+	// Config already describes.
+	return c
+}
+
+// SharesWorktreesDir reports whether another repository of the project puts
+// its worktrees in the same folder as the scoped one, so folder names need the
+// repository name to stay apart.
+func (c Config) SharesWorktreesDir() bool {
+	if !c.MultiRepository() {
+		return false
+	}
+	scoped := filepath.Clean(c.ActiveProfile.WorktreesDir)
+	for _, repository := range c.ActiveProfile.Repositories {
+		if repository.RepositoryPath != c.ActiveProfile.RepositoryPath && filepath.Clean(repository.WorktreesDir) == scoped {
+			return true
+		}
+	}
+	return false
 }
 
 // JiraBoard is a board resolved from a pasted board URL. ID/Name/Projects are
@@ -99,19 +265,21 @@ type EditorTool struct {
 }
 
 type Worktree struct {
-	Name      string
-	Path      string
-	Branch    string
-	Head      string
-	Missing   bool
-	Detached  bool
-	Prunable  bool
-	IsMain    bool
-	Managed   bool
-	Status    RepoStatus
-	Commit    CommitInfo
-	PR        *PullRequest
-	LoadError string
+	Name     string
+	Path     string
+	Branch   string
+	Head     string
+	Missing  bool
+	Detached bool
+	Prunable bool
+	IsMain   bool
+	Managed  bool
+	// Repository names the project repository the worktree belongs to.
+	Repository string
+	Status     RepoStatus
+	Commit     CommitInfo
+	PR         *PullRequest
+	LoadError  string
 	// StatusPending is true while git status and the last commit have not been
 	// read in this session or an earlier, cached one. Rows render a placeholder
 	// instead of claiming such a worktree is clean.
@@ -321,6 +489,13 @@ type ConfigService interface {
 	NormalizeAppConfig(appConfig AppConfig) (AppConfig, bool, error)
 	ActiveProfile(appConfig AppConfig, homeDir string) (RepositoryProfile, error)
 	ResolveProfilePaths(profile RepositoryProfile, homeDir string) RepositoryProfile
+	// ResolveProject resolves a project for use: paths expanded, every
+	// repository listed with its GitHub slug (inferred from its remote when
+	// not configured), and the flat fields scoped to the first repository.
+	ResolveProject(ctx context.Context, profile RepositoryProfile, homeDir string) RepositoryProfile
+	// ReadAppConfig reads and normalizes the config file without rewriting
+	// it, so edits made outside the app can be picked up or reported.
+	ReadAppConfig(configPath string) (AppConfig, error)
 	FindAgent(agents []AgentTool, name string) *AgentTool
 	FindProfile(profiles []RepositoryProfile, name string) *RepositoryProfile
 	ExpandPath(path string, homeDir string) string
@@ -330,6 +505,8 @@ type ConfigService interface {
 	RepoRootFromDir(ctx context.Context, dir string) (string, bool)
 	ProfileFromRepo(ctx context.Context, homeDir string, repoPath string) RepositoryProfile
 	InferGitHubRepo(ctx context.Context, profile RepositoryProfile) string
+	// GitRemotes lists the remotes configured in a repository.
+	GitRemotes(ctx context.Context, repoPath string) []string
 	WriteAppConfig(configPath string, appConfig AppConfig) error
 	CheckGitHubCLI(ctx context.Context, repoSlug string) []string
 }
@@ -382,6 +559,8 @@ type OpenerService interface {
 	OpenBrowser(ctx context.Context, url string) error
 	OpenVSCodeWorktree(ctx context.Context, wt Worktree) error
 	OpenEditorWorktree(ctx context.Context, wt Worktree, editor EditorTool) error
+	// OpenEditorFile opens a single file, such as the config, in the editor.
+	OpenEditorFile(ctx context.Context, path string, editor EditorTool) error
 	OpenAgent(ctx context.Context, wt Worktree, agent AgentTool) error
 	OpenTerminal(ctx context.Context, wt Worktree) error
 	// Notify posts a notification in the terminal host; it is a no-op outside cmux.
