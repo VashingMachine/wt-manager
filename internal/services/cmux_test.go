@@ -77,14 +77,14 @@ func TestDetectTerminalAppRecognizesCmux(t *testing.T) {
 	}
 }
 
-// The workspace layout holds one pane: a focused agent tab running the agent
-// command followed by a shell tab, or only a shell tab when no agent is given.
+// The workspace layout holds one pane with a single tab: the focused agent tab
+// running the agent command, or only a shell tab when no agent is given.
 func TestCmuxWorkspaceLayout(t *testing.T) {
 	got, err := cmuxWorkspaceLayout(&AgentTool{Name: "claude", Command: "claude --resume"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"pane":{"surfaces":[{"type":"terminal","name":"claude","command":"claude --resume","focus":true},{"type":"terminal","name":"shell"}]}}`
+	want := `{"pane":{"surfaces":[{"type":"terminal","name":"claude","command":"claude --resume","focus":true}]}}`
 	if got != want {
 		t.Fatalf("agent layout = %s, want %s", got, want)
 	}
@@ -100,7 +100,7 @@ func TestCmuxWorkspaceLayout(t *testing.T) {
 }
 
 // Opening a worktree agent inside cmux creates a focused workspace named after
-// the worktree and rooted at its path, with the agent and shell tabs.
+// the worktree and rooted at its path, with only the agent tab.
 func TestOpenAgentInCmuxCreatesFocusedWorkspace(t *testing.T) {
 	stub := &cmuxStub{respond: func(args []string) (string, error) {
 		if slices.Contains(args, "new-workspace") {
@@ -124,8 +124,8 @@ func TestOpenAgentInCmuxCreatesFocusedWorkspace(t *testing.T) {
 			t.Fatalf("%s = %q, want %q", flag, got, want)
 		}
 	}
-	if !strings.Contains(argAfter(create, "--layout"), `"command":"claude"`) {
-		t.Fatalf("layout %q lacks agent command", argAfter(create, "--layout"))
+	if layout := argAfter(create, "--layout"); !strings.Contains(layout, `"command":"claude"`) || strings.Contains(layout, `"shell"`) {
+		t.Fatalf("layout %q is not a single agent tab", layout)
 	}
 }
 
@@ -267,7 +267,7 @@ func TestMatchCmuxWorkspaceTextOutput(t *testing.T) {
 }
 
 // If cmux rejects the layout, the workspace is still created by running the
-// agent directly and adding the shell tab afterwards.
+// agent directly, without adding a second tab.
 func TestCreateCmuxWorkspaceFallsBackWithoutLayout(t *testing.T) {
 	stub := &cmuxStub{respond: func(args []string) (string, error) {
 		switch {
@@ -290,9 +290,8 @@ func TestCreateCmuxWorkspaceFallsBackWithoutLayout(t *testing.T) {
 	if got := argAfter(stub.calls[1].Args, "--command"); got != "claude" {
 		t.Fatalf("fallback --command = %q, want claude", got)
 	}
-	surface := stub.find("new-surface")
-	if surface == nil || argAfter(surface, "--workspace") != "workspace:9" {
-		t.Fatalf("shell tab not added to the new workspace: %v", stub.calls)
+	if surface := stub.find("new-surface"); surface != nil {
+		t.Fatalf("fallback added an extra tab: %v", stub.calls)
 	}
 }
 

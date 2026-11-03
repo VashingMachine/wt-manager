@@ -29,7 +29,7 @@ func (m model) hasTextOrConfirmationModal() bool {
 	return m.filtering || m.creatingWorktree || m.askingPR || m.confirmingPRApproval ||
 		m.enteringTicketStatus || m.commentingTicket || m.enteringTicketAssignee ||
 		m.selectingAgent || m.selectingEnterAction || m.selectingProfile || m.selectingPRUser ||
-		m.pickingRepository || m.addingRepository != nil ||
+		m.pickingRepository || m.choosingTicketWorktree || m.addingRepository != nil ||
 		m.selectingTicketFilters || m.selectingTicketStatus || m.selectingTicketAssignee || m.selectingBoard
 }
 

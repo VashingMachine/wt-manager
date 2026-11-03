@@ -70,16 +70,15 @@ type cmuxLayout struct {
 	} `json:"pane"`
 }
 
-// cmuxWorkspaceLayout describes one pane: the agent tab (focused) followed by a
-// plain shell tab. Without an agent it is just the shell tab.
+// cmuxWorkspaceLayout describes one pane with a single focused tab: the agent
+// when one is given, otherwise a plain shell.
 func cmuxWorkspaceLayout(agent *AgentTool) (string, error) {
-	var layout cmuxLayout
+	surface := cmuxSurface{Type: "terminal", Name: "shell", Focus: true}
 	if agent != nil {
-		layout.Pane.Surfaces = append(layout.Pane.Surfaces, cmuxSurface{Type: "terminal", Name: agent.Name, Command: agent.Command, Focus: true})
-		layout.Pane.Surfaces = append(layout.Pane.Surfaces, cmuxSurface{Type: "terminal", Name: "shell"})
-	} else {
-		layout.Pane.Surfaces = append(layout.Pane.Surfaces, cmuxSurface{Type: "terminal", Name: "shell", Focus: true})
+		surface = cmuxSurface{Type: "terminal", Name: agent.Name, Command: agent.Command, Focus: true}
 	}
+	var layout cmuxLayout
+	layout.Pane.Surfaces = []cmuxSurface{surface}
 	encoded, err := json.Marshal(layout)
 	if err != nil {
 		return "", err
@@ -142,11 +141,7 @@ func createCmuxWorkspace(ctx context.Context, wt Worktree, agent *AgentTool) (st
 	if err != nil {
 		return "", layoutErr
 	}
-	ref := parseCmuxCreatedWorkspace(output)
-	if agent != nil && ref != "" {
-		_, _ = runCmux(ctx, "", "new-surface", "--type", "terminal", "--workspace", ref, "--focus", "false")
-	}
-	return ref, nil
+	return parseCmuxCreatedWorkspace(output), nil
 }
 
 // parseCmuxCreatedWorkspace reads the ref from "OK workspace:<id>".

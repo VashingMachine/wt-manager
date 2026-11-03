@@ -314,7 +314,7 @@ In worktree mode, `enter` runs the configured `defaultEnterAction`: `vscode`, `a
 
 When `wt-manager` runs inside a cmux terminal (detected from `CMUX_WORKSPACE_ID` / `CMUX_SURFACE_ID`, since cmux reports `TERM_PROGRAM=ghostty`), it drives cmux through its `cmux` CLI instead of UI automation:
 
-- `i`, and `enter` when `defaultEnterAction` is `agent` or `terminal`, create a focused cmux workspace named after the worktree and rooted at its path. The `agent` action opens an agent tab plus a shell tab in one pane; `terminal` opens only the shell tab. If a workspace for that worktree already exists it is selected instead. `vscode` opens the configured editor.
+- `i`, and `enter` when `defaultEnterAction` is `agent` or `terminal`, create a focused cmux workspace named after the worktree and rooted at its path. The `agent` action opens a single agent tab; `terminal` opens a single shell tab. If a workspace for that worktree already exists it is selected instead. `vscode` opens the configured editor.
 - The new workspace gets the worktree's PR linked in the cmux sidebar (`cmux pr`) and a `jira` status pill when the branch name contains a ticket key.
 - `o` on a PR or JIRA ticket opens the page in a cmux browser split next to `wt-manager`; later opens reuse that split.
 - Approving a PR posts a cmux notification.

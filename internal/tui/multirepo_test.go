@@ -351,7 +351,7 @@ func TestTicketWorktreeAsksForRepository(t *testing.T) {
 	}
 }
 
-// Assures that choosing a repository where the ticket already has a worktree reuses it, and opening a ticket's worktree never asks.
+// Assures that choosing a repository where the ticket already has a worktree offers to reuse it, and opening a ticket's worktree never asks.
 func TestTicketWorktreeReusesWorktreeInChosenRepository(t *testing.T) {
 	spy := newMultiRepoSpy()
 	m := ticketModeModel(t, spy)
@@ -359,6 +359,10 @@ func TestTicketWorktreeReusesWorktreeInChosenRepository(t *testing.T) {
 	m.allWorktrees = append(m.allWorktrees, existing)
 
 	m, _ = pressKeys(t, m, "n", "2")
+	if !m.choosingTicketWorktree || m.ticketWorktreeChoice.Existing.Path != existing.Path {
+		t.Fatalf("choosing a repository with a ticket worktree did not offer it: %#v", m.ticketWorktreeChoice)
+	}
+	m, _ = pressKeys(t, m, "enter")
 	if len(spy.created) != 0 || m.pendingWorktreePath != existing.Path {
 		t.Fatalf("created = %v, pending = %q; want the existing web worktree selected", spy.created, m.pendingWorktreePath)
 	}

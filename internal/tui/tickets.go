@@ -60,6 +60,7 @@ func (m model) switchMode(target viewMode) (tea.Model, tea.Cmd) {
 	m.mode = target
 	m.filtering = false
 	m.creatingWorktree = false
+	m.choosingTicketWorktree = false
 	m.selectingEnterAction = false
 	m.askingPR = false
 	m.selectingPRUser = false
@@ -131,7 +132,7 @@ func (m model) startTicketWorktreeCreation(ticket Ticket, action string) (tea.Mo
 		if action != "" {
 			return m.openWorktreeWithAction(*ticket.Worktree, action)
 		}
-		return m.selectTicketWorktree(ticket.Key, *ticket.Worktree)
+		return m.openTicketWorktreeChoice(ticket, *ticket.Worktree, "")
 	}
 	return m.createTicketWorktree(ticket, m.cfg, action)
 }
@@ -146,7 +147,7 @@ func (m model) startTicketWorktreeInRepository(ticket Ticket, repository string,
 		if action != "" {
 			next, cmd = m.openWorktreeWithAction(*existing, action)
 		} else {
-			next, cmd = m.selectTicketWorktree(ticket.Key, *existing)
+			next, cmd = m.openTicketWorktreeChoice(ticket, *existing, repository)
 		}
 		return next, tea.Batch(cmd, remember)
 	}

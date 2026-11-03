@@ -320,6 +320,9 @@ type model struct {
 	repoPickerAction               string
 	repoRemoveArmed                string
 	newWorktreeRepository          string
+	newWorktreeTicketKey           string
+	choosingTicketWorktree         bool
+	ticketWorktreeChoice           ticketWorktreeChoice
 	addingRepository               *repositoryEditor
 	showingHelp                    bool
 	agentCursor                    int
@@ -1079,6 +1082,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateRepositoryPicker(msg)
 		}
 
+		if m.choosingTicketWorktree {
+			return m.updateTicketWorktreeChoice(msg)
+		}
+
 		if m.addingRepository != nil {
 			return m.updateAddRepository(msg)
 		}
@@ -1630,6 +1637,7 @@ func (m model) updateNewWorktree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc":
 		m.creatingWorktree = false
+		m.newWorktreeTicketKey = ""
 		m.newInput.Blur()
 		return m, m.setTransientStatus("New worktree cancelled")
 	case "enter":
@@ -1643,6 +1651,11 @@ func (m model) updateNewWorktree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.creatingWorktree = false
 		m.newInput.Blur()
 		cfg := m.cfg.ForRepository(m.newWorktreeRepository)
+		if key := m.newWorktreeTicketKey; key != "" {
+			m.newWorktreeTicketKey = ""
+			next, cmd := m.createNamedTicketWorktree(key, cfg, name)
+			return next, tea.Batch(cmd, m.rememberRepository(m.newWorktreeRepository))
+		}
 		m.beginWorktreeCreation(Worktree{
 			Name:       name,
 			Branch:     name,
@@ -1929,6 +1942,8 @@ func (m *model) resetForProject() tea.Cmd {
 	m.repoRemoveArmed = ""
 	m.addingRepository = nil
 	m.newWorktreeRepository = ""
+	m.newWorktreeTicketKey = ""
+	m.choosingTicketWorktree = false
 	m.showAll = false
 	m.showPRBody = false
 	m.prDiffMode = false

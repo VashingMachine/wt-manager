@@ -109,6 +109,9 @@ func (m model) View() string {
 	if m.pickingRepository {
 		view = overlay(view, renderRepositoryPickerModal(m), m.width, m.height)
 	}
+	if m.choosingTicketWorktree {
+		view = overlay(view, renderTicketWorktreeChoiceModal(m), m.width, m.height)
+	}
 	if m.addingRepository != nil {
 		view = overlay(view, renderAddRepositoryModal(m), m.width, m.height)
 	}
@@ -874,6 +877,9 @@ func (m model) focusLabel() string {
 	if m.pickingRepository {
 		return "repository selector"
 	}
+	if m.choosingTicketWorktree {
+		return "ticket worktree"
+	}
 	if m.addingRepository != nil {
 		return "add repository"
 	}
@@ -1225,7 +1231,7 @@ func renderHelpModal(m model) string {
 		helpKeyLine("t", "change selected ticket status"),
 		helpKeyLine("C", "comment on selected ticket"),
 		helpKeyLine("A", "assign selected ticket"),
-		helpKeyLine("n", "create or reuse ticket worktree"),
+		helpKeyLine("n", "create ticket worktree (asks when one exists)"),
 		helpKeyLine("o", "open selected ticket in browser"),
 		"",
 		renderKeyHints([]keyHint{{"h/enter/esc", "close"}}),
