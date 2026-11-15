@@ -223,6 +223,7 @@ func (m model) chooseRepository(name string) (tea.Model, tea.Cmd) {
 func (m model) openNewWorktreeInput(repository string) (tea.Model, tea.Cmd) {
 	m.creatingWorktree = true
 	m.newWorktreeRepository = repository
+	m.offerStackParent(repository)
 	m.newInput.SetValue("")
 	m.newInput.Focus()
 	m.statusMessage = "Enter branch/worktree name"

@@ -2,10 +2,13 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
+	"time"
 
 	"github.com/VashingMachine/wt-manager/internal/cache"
+	"github.com/VashingMachine/wt-manager/internal/core"
 )
 
 type Service struct {
@@ -139,6 +142,52 @@ func checkGitHubCLI(ctx context.Context, repoSlug string) []string {
 func (s *Service) CreateWorktree(ctx context.Context, cfg Config, branch string, path string) (bool, error) {
 	ctx = s.commandContext(ctx)
 	return createWorktreeWith(ctx, cfg, branch, path, s.fetches.fetch)
+}
+
+func (s *Service) CreateStackedWorktree(ctx context.Context, cfg Config, branch string, path string, parent string) error {
+	ctx = s.commandContext(ctx)
+	return createStackedWorktree(ctx, cfg, branch, path, parent)
+}
+
+func (s *Service) SetStackParent(ctx context.Context, cfg Config, wt Worktree, parent string) error {
+	ctx = s.commandContext(ctx)
+	return setStackParent(ctx, cfg, wt, parent)
+}
+
+func (s *Service) RestackWorktree(ctx context.Context, cfg Config, wt Worktree, options RestackOptions) (RestackResult, error) {
+	ctx = s.commandContext(ctx)
+	return restackWorktree(ctx, cfg, wt, options, s.fetches.fetch, func(ctx context.Context, branch string) bool {
+		return s.branchMergedOnGitHub(ctx, cfg, branch)
+	})
+}
+
+// branchMergedOnGitHub asks GitHub about one branch. The PR labels cover only
+// the latest pull requests of a repository, and in a busy one a parent merged
+// a few days ago is no longer among them.
+func (s *Service) branchMergedOnGitHub(ctx context.Context, cfg Config, branch string) bool {
+	if requireGitHub(cfg) != nil {
+		return false
+	}
+	select {
+	case s.ghLimit <- struct{}{}:
+		defer func() { <-s.ghLimit }()
+	case <-ctx.Done():
+		return false
+	}
+	output, err := runCommand(ctx, cfg.ActiveProfile.RepositoryPath, "gh", "pr", "list", "--repo", cfg.RepoSlug, "--head", branch, "--state", "all", "--limit", "20", "--json", "headRefName,number,state,isCrossRepository")
+	if err != nil {
+		return false
+	}
+	var prs []PullRequest
+	if err := json.Unmarshal([]byte(output), &prs); err != nil {
+		return false
+	}
+	return core.BranchMerged(prs, branch)
+}
+
+func (s *Service) SweepCandidates(ctx context.Context, cfg Config, olderThan time.Duration) ([]SweepCandidate, error) {
+	ctx = s.commandContext(ctx)
+	return sweepCandidates(ctx, cfg, olderThan, time.Now())
 }
 
 func (s *Service) RemoveWorktree(ctx context.Context, cfg Config, wt Worktree) error {

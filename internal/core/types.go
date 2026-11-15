@@ -27,6 +27,28 @@ type AppConfig struct {
 	Agents             []AgentTool         `json:"agents"`
 	DefaultEnterAction string              `json:"defaultEnterAction"`
 	Editor             EditorTool          `json:"editor"`
+	Sweep              SweepConfig         `json:"sweep"`
+}
+
+// DefaultSweepOlderThanDays is how long a worktree stays untouched before the
+// sweep command offers it, unless the config says otherwise.
+const DefaultSweepOlderThanDays = 7
+
+// SweepConfig tunes the sweep command, which removes worktrees nobody has
+// worked in for a while.
+type SweepConfig struct {
+	// OlderThanDays is how many days a worktree must have gone without a
+	// commit, checkout, pull or rebase before sweep offers to remove it.
+	OlderThanDays int `json:"olderThanDays"`
+}
+
+// OlderThan is the idle time after which a worktree is offered for sweeping.
+func (c SweepConfig) OlderThan() time.Duration {
+	days := c.OlderThanDays
+	if days <= 0 {
+		days = DefaultSweepOlderThanDays
+	}
+	return time.Duration(days) * 24 * time.Hour
 }
 
 const (
@@ -349,12 +371,23 @@ type Worktree struct {
 	Prunable bool
 	IsMain   bool
 	Managed  bool
+	// Locked is set for worktrees protected with `git worktree lock`.
+	Locked bool
 	// Repository names the project repository the worktree belongs to.
 	Repository string
-	Status     RepoStatus
-	Commit     CommitInfo
-	PR         *PullRequest
-	LoadError  string
+	// Stack names the branch this worktree's branch was started on top of.
+	Stack StackLink
+	// StackDepth counts the stack parents listed above the worktree; rows are
+	// indented by it.
+	StackDepth int
+	// ParentMerged is set once the pull request of the stack parent is known
+	// to be merged. Git cannot tell after a squash merge; whoever holds the
+	// pull requests fills it in.
+	ParentMerged bool
+	Status       RepoStatus
+	Commit       CommitInfo
+	PR           *PullRequest
+	LoadError    string
 	// StatusPending is true while git status and the last commit have not been
 	// read in this session or an earlier, cached one. Rows render a placeholder
 	// instead of claiming such a worktree is clean.
@@ -370,6 +403,59 @@ type RepoStatus struct {
 	Untracked int
 	Conflicts int
 	Files     []string
+	// ParentBehind counts the commits of the stack parent the branch does not
+	// contain yet, and ParentGone reports that the parent branch no longer
+	// exists. Both are read only for stacked worktrees.
+	ParentBehind int
+	ParentGone   bool
+}
+
+// StackLink records that a branch was started on top of another branch
+// instead of the default one. It lives in the repository's git config
+// (branch.<name>.wt-manager-parent and -base), so it is shared by every
+// worktree and disappears together with the branch.
+type StackLink struct {
+	// Parent is the local branch the branch sits on.
+	Parent string
+	// Base is the parent commit the branch was started from or last restacked
+	// onto: everything after it belongs to the branch itself.
+	Base string
+}
+
+// Stacked reports whether the worktree's branch sits on another branch.
+func (w Worktree) Stacked() bool {
+	return w.Stack.Parent != ""
+}
+
+// RestackOptions steers RestackWorktree.
+type RestackOptions struct {
+	// MergedBranches names branches known to be merged; they are skipped when
+	// looking for the branch to rebase onto.
+	MergedBranches []string
+	// OntoDefault rebases onto the remote's default branch whatever the state
+	// of the parent, which takes the worktree out of its stack.
+	OntoDefault bool
+}
+
+// RestackResult describes what RestackWorktree did.
+type RestackResult struct {
+	// Onto is what the branch sits on now: a local branch, or a remote ref
+	// such as origin/main.
+	Onto string
+	// Parent is the new stack parent; empty when the worktree left its stack.
+	Parent string
+	// Rebased is false when the branch already contained Onto and only the
+	// recorded stack link changed.
+	Rebased bool
+	// Commits is how many commits were replayed.
+	Commits int
+}
+
+// SweepCandidate is a worktree the sweep command offers to remove: clean and
+// untouched for longer than the configured time.
+type SweepCandidate struct {
+	Worktree     Worktree
+	LastActivity time.Time
 }
 
 type CommitInfo struct {
@@ -385,10 +471,33 @@ type PullRequest struct {
 	URL         string `json:"url"`
 	State       string `json:"state"`
 	Body        string `json:"body"`
-	Author      struct {
+	// IsCrossRepository marks a PR opened from a fork, whose head branch name
+	// says nothing about a local branch of the same name.
+	IsCrossRepository bool `json:"isCrossRepository,omitempty"`
+	Author            struct {
 		Login string `json:"login"`
 		Name  string `json:"name"`
 	} `json:"author"`
+}
+
+// BranchMerged reports whether a branch of the repository itself has a merged
+// pull request and no open one: its changes are in, and what was stacked on
+// it should move on. Pull requests from forks are ignored, because their head
+// branch only shares a name with a local one.
+func BranchMerged(pullRequests []PullRequest, branch string) bool {
+	merged := false
+	for _, pr := range pullRequests {
+		if pr.HeadRefName != branch || pr.IsCrossRepository {
+			continue
+		}
+		switch strings.ToUpper(pr.State) {
+		case "OPEN":
+			return false
+		case "MERGED":
+			merged = true
+		}
+	}
+	return merged
 }
 
 type RemotePullRequest struct {
@@ -599,6 +708,20 @@ type WorktreeService interface {
 	// and caches them.
 	LoadWorktreeStatus(ctx context.Context, cfg Config, wt Worktree) (Worktree, error)
 	CreateWorktree(ctx context.Context, cfg Config, branch string, path string) (bool, error)
+	// CreateStackedWorktree creates a worktree for a new branch started from
+	// the tip of the local branch parent, and records parent as the branch it
+	// is stacked on.
+	CreateStackedWorktree(ctx context.Context, cfg Config, branch string, path string, parent string) error
+	// SetStackParent records the branch a worktree's branch is stacked on. An
+	// empty parent takes the worktree out of its stack.
+	SetStackParent(ctx context.Context, cfg Config, wt Worktree, parent string) error
+	// RestackWorktree rebases the commits of a stacked worktree's own branch
+	// onto its parent, or, once the parent is merged or gone, onto the nearest
+	// surviving branch below it in the stack and finally the default branch.
+	RestackWorktree(ctx context.Context, cfg Config, wt Worktree, options RestackOptions) (RestackResult, error)
+	// SweepCandidates lists the repository's managed worktrees that have no
+	// uncommitted work and saw no activity for olderThan, oldest first.
+	SweepCandidates(ctx context.Context, cfg Config, olderThan time.Duration) ([]SweepCandidate, error)
 	RemoveWorktree(ctx context.Context, cfg Config, wt Worktree) error
 	EnsurePullRequestWorktree(ctx context.Context, cfg Config, pullRequest RemotePullRequest) (Worktree, bool, error)
 	CreateWorktreePath(cfg Config, name string) string

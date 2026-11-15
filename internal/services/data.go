@@ -97,6 +97,7 @@ func defaultAppConfig() AppConfig {
 		DefaultAgent:       "codex",
 		DefaultEnterAction: core.EnterActionVSCode,
 		Editor:             EditorTool{Name: "VS Code", Command: "code"},
+		Sweep:              core.SweepConfig{OlderThanDays: core.DefaultSweepOlderThanDays},
 		Agents: []AgentTool{
 			{Name: "codex", Command: "codex"},
 			{Name: "opencode", Command: "opencode"},
@@ -171,6 +172,10 @@ func normalizeAppConfig(appConfig AppConfig) (AppConfig, bool, error) {
 	}
 	if normalized := normalizeEnterAction(appConfig.DefaultEnterAction); normalized != appConfig.DefaultEnterAction {
 		appConfig.DefaultEnterAction = normalized
+		changed = true
+	}
+	if appConfig.Sweep.OlderThanDays <= 0 {
+		appConfig.Sweep.OlderThanDays = defaults.Sweep.OlderThanDays
 		changed = true
 	}
 	if len(appConfig.Agents) == 0 {
@@ -1217,6 +1222,8 @@ func discoverWorktrees(ctx context.Context, cfg Config) ([]Worktree, error) {
 			current.Branch = "detached"
 		case strings.HasPrefix(line, "prunable"):
 			current.Prunable = true
+		case line == "locked" || strings.HasPrefix(line, "locked "):
+			current.Locked = true
 		}
 	}
 	flush()
@@ -1226,6 +1233,7 @@ func discoverWorktrees(ctx context.Context, cfg Config) ([]Worktree, error) {
 	}
 
 	labelWorktrees(cfg, entries)
+	attachStackLinks(entries, readStackLinks(ctx, repoPath))
 	return entries, nil
 }
 
@@ -1274,8 +1282,13 @@ func readWorktreeStatus(ctx context.Context, wt *Worktree) []string {
 		commit    CommitInfo
 		commitErr error
 	)
+	var (
+		parentBehind int
+		parentGone   bool
+	)
 	wg.Go(func() { status, statusErr = loadRepoStatus(ctx, wt.Path) })
 	wg.Go(func() { commit, commitErr = loadCommitInfo(ctx, wt.Path) })
+	wg.Go(func() { parentBehind, parentGone = stackParentState(ctx, *wt) })
 	wg.Wait()
 
 	var warnings []string
@@ -1284,6 +1297,7 @@ func readWorktreeStatus(ctx context.Context, wt *Worktree) []string {
 		wt.LoadError = statusErr.Error()
 		warnings = append(warnings, fmt.Sprintf("status failed for %s", wt.Name))
 	} else {
+		status.ParentBehind, status.ParentGone = parentBehind, parentGone
 		wt.Status = status
 	}
 	if commitErr != nil {
@@ -1419,7 +1433,7 @@ func fetchPullRequestIndex(ctx context.Context, cfg Config) ([]PullRequest, erro
 	if _, err := exec.LookPath("gh"); err != nil {
 		return nil, errors.New("gh not found; run setup after installing GitHub CLI")
 	}
-	output, err := runCommand(ctx, cfg.ActiveProfile.RepositoryPath, "gh", "pr", "list", "--repo", cfg.RepoSlug, "--state", "all", "--limit", "200", "--json", "headRefName,number,title,url,state,body,author")
+	output, err := runCommand(ctx, cfg.ActiveProfile.RepositoryPath, "gh", "pr", "list", "--repo", cfg.RepoSlug, "--state", "all", "--limit", "200", "--json", "headRefName,number,title,url,state,body,author,isCrossRepository")
 	if err != nil {
 		return nil, err
 	}

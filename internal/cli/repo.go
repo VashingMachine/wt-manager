@@ -19,10 +19,12 @@ import (
 	"github.com/VashingMachine/wt-manager/internal/services"
 )
 
-// Usage documents the repo commands.
+// Usage documents the commands.
 const Usage = `usage: wt-manager repo add [folder]       add a repository to a project
        wt-manager repo remove [repository]  remove a repository from a project
-       wt-manager repo list                 list projects and their repositories`
+       wt-manager repo list                 list projects and their repositories
+       wt-manager sweep [--dry-run] [--yes] [--days N] [--project name]
+                                            remove clean worktrees untouched for days`
 
 // Options connects a command to the user's terminal and environment.
 type Options struct {
@@ -36,7 +38,7 @@ type Options struct {
 
 // IsCommand reports whether args start a command handled here.
 func IsCommand(args []string) bool {
-	return len(args) > 0 && args[0] == "repo"
+	return len(args) > 0 && (args[0] == "repo" || args[0] == "sweep")
 }
 
 // Main runs a command against the real terminal and environment.
@@ -53,10 +55,17 @@ func Main(args []string) int {
 // Run executes the command in opts.Args and returns the process exit code.
 func Run(opts Options) int {
 	args := opts.Args
+	c := &command{opts: opts, prompt: &prompter{in: bufio.NewReader(opts.In), out: opts.Out}}
+	if len(args) > 0 && args[0] == "sweep" {
+		code, err := c.runSweep(args[1:])
+		if err != nil {
+			fmt.Fprintf(opts.Out, "wt-manager: %v\n", err)
+		}
+		return code
+	}
 	if len(args) > 0 && args[0] == "repo" {
 		args = args[1:]
 	}
-	c := &command{opts: opts, prompt: &prompter{in: bufio.NewReader(opts.In), out: opts.Out}}
 	var err error
 	switch {
 	case len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help":

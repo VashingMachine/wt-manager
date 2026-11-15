@@ -79,6 +79,7 @@ func (s *Service) DiscoverWorktrees(ctx context.Context, cfg Config, showAll boo
 	worktrees := filterManaged(all, showAll)
 	s.overlayWorktreeStatus(cfg, worktrees)
 	sortWorktrees(worktrees)
+	orderByStack(worktrees)
 	return worktrees, nil
 }
 
@@ -92,6 +93,7 @@ func (s *Service) PeekWorktrees(cfg Config, showAll bool) ([]Worktree, bool) {
 	worktrees := filterManaged(all, showAll)
 	s.overlayWorktreeStatus(cfg, worktrees)
 	sortWorktrees(worktrees)
+	orderByStack(worktrees)
 	return worktrees, true
 }
 

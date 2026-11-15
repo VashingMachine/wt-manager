@@ -119,6 +119,9 @@ type keyMap struct {
 	PRRepository  key.Binding
 	Setup         key.Binding
 	New           key.Binding
+	StackNew      key.Binding
+	Restack       key.Binding
+	Sweep         key.Binding
 	Delete        key.Binding
 	Quit          key.Binding
 }
@@ -195,6 +198,9 @@ func defaultKeys() keyMap {
 		PRRepository:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "PR repository")),
 		Setup:         key.NewBinding(key.WithKeys("I"), key.WithHelp("I", "edit project")),
 		New:           key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new worktree")),
+		StackNew:      key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "new worktree on top of selected")),
+		Restack:       key.NewBinding(key.WithKeys("B"), key.WithHelp("B", "restack worktree")),
+		Sweep:         key.NewBinding(key.WithKeys("X"), key.WithHelp("X", "sweep stale worktrees")),
 		Delete:        key.NewBinding(key.WithKeys("d"), key.WithHelp("d d", "delete worktree")),
 		Quit:          key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 	}
@@ -205,7 +211,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Palette, k.Up, k.Down, k.Focus, k.HelpPage, k.Refresh, k.ToggleAll, k.PRRadar, k.TicketMode, k.Filter}, {k.StateFilter, k.SprintOnly, k.BoardMenu, k.SetStatus, k.WriteNote, k.AssignSelf, k.UserFilter, k.MineFilter, k.BranchView, k.FailedGHA, k.TicketFilters, k.PRDiff, k.ApprovePR, k.AskPR, k.PRRepository, k.New, k.ProfileMenu, k.Setup, k.ToggleBody, k.OpenPR, k.OpenCode, k.OpenAgent, k.EnterAction, k.AgentMenu, k.Delete, k.Quit}}
+	return [][]key.Binding{{k.Palette, k.Up, k.Down, k.Focus, k.HelpPage, k.Refresh, k.ToggleAll, k.PRRadar, k.TicketMode, k.Filter}, {k.StateFilter, k.SprintOnly, k.BoardMenu, k.SetStatus, k.WriteNote, k.AssignSelf, k.UserFilter, k.MineFilter, k.BranchView, k.FailedGHA, k.TicketFilters, k.PRDiff, k.ApprovePR, k.AskPR, k.PRRepository, k.New, k.StackNew, k.Restack, k.Sweep, k.ProfileMenu, k.Setup, k.ToggleBody, k.OpenPR, k.OpenCode, k.OpenAgent, k.EnterAction, k.AgentMenu, k.Delete, k.Quit}}
 }
 
 type model struct {
@@ -370,6 +376,19 @@ type model struct {
 	ticketMutations map[int]ticketMutation
 	nextMutationID  int
 	prApprovals     map[int]string
+	// Stacking: the worktree a new one is started on top of (none when its
+	// Path is empty), and the one tab switches to in the new-worktree input.
+	newWorktreeParent       Worktree
+	newWorktreeParentOption Worktree
+	pickingStackParent      bool
+	stackPicker             stackParentPicker
+	confirmingRestack       bool
+	restackTarget           Worktree
+	sweeping                bool
+	sweep                   sweepDialog
+	// statusAfterLoad replaces the usual load summary once, so the outcome of
+	// an action survives the refresh it triggers.
+	statusAfterLoad string
 }
 
 func NewModel(cfg Config, services core.Services) model {
@@ -661,11 +680,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusError = false
 		m.attachPRIndex()
-		if msg.Warning != "" {
+		switch {
+		case msg.Warning != "":
 			m.statusMessage = msg.Warning
-		} else {
+		case m.statusAfterLoad != "":
+			m.statusMessage = m.statusAfterLoad
+		default:
 			m.statusMessage = m.loadSummary()
 		}
+		m.statusAfterLoad = ""
 		m.applyFilter()
 		m.pendingWorktreePath = ""
 		enrich := m.startWorktreeEnrichment()
@@ -1021,6 +1044,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, message))
+	case stackLinkResult:
+		return m.handleStackLinkResult(msg)
+	case restackResult:
+		return m.handleRestackResult(msg)
+	case sweepScanResult:
+		return m.handleSweepScan(msg)
 	case deleteArmTick:
 		if m.deleteArmedPath != msg.Path || !m.deleteArmedAt.Equal(msg.ArmedAt) {
 			return m, nil
@@ -1084,6 +1113,18 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.choosingTicketWorktree {
 			return m.updateTicketWorktreeChoice(msg)
+		}
+
+		if m.pickingStackParent {
+			return m.updateStackParentPicker(msg)
+		}
+
+		if m.confirmingRestack {
+			return m.updateRestackConfirmation(msg)
+		}
+
+		if m.sweeping {
+			return m.updateSweepDialog(msg)
 		}
 
 		if m.addingRepository != nil {
@@ -1551,6 +1592,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.openNewWorktreeInput("")
 		}
+		if key.Matches(msg, m.keys.StackNew) {
+			return m.startStackedWorktree()
+		}
+		if key.Matches(msg, m.keys.Restack) {
+			return m.openRestackConfirmation()
+		}
+		if key.Matches(msg, m.keys.Sweep) {
+			return m.startSweepScan()
+		}
 		if key.Matches(msg, m.keys.Delete) {
 			if !m.isWorktreeMode() {
 				m.statusMessage = "Delete is available for local worktrees"
@@ -1638,8 +1688,12 @@ func (m model) updateNewWorktree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.creatingWorktree = false
 		m.newWorktreeTicketKey = ""
+		m.clearNewWorktreeParent()
 		m.newInput.Blur()
 		return m, m.setTransientStatus("New worktree cancelled")
+	case "tab":
+		m.toggleNewWorktreeParent()
+		return m, nil
 	case "enter":
 		name := strings.TrimSpace(m.newInput.Value())
 		if name == "" {
@@ -1651,6 +1705,12 @@ func (m model) updateNewWorktree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.creatingWorktree = false
 		m.newInput.Blur()
 		cfg := m.cfg.ForRepository(m.newWorktreeRepository)
+		parent := m.newWorktreeParent
+		m.clearNewWorktreeParent()
+		if parent.Path != "" && m.newWorktreeTicketKey == "" {
+			next, cmd := m.createStackedWorktree(cfg, name, parent)
+			return next, tea.Batch(cmd, m.rememberRepository(m.newWorktreeRepository))
+		}
 		if key := m.newWorktreeTicketKey; key != "" {
 			m.newWorktreeTicketKey = ""
 			next, cmd := m.createNamedTicketWorktree(key, cfg, name)
@@ -1943,6 +2003,11 @@ func (m *model) resetForProject() tea.Cmd {
 	m.addingRepository = nil
 	m.newWorktreeRepository = ""
 	m.newWorktreeTicketKey = ""
+	m.clearNewWorktreeParent()
+	m.pickingStackParent = false
+	m.confirmingRestack = false
+	m.sweeping = false
+	m.statusAfterLoad = ""
 	m.choosingTicketWorktree = false
 	m.showAll = false
 	m.showPRBody = false
@@ -2121,7 +2186,7 @@ func (m *model) beginWorktreeCreation(worktree Worktree, ticketKey string) {
 		PreviousIndex: m.selectedIndex,
 	}
 	if !worktreeExists(m.allWorktrees, worktree.Path) {
-		m.allWorktrees = append(m.allWorktrees, worktree)
+		m.allWorktrees = m.insertBelowStackParent(m.allWorktrees, worktree)
 	}
 	if ticketKey != "" {
 		m.setTicketWorktree(ticketKey, &worktree)
@@ -2397,6 +2462,7 @@ func (m model) activeColumns() []table.Column {
 // worktreeRow leads with the repository when the project has several.
 func (m model) worktreeRow(wt Worktree, compact bool) []string {
 	cells := worktreeRowCells(wt, compact)
+	cells[0] = stackedName(wt)
 	if !m.cfg.MultiRepository() {
 		return cells
 	}
@@ -2702,7 +2768,7 @@ func (m *model) updateDetailContent() {
 	if m.cfg.MultiRepository() {
 		repository = m.worktreeRepository(*selected)
 	}
-	m.detail.SetContent(worktreeDetailViewContent(selected, repository, m.showPRBody, m.detail.Width))
+	m.detail.SetContent(worktreeDetailViewContentWithStack(selected, repository, m.stackDetailLines(*selected), m.showPRBody, m.detail.Width))
 	m.detail.GotoTop()
 }
 
@@ -3126,6 +3192,12 @@ func detailViewContent(wt *Worktree, showPRBody bool, width int) string {
 
 // worktreeDetailViewContent names the worktree's repository when one is given.
 func worktreeDetailViewContent(wt *Worktree, repository string, showPRBody bool, width int) string {
+	return worktreeDetailViewContentWithStack(wt, repository, nil, showPRBody, width)
+}
+
+// worktreeDetailViewContentWithStack also says where the worktree sits in a
+// stack, in the lines the model prepared.
+func worktreeDetailViewContentWithStack(wt *Worktree, repository string, stack []string, showPRBody bool, width int) string {
 	if wt == nil {
 		return "No worktree selected"
 	}
@@ -3140,6 +3212,7 @@ func worktreeDetailViewContent(wt *Worktree, repository string, showPRBody bool,
 		fmt.Sprintf("Branch: %s", wt.Branch),
 		fmt.Sprintf("State: %s", stateDisplay(*wt)),
 	)
+	lines = append(lines, stack...)
 	if wt.StatusPending {
 		lines = append(lines, "Tracking: reading git status...", "Changes: reading git status...")
 	} else {

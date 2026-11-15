@@ -312,6 +312,7 @@ func (m *model) attachPRIndex() {
 	}
 	attach(m.allWorktrees)
 	attach(m.visibleWorktrees)
+	m.markMergedParents()
 }
 
 // loadMissingChecks requests check runs for the most relevant PRs, open ones

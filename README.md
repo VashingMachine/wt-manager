@@ -17,6 +17,8 @@ Profiles can optionally enable a third JIRA Tickets view backed by Atlassian CLI
 - Edit the configuration from the app: open the JSON file in your editor, add or remove project repositories from the command palette, and have saved edits applied while the app runs.
 - Create worktrees from existing local branches, remote branches, or new branches.
 - Delete worktrees with a double-press confirmation.
+- Stack a worktree on top of another one, see stacks as a tree, and restack with one key when the parent moves or gets merged.
+- Sweep clean worktrees nobody has touched for a configurable number of days.
 - Configure what `enter` does for selected worktrees.
 - Search commands, settings, profiles, and worktrees from a colorful command palette.
 - Inspect full execution output and errors in a scrollable session log viewer.
@@ -140,9 +142,12 @@ Example:
     { "name": "copilot", "command": "copilot" }
   ],
   "defaultEnterAction": "vscode",
-  "editor": { "name": "VS Code", "command": "code" }
+  "editor": { "name": "VS Code", "command": "code" },
+  "sweep": { "olderThanDays": 7 }
 }
 ```
+
+`sweep.olderThanDays` is how long a clean worktree must have gone untouched before [sweep](#sweeping-stale-worktrees) offers to remove it. It defaults to 7.
 
 If `githubRepo` is empty, `wt-manager` tries to infer it from the configured remote when that remote points to GitHub.
 
@@ -204,6 +209,7 @@ Added web to shop. A running wt-manager picks the change up within a few seconds
 - `wt-manager repo add [folder]` adds a repository. The defaults are the git repository you run it in, the default project, the folder name (made unique within the project), a worktrees folder following the project's layout, `origin` (or the repository's only remote), and the GitHub repository of that remote. Naming a project that does not exist creates it; with no config at all, the first project is created from the repository.
 - `wt-manager repo remove [repository]` removes a repository from a project, after a `y/N` confirmation that defaults to no. It suggests the repository you run it in and accepts a number or a name. Removing a project's only repository offers to remove the project. Folders and worktrees stay on disk.
 - `wt-manager repo list` shows every project and its repositories.
+- `wt-manager sweep` removes stale worktrees without opening the UI; see [Sweeping Stale Worktrees](#sweeping-stale-worktrees).
 
 ### Editing the configuration from the app
 
@@ -252,7 +258,10 @@ The cache only speeds things up: deleting the file is safe, and if it cannot be 
 | `e` | Choose the default worktree Enter action |
 | `esc` | Close full-screen PR diff, clear filter, or cancel the current input |
 | `A` | Approve selected PR in PR Radar after confirmation |
-| `n` | Create a worktree (asks for the repository when the project has several) |
+| `n` | Create a worktree (asks for the repository when the project has several); `tab` in the input starts it on top of the selected worktree instead |
+| `N` | Create a worktree on top of the selected worktree; on a JIRA ticket, ask which worktree to build on |
+| `B` | Restack the selected stacked worktree, after a confirmation |
+| `X` | Sweep clean worktrees untouched for `sweep.olderThanDays` days |
 | `R` | Choose the repository PR Radar shows (projects with several repositories) |
 | `s` | Switch project (repository profile) |
 | `I` | Edit the active project in the setup wizard |
@@ -265,7 +274,7 @@ The cache only speeds things up: deleting the file is safe, and if it cannot be 
 | `d d` | Delete selected worktree |
 | `q`, `ctrl+c` | Quit |
 
-In JIRA Tickets mode, `f` opens the ticket filter dialog, `Y` toggles assigned-to-me/all tickets, `S` toggles active-sprint scope, `b` selects all boards and spaces together or a single configured one, `t` changes status, `C` comments, `A` assigns, `n` creates or reuses a ticket worktree, `o` opens the ticket in a browser, and `enter` opens the full-screen ticket reader.
+In JIRA Tickets mode, `f` opens the ticket filter dialog, `Y` toggles assigned-to-me/all tickets, `S` toggles active-sprint scope, `b` selects all boards and spaces together or a single configured one, `t` changes status, `C` comments, `A` assigns, `n` creates or reuses a ticket worktree, `N` creates one on top of another worktree, `o` opens the ticket in a browser, and `enter` opens the full-screen ticket reader.
 
 ## Command Palette
 
@@ -303,6 +312,50 @@ When you create a worktree, `wt-manager`:
 New worktrees appear in the dashboard immediately while Git creates them. A failed creation removes the temporary row and shows the error. Opening an editor, a terminal, or an agent for a worktree still being created waits until that creation succeeds.
 
 Missing or prunable worktree entries are surfaced in the UI, and Git's worktree prune operation is used when cleanup is needed.
+
+## Stacked Worktrees
+
+A stacked worktree starts from another worktree's branch instead of the default branch, so you can build a follow-up change before the first one is merged.
+
+- **Create**: select the worktree to build on and press `N`, then type the new branch name. The branch starts from the tip of the selected worktree's local branch, unpushed commits included. Pressing `n` and then `tab` in the input does the same. In JIRA Tickets, `N` asks which worktree to build on and creates the ticket's branch on top of it.
+- **See**: a stacked worktree is listed right below its parent, drawn as a branch of a tree. The details pane names the parent, and the parent lists what is stacked on it.
+- **Restack**: the State column turns to `restack` once the parent has commits the worktree lacks, its pull request is merged, or its branch is gone. Press `B`: a dialog says what will happen, `enter` runs it, and `d` restacks onto the default branch regardless of the parent.
+- **Adopt**: worktrees created outside the app, for example by an AI agent, carry no stack information. **Stack selected worktree on another…** in the command palette records the parent afterwards, and **Take selected worktree out of its stack** forgets it.
+
+Restacking rebases only the commits made on the worktree's own branch:
+
+- onto the parent's tip while the parent is alive;
+- onto the nearest branch below it in the stack once the parent is merged or deleted;
+- onto the remote's default branch (after a fetch) when none is left, which takes the worktree out of its stack.
+
+This is `git rebase --onto <target> <base>`, where `<base>` is the parent commit the branch was started from or last restacked onto. Because that commit is recorded, a squash-merged or amended parent does not get its old commits replayed. The worktree must be clean. A restack that stops on conflicts leaves the rebase in progress for you to resolve with `git rebase --continue` or `git rebase --abort`; press `B` again afterwards. Nothing is pushed: a branch that was already pushed needs `git push --force-with-lease`.
+
+Whether a parent was merged comes from the PR labels; `B` also asks GitHub about the parent directly, because in a busy repository an older merged pull request is no longer among the latest ones the labels cover. Without `gh`, use `d` in the dialog once you know the parent is merged.
+
+The link between a branch and its parent is stored in the repository's git config as `branch.<name>.wt-manager-parent` and `branch.<name>.wt-manager-base`. It is shared by all worktrees of the repository and removed by git when the branch is deleted.
+
+## Sweeping Stale Worktrees
+
+Press `X` (or run **Sweep stale worktrees…** from the command palette) to clear out worktrees that are finished in practice. Sweep scans every repository of the project and lists the worktrees that:
+
+- have no uncommitted work: no staged, modified, untracked or conflicted files, read fresh at scan time;
+- saw no commit, checkout, pull, merge or rebase for `sweep.olderThanDays` days (7 by default). Reading files or running `git status` does not count as activity.
+
+The main checkout, worktrees outside the worktrees folder, locked worktrees (`git worktree lock`), detached worktrees and worktrees in the middle of a rebase are never offered.
+
+The dialog shows each candidate with its idle time and pull request, all ticked. `space` unticks one, `a` toggles all, `enter` removes the ticked ones and `esc` cancels. Removal never uses force, so git refuses a worktree that changed after the scan. Branches are kept: every commit stays reachable and the worktree can be created again with `n`. Files git ignores, such as build output or a local `.env`, go with the folder.
+
+The same sweep runs from the command line, for a script or a scheduled job:
+
+```text
+wt-manager sweep --dry-run            list what would be removed
+wt-manager sweep                      list, then ask before removing
+wt-manager sweep --yes                remove without asking
+wt-manager sweep --days 3             use another age for this run
+wt-manager sweep --project shop       sweep a project other than the one you are in
+```
+
+Without `--project` it sweeps the project of the repository you run it in, or the default project.
 
 ## Agents
 

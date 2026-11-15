@@ -112,6 +112,15 @@ func (m model) View() string {
 	if m.choosingTicketWorktree {
 		view = overlay(view, renderTicketWorktreeChoiceModal(m), m.width, m.height)
 	}
+	if m.pickingStackParent {
+		view = overlay(view, renderStackParentPickerModal(m), m.width, m.height)
+	}
+	if m.confirmingRestack {
+		view = overlay(view, renderRestackModal(m), m.width, m.height)
+	}
+	if m.sweeping {
+		view = overlay(view, renderSweepModal(m), m.width, m.height)
+	}
 	if m.addingRepository != nil {
 		view = overlay(view, renderAddRepositoryModal(m), m.width, m.height)
 	}
@@ -680,7 +689,7 @@ func stateCellStyle(wt Worktree) lipgloss.Style {
 		return infoStyle
 	case "clean":
 		return successStyle
-	case "dirty":
+	case "dirty", "restack":
 		return warnStyle
 	case "conflict", "missing", "prunable":
 		return errorStyle
@@ -880,6 +889,15 @@ func (m model) focusLabel() string {
 	if m.choosingTicketWorktree {
 		return "ticket worktree"
 	}
+	if m.pickingStackParent {
+		return "stack parent"
+	}
+	if m.confirmingRestack {
+		return "restack"
+	}
+	if m.sweeping {
+		return "sweep"
+	}
 	if m.addingRepository != nil {
 		return "add repository"
 	}
@@ -974,12 +992,24 @@ func renderNewWorktreeModal(m model) string {
 		repository := m.cfg.ForRepository(m.newWorktreeRepository).RepositoryName()
 		intro = "Create or open a branch in " + purpleStyle.Render(icons.Repo+" "+repository) + "."
 	}
+	hints := []keyHint{{"enter", "create"}}
+	title := "New Worktree"
+	if parent := m.newWorktreeParent; parent.Path != "" {
+		title = "New Stacked Worktree"
+		intro = "Start a new branch on top of " + infoStyle.Render(parent.Branch) + "."
+		if m.cfg.MultiRepository() {
+			intro += " " + purpleStyle.Render(icons.Repo+" "+m.worktreeRepository(parent))
+		}
+		hints = append(hints, keyHint{"tab", "from default branch"})
+	} else if option := m.newWorktreeParentOption; option.Path != "" && m.newWorktreeTicketKey == "" {
+		hints = append(hints, keyHint{"tab", "on top of " + truncateRunes(option.Branch, 28)})
+	}
 	body := []string{
 		intro,
 		"",
 		m.newInput.View(),
 	}
-	return renderModal("New Worktree", body, []keyHint{{"enter", "create"}, {"esc", "cancel"}})
+	return renderModal(title, body, append(hints, keyHint{"esc", "cancel"}))
 }
 
 func renderAgentSelectorModal(m model) string {
@@ -1195,7 +1225,10 @@ func renderHelpModal(m model) string {
 		helpSection("Worktrees"),
 		helpKeyLine("j/k", "move selection"),
 		helpKeyLine("a", "toggle managed/all worktrees"),
-		helpKeyLine("n", "create worktree"),
+		helpKeyLine("n", "create worktree (tab: on top of selected)"),
+		helpKeyLine("N", "create worktree on top of selected"),
+		helpKeyLine("B", "restack selected stacked worktree"),
+		helpKeyLine("X", "sweep clean worktrees untouched for days"),
 		helpKeyLine("d d", "delete selected worktree"),
 		helpKeyLine("o", "open selected local PR"),
 		helpKeyLine("enter", "run selected Enter action"),
@@ -1232,6 +1265,7 @@ func renderHelpModal(m model) string {
 		helpKeyLine("C", "comment on selected ticket"),
 		helpKeyLine("A", "assign selected ticket"),
 		helpKeyLine("n", "create ticket worktree (asks when one exists)"),
+		helpKeyLine("N", "create ticket worktree on top of another"),
 		helpKeyLine("o", "open selected ticket in browser"),
 		"",
 		renderKeyHints([]keyHint{{"h/enter/esc", "close"}}),

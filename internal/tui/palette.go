@@ -30,6 +30,7 @@ func (m model) hasTextOrConfirmationModal() bool {
 		m.enteringTicketStatus || m.commentingTicket || m.enteringTicketAssignee ||
 		m.selectingAgent || m.selectingEnterAction || m.selectingProfile || m.selectingPRUser ||
 		m.pickingRepository || m.choosingTicketWorktree || m.addingRepository != nil ||
+		m.pickingStackParent || m.confirmingRestack || m.sweeping ||
 		m.selectingTicketFilters || m.selectingTicketStatus || m.selectingTicketAssignee || m.selectingBoard
 }
 
@@ -93,12 +94,21 @@ func (m model) paletteEntries() []paletteEntry {
 		add("toggle-all", "Toggle all / managed worktrees", "Include the main repository and unmanaged worktrees", "a", "a")
 		add("enter-menu", "Choose default Enter action", "Editor, AI agent, or terminal", "e", "e")
 		add("new", "Create a worktree", "Choose a branch name", "n", "n")
+		add("sweep", "Sweep stale worktrees…", fmt.Sprintf("Remove clean worktrees untouched for %d+ days", m.sweepDays()), "X", "X")
 		add("body", "Toggle PR description", "Expand the local pull request description", "p", "p")
 		if selected := m.selectedWorktree(); selected != nil {
 			add("open", "Open selected worktree", m.configuredEnterActionLabel(), "Enter", "enter")
 			add("terminal", "Open selected worktree in terminal", "Start a shell without an AI agent", "", "")
 			if !selected.IsMain {
 				add("delete", "Delete selected worktree…", "Arms deletion; press d again to confirm", "d d", "d")
+			}
+			if m.stackParentProblem(*selected) == "" {
+				add("stack-new", "Create a worktree on top of selected", "Start a new branch from "+selected.Branch+" (stacked)", "N", "N")
+				add("stack-on", "Stack selected worktree on another…", "Record which worktree it was started from", "", "")
+			}
+			if selected.Stacked() {
+				add("restack", "Restack selected worktree…", "Rebase its own commits onto "+selected.Stack.Parent+", or the default branch once that is merged", "B", "B")
+				add("unstack", "Take selected worktree out of its stack", "Forget that it was started from "+selected.Stack.Parent, "", "")
 			}
 		}
 	}
@@ -123,6 +133,7 @@ func (m model) paletteEntries() []paletteEntry {
 		add("ticket-comment", "Comment on selected ticket", "", "C", "C")
 		add("ticket-assign", "Assign selected ticket", "", "A", "A")
 		add("new", "Create worktree from selected ticket", "", "n", "n")
+		add("stack-new", "Create ticket worktree on top of another…", "Start the ticket's branch from an existing worktree (stacked)", "N", "N")
 	}
 	add("open-editor", "Open selection in "+m.configuredEditor().Name, "Open or create the selected worktree in your editor", "v", "v")
 	add("open-agent", "Open selection with AI agent", m.cfg.App.DefaultAgent, "i", "i")
@@ -309,6 +320,10 @@ func (m model) executePaletteEntry(entry paletteEntry) (tea.Model, tea.Cmd) {
 		return m.openRepositoryPicker(pickRepoToRemove, Ticket{}, "")
 	case "pr-repo":
 		return m.openRepositoryPicker(pickRepoForPRRadar, Ticket{}, "")
+	case "stack-on":
+		return m.openStackOnSelected()
+	case "unstack":
+		return m.unstackSelected()
 	}
 	var idx int
 	if _, err := fmt.Sscanf(entry.ID, "enter:%d", &idx); err == nil && idx >= 0 && idx < len(enterActionOptions) {

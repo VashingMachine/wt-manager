@@ -50,6 +50,11 @@ type iconSet struct {
 
 	Loading string
 
+	// StackChild draws a stacked worktree under its parent; Restack marks one
+	// whose parent moved on without it.
+	StackChild string
+	Restack    string
+
 	OK            string
 	Err           string
 	Warn          string
@@ -67,6 +72,7 @@ var unicodeIcons = iconSet{
 	CheckPass: "✓", CheckFail: "✗", CheckPending: "◐", CheckNone: "·",
 	ReviewApproved: "✓", ReviewChanges: "±", ReviewRequired: "○",
 	Ticket: "◇", TicketDone: "✓", TicketActive: "◈", Comment: "❞", Sprint: "⟳", Link: "⇢", Repo: "⎇", Star: "★", Loading: "◌",
+	StackChild: "└", Restack: "↻",
 	OK: "✓", Err: "✗", Warn: "⚠",
 	Section: "▸", Pointer: "▶", Dot: "·", SkeletonBlock: "░",
 }
@@ -79,6 +85,7 @@ var asciiIcons = iconSet{
 	CheckPass: "+", CheckFail: "x", CheckPending: "~", CheckNone: "-",
 	ReviewApproved: "+", ReviewChanges: "~", ReviewRequired: "o",
 	Ticket: "t", TicketDone: "+", TicketActive: "*", Comment: "\"", Sprint: "@", Link: ">", Repo: "#", Star: "*", Loading: ".",
+	StackChild: "`", Restack: "~",
 	OK: "+", Err: "x", Warn: "!",
 	Section: ">", Pointer: ">", Dot: "-", SkeletonBlock: "#",
 }
@@ -108,6 +115,8 @@ func stateIcon(wt Worktree) string {
 		return icons.WTDirty
 	case "loading":
 		return icons.Loading
+	case "restack":
+		return icons.Restack
 	default:
 		return icons.WTClean
 	}

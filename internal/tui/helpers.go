@@ -31,6 +31,8 @@ func stateLabel(wt Worktree) string {
 		return "conflict"
 	case wt.Status.Dirty:
 		return "dirty"
+	case stackStateOf(wt).needsRestack():
+		return "restack"
 	default:
 		return "clean"
 	}
