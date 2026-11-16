@@ -238,11 +238,14 @@ The cache only speeds things up: deleting the file is safe, and if it cannot be 
 
 ## Keybindings
 
+These are the default keys. Every one of them can be changed, and commands without a key can be given one: see [Customizing Keybindings](#customizing-keybindings).
+
 | Key | Action |
 | --- | --- |
 | `ctrl+p` / mapped `⌘P` | Open the searchable command palette |
 | `j` / `k`, arrows | Move selection |
 | `h` | Show keybinding help |
+| `,` | Customize keybindings |
 | `tab` | Switch focus between table and details |
 | `r` | Refresh |
 | `P` | Toggle PR Radar mode |
@@ -275,6 +278,30 @@ The cache only speeds things up: deleting the file is safe, and if it cannot be 
 | `q`, `ctrl+c` | Quit |
 
 In JIRA Tickets mode, `f` opens the ticket filter dialog, `Y` toggles assigned-to-me/all tickets, `S` toggles active-sprint scope, `b` selects all boards and spaces together or a single configured one, `t` changes status, `C` comments, `A` assigns, `n` creates or reuses a ticket worktree, `N` creates one on top of another worktree, `o` opens the ticket in a browser, and `enter` opens the full-screen ticket reader.
+
+### Customizing Keybindings
+
+Press `,`, or run **Customize keyboard shortcuts…** from the command palette, to open the keybindings screen. It lists every command the palette offers with its keys, including the commands that have no key yet:
+
+- `tab` / `shift+tab` switch between **All**, one group (General, Worktrees, PR Radar, JIRA Tickets, Settings, Projects), and **Customized**, which lists only what you changed.
+- `/` searches every group by command name, by key (`ctrl+p`), or for `no key`; `esc` clears the search.
+- `enter` changes the selected key: press the new key, read what the dialog says about it, and press `enter` to save or `esc` to cancel. A second key pressed right after the first records a two-key sequence such as `g l`.
+- `a` adds another key to the command, `←` / `→` pick one of its keys, and `x` removes the picked key. A command can be left without a key; it stays available in the palette.
+- `r` resets the command to its default keys, `R` resets all of them after a confirmation, and `u` undoes the last change.
+
+A key works in the views its command belongs to, so one key can do different things in Worktrees, PR Radar, and JIRA Tickets, as `S`, `b`, `f`, and `enter` do by default. When the key you press already belongs to another command of the same view, the dialog names that command before you save, and saving moves the key to the new command. `esc` and `ctrl+c` cannot be assigned, and either the palette or the keybindings screen always keeps a key. The recorder shows the key as your terminal reports it; combinations a terminal does not send, such as `⌘` shortcuts, cannot be recorded.
+
+Each change is saved to `~/.wt-manager.json` at once, in a `keybindings` block that lists only the commands that differ from the defaults:
+
+```json
+"keybindings": {
+  "refresh": ["r", "f5"],
+  "logs": ["g l"],
+  "help": []
+}
+```
+
+An entry is a command ID, shown at the bottom of the keybindings screen, with its keys. An empty list leaves the command without a key, and removing the entry restores the default. Keys are spelled the way the app shows them (`r`, `P`, `ctrl+p`, `alt+x`, `enter`, `tab`, `space`, `f5`, `up`), and the keys of a sequence are separated by a space. Edits to the file apply while the app runs, like the rest of the configuration. The help page, the palette, and the hints in the app always show the keys in effect.
 
 ## Command Palette
 

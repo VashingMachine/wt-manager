@@ -164,6 +164,7 @@ func (m model) persistConfigWith(message string, quiet bool) tea.Cmd {
 
 func cloneAppConfig(app AppConfig) AppConfig {
 	app.Agents = slices.Clone(app.Agents)
+	app.Keybindings = cloneKeybindings(app.Keybindings)
 	app.Profiles = slices.Clone(app.Profiles)
 	for idx := range app.Profiles {
 		app.Profiles[idx].Repositories = slices.Clone(app.Profiles[idx].Repositories)

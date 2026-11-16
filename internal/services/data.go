@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -182,6 +183,10 @@ func normalizeAppConfig(appConfig AppConfig) (AppConfig, bool, error) {
 		appConfig.Agents = defaults.Agents
 		changed = true
 	}
+	if keybindings, keybindingsChanged := normalizeKeybindings(appConfig.Keybindings); keybindingsChanged {
+		appConfig.Keybindings = keybindings
+		changed = true
+	}
 
 	if findAgent(appConfig.Agents, appConfig.DefaultAgent) == nil {
 		appConfig.DefaultAgent = defaults.DefaultAgent
@@ -230,6 +235,45 @@ func normalizeAppConfig(appConfig AppConfig) (AppConfig, bool, error) {
 	}
 
 	return appConfig, changed, nil
+}
+
+// normalizeKeybindings gives customized keybindings their canonical spelling
+// and drops blank and repeated keys. Command IDs it does not know are kept:
+// they may belong to a project or agent that is configured again later.
+func normalizeKeybindings(keybindings map[string][]string) (map[string][]string, bool) {
+	if keybindings == nil {
+		return nil, false
+	}
+	normalized := make(map[string][]string, len(keybindings))
+	changed := false
+	for command, keys := range keybindings {
+		id := strings.TrimSpace(command)
+		if id == "" {
+			changed = true
+			continue
+		}
+		// An empty list means "no key", so it is written as [] rather than null.
+		cleaned := make([]string, 0, len(keys))
+		for _, key := range keys {
+			key = core.NormalizeKeybinding(key)
+			if key == "" || slices.Contains(cleaned, key) {
+				continue
+			}
+			cleaned = append(cleaned, key)
+		}
+		if id != command || keys == nil || !slices.Equal(cleaned, keys) {
+			changed = true
+		}
+		if _, duplicate := normalized[id]; duplicate {
+			changed = true
+			continue
+		}
+		normalized[id] = cleaned
+	}
+	if len(normalized) == 0 {
+		return nil, true
+	}
+	return normalized, changed
 }
 
 // normalizeProfileRepositories fills in repository defaults. A project keeps

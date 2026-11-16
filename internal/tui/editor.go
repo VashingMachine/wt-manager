@@ -183,7 +183,11 @@ func renderEditorSelectorModal(m model) string {
 	body := []string{}
 	roomy := contentHeight >= 14
 	if roomy {
-		body = append(body, "Choose which IDE opens when pressing v.", "")
+		intro := "Choose which IDE the editor commands open."
+		if label := m.keyLabel("open-editor"); label != "" {
+			intro = "Choose which IDE opens when pressing " + label + "."
+		}
+		body = append(body, intro, "")
 	}
 	visible := max(1, contentHeight-2-len(body))
 	if roomy {

@@ -28,6 +28,12 @@ type AppConfig struct {
 	DefaultEnterAction string              `json:"defaultEnterAction"`
 	Editor             EditorTool          `json:"editor"`
 	Sweep              SweepConfig         `json:"sweep"`
+	// Keybindings lists the commands whose keys differ from the built-in
+	// ones, by command ID. A command that is not listed keeps its default
+	// keys; an empty list leaves it without a key. Each key is spelled the
+	// way the app shows it ("r", "ctrl+p", "enter"), and keys pressed one
+	// after another are separated by a space ("g l").
+	Keybindings map[string][]string `json:"keybindings,omitempty"`
 }
 
 // DefaultSweepOlderThanDays is how long a worktree stays untouched before the

@@ -84,7 +84,7 @@ func (m model) applyConfig(app AppConfig, message string) (tea.Model, tea.Cmd) {
 	m.cfg.App = app
 	profile := m.services.FindProfile(app.Profiles, app.DefaultProfile)
 	if profile == nil {
-		m.statusMessage = "The config has no projects; press I to set one up"
+		m.statusMessage = "The config has no projects; " + m.howTo("setup", "set one up")
 		m.statusError = true
 		return m, nil
 	}
@@ -178,7 +178,7 @@ func (m model) reloadConfig() (tea.Model, tea.Cmd) {
 // the project yet.
 func (m model) openAddRepository() (tea.Model, tea.Cmd) {
 	if m.activeProfileIndex() < 0 {
-		m.statusMessage = "Set up a project first (press I)"
+		m.statusMessage = "Set up a project first (" + m.howTo("setup", "do that") + ")"
 		m.statusError = true
 		return m, nil
 	}

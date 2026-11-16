@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -12,9 +13,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// paletteEntry is a row of the palette. ID names the command it runs, or the
+// worktree it selects.
 type paletteEntry struct {
 	ID, Title, Description, Category, Shortcut string
-	Key                                        string
 }
 
 type paletteWorktreesResult struct {
@@ -54,105 +56,120 @@ func (m model) openCommandPalette() (tea.Model, tea.Cmd) {
 }
 
 func (m model) paletteEntries() []paletteEntry {
+	km := m.keymap()
+	// Every entry shows the key its command has right now.
+	entry := func(id, title, description, category string) paletteEntry {
+		return paletteEntry{ID: id, Title: title, Description: description, Category: category, Shortcut: km.shortcut(id)}
+	}
+	configPath := m.services.CompactPath(m.cfg.ConfigPath, m.cfg.HomeDir)
+	editorHint := "Choose the IDE the editor commands open: VS Code, IntelliJ IDEA, or a custom command"
+	if label := km.label("open-editor"); label != "" {
+		editorHint = "Choose the IDE opened by " + label + ": VS Code, IntelliJ IDEA, or a custom command"
+	}
 	entries := []paletteEntry{
-		{ID: "refresh", Title: "Refresh current view", Description: "Reload worktrees, pull requests, or tickets", Category: "Commands", Shortcut: "r", Key: "r"},
-		{ID: "worktrees", Title: "Show worktrees", Description: "Browse the active repository's local worktrees", Category: "Commands"},
-		{ID: "prs", Title: "Show PR Radar", Description: "Browse GitHub pull requests", Category: "Commands", Shortcut: "P"},
-		{ID: "filter", Title: "Filter current view", Description: "Search the table's rows", Category: "Commands", Shortcut: "/", Key: "/"},
-		{ID: "focus", Title: "Switch table / details focus", Category: "Commands", Shortcut: "Tab", Key: "tab"},
-		{ID: "help", Title: "Show keyboard shortcuts", Description: "Keybinding help", Category: "Commands", Shortcut: "h", Key: "h"},
-		{ID: "logs", Title: "View session logs", Description: "Inspect temporary execution logs, command output, and errors", Category: "Commands"},
-		{ID: "editor", Title: "Configure editor", Description: "Choose the IDE opened by v: VS Code, IntelliJ IDEA, or a custom command", Category: "Settings"},
-		{ID: "agent-menu", Title: "Choose default AI agent", Category: "Settings", Shortcut: "m", Key: "m"},
-		{ID: "profile-menu", Title: "Switch project", Description: "Choose another repository profile", Category: "Profiles", Shortcut: "s", Key: "s"},
-		{ID: "setup", Title: "Edit project " + m.cfg.ActiveProfile.Name + "…", Description: "Guided setup: repositories, agents, GitHub, and JIRA", Category: "Profiles", Shortcut: "I", Key: "I"},
-		{ID: "project-new", Title: "New project…", Description: "Set up another project with its repositories, agents, and JIRA boards or spaces", Category: "Profiles"},
-		{ID: "config-edit", Title: "Edit configuration file", Description: "Open " + m.services.CompactPath(m.cfg.ConfigPath, m.cfg.HomeDir) + " in " + m.configuredEditor().Name + "; saved changes apply automatically", Category: "Settings"},
-		{ID: "config-reload", Title: "Reload configuration", Description: "Read " + m.services.CompactPath(m.cfg.ConfigPath, m.cfg.HomeDir) + " again", Category: "Settings"},
-		{ID: "repo-add", Title: "Add repository to " + m.cfg.ActiveProfile.Name + "…", Description: "List another repository's worktrees in this project and create worktrees in it", Category: "Profiles"},
-		{ID: "quit", Title: "Quit wt-manager", Category: "Commands", Shortcut: "q", Key: "q"},
+		entry("refresh", "Refresh current view", "Reload worktrees, pull requests, or tickets", "Commands"),
+		entry("worktrees", "Show worktrees", "Browse the active repository's local worktrees", "Commands"),
+		entry("prs", "Show PR Radar", "Browse GitHub pull requests", "Commands"),
+		entry("filter", "Filter current view", "Search the table's rows", "Commands"),
+		entry("focus", "Switch table / details focus", "", "Commands"),
+		entry(cmdHelp, "Show keyboard shortcuts", "Keybinding help", "Commands"),
+		entry("logs", "View session logs", "Inspect temporary execution logs, command output, and errors", "Commands"),
+		entry(cmdKeybindings, "Customize keyboard shortcuts…", "Change, add, or remove the keys of every command", "Settings"),
+		entry("editor", "Configure editor", editorHint, "Settings"),
+		entry("agent-menu", "Choose default AI agent", "", "Settings"),
+		entry("profile-menu", "Switch project", "Choose another repository profile", "Profiles"),
+		entry("setup", "Edit project "+m.cfg.ActiveProfile.Name+"…", "Guided setup: repositories, agents, GitHub, and JIRA", "Profiles"),
+		entry("project-new", "New project…", "Set up another project with its repositories, agents, and JIRA boards or spaces", "Profiles"),
+		entry("config-edit", "Edit configuration file", "Open "+configPath+" in "+m.configuredEditor().Name+"; saved changes apply automatically", "Settings"),
+		entry("config-reload", "Reload configuration", "Read "+configPath+" again", "Settings"),
+		entry("repo-add", "Add repository to "+m.cfg.ActiveProfile.Name+"…", "List another repository's worktrees in this project and create worktrees in it", "Profiles"),
+		entry(cmdQuit, "Quit wt-manager", "", "Commands"),
 	}
 	if editor := terminalEditor(os.Getenv); editor != "" {
-		entries = append(entries, paletteEntry{ID: "config-edit-terminal", Title: "Edit configuration file in terminal", Description: "Open the config in " + editor + " inside this terminal", Category: "Settings"})
+		entries = append(entries, entry("config-edit-terminal", "Edit configuration file in terminal", "Open the config in "+editor+" inside this terminal", "Settings"))
 	}
 	if m.cfg.MultiRepository() {
 		entries = append(entries,
-			paletteEntry{ID: "repo-remove", Title: "Remove repository from " + m.cfg.ActiveProfile.Name + "…", Description: "Stop listing a repository in this project; files stay on disk", Category: "Profiles"},
-			paletteEntry{ID: "pr-repo", Title: "Choose PR Radar repository", Description: "Currently " + m.prCfg().RepositoryName(), Category: "Profiles", Shortcut: "R"},
+			entry("repo-remove", "Remove repository from "+m.cfg.ActiveProfile.Name+"…", "Stop listing a repository in this project; files stay on disk", "Profiles"),
+			entry("pr-repo", "Choose PR Radar repository", "Currently "+m.prCfg().RepositoryName(), "Profiles"),
 		)
 	}
-	add := func(id, title, description, shortcut, key string) {
-		entries = append(entries, paletteEntry{ID: id, Title: title, Description: description, Category: "Commands", Shortcut: shortcut, Key: key})
+	add := func(id, title, description string) {
+		entries = append(entries, entry(id, title, description, "Commands"))
 	}
 	if jira := m.cfg.ActiveProfile.Jira; jira != nil && jira.ActiveBoard() != nil {
-		add("tickets", "Show JIRA tickets", "Browse configured boards and spaces", "J", "")
+		add("tickets", "Show JIRA tickets", "Browse configured boards and spaces")
 	}
 	if m.filterQuery != "" {
-		add("clear-filter", "Clear current filter", m.filterQuery, "Esc", "")
+		add(cmdClearFilter, "Clear current filter", m.filterQuery)
 	}
 	if m.isWorktreeMode() {
-		add("toggle-all", "Toggle all / managed worktrees", "Include the main repository and unmanaged worktrees", "a", "a")
-		add("enter-menu", "Choose default Enter action", "Editor, AI agent, or terminal", "e", "e")
-		add("new", "Create a worktree", "Choose a branch name", "n", "n")
-		add("sweep", "Sweep stale worktrees…", fmt.Sprintf("Remove clean worktrees untouched for %d+ days", m.sweepDays()), "X", "X")
-		add("body", "Toggle PR description", "Expand the local pull request description", "p", "p")
+		add("toggle-all", "Toggle all / managed worktrees", "Include the main repository and unmanaged worktrees")
+		add("enter-menu", "Choose default Enter action", "Editor, AI agent, or terminal")
+		add("new", "Create a worktree", "Choose a branch name")
+		add("sweep", "Sweep stale worktrees…", fmt.Sprintf("Remove clean worktrees untouched for %d+ days", m.sweepDays()))
+		add("body", "Toggle PR description", "Expand the local pull request description")
 		if selected := m.selectedWorktree(); selected != nil {
-			add("open", "Open selected worktree", m.configuredEnterActionLabel(), "Enter", "enter")
-			add("terminal", "Open selected worktree in terminal", "Start a shell without an AI agent", "", "")
+			add("open", "Open selected worktree", m.configuredEnterActionLabel())
+			add("terminal", "Open selected worktree in terminal", "Start a shell without an AI agent")
 			if !selected.IsMain {
-				add("delete", "Delete selected worktree…", "Arms deletion; press d again to confirm", "d d", "d")
+				confirm := "Arms deletion; run it again to confirm"
+				if label := km.label(cmdDelete); label != "" {
+					confirm = "Arms deletion; press " + label + " again to confirm"
+				}
+				add(cmdDelete, "Delete selected worktree…", confirm)
 			}
 			if m.stackParentProblem(*selected) == "" {
-				add("stack-new", "Create a worktree on top of selected", "Start a new branch from "+selected.Branch+" (stacked)", "N", "N")
-				add("stack-on", "Stack selected worktree on another…", "Record which worktree it was started from", "", "")
+				add("stack-new", "Create a worktree on top of selected", "Start a new branch from "+selected.Branch+" (stacked)")
+				add("stack-on", "Stack selected worktree on another…", "Record which worktree it was started from")
 			}
 			if selected.Stacked() {
-				add("restack", "Restack selected worktree…", "Rebase its own commits onto "+selected.Stack.Parent+", or the default branch once that is merged", "B", "B")
-				add("unstack", "Take selected worktree out of its stack", "Forget that it was started from "+selected.Stack.Parent, "", "")
+				add("restack", "Restack selected worktree…", "Rebase its own commits onto "+selected.Stack.Parent+", or the default branch once that is merged")
+				add("unstack", "Take selected worktree out of its stack", "Forget that it was started from "+selected.Stack.Parent)
 			}
 		}
 	}
 	if m.isPRMode() {
-		add("state", "Cycle PR state filter", "Open, all, closed, or merged", "S", "S")
-		add("user", "Choose PR user filter", "Author, assignee, or requested reviewer", "u", "u")
-		add("mine", "Toggle my pull requests", "Filter by your GitHub account", "Y", "Y")
-		add("branch", "Toggle PR title / branch column", "", "b", "b")
-		add("checks", "Toggle failed GitHub Actions", "Show failed checks in details", "f", "f")
-		add("diff", "Open selected PR diff", "Full-screen source diff", "Enter", "enter")
-		add("approve", "Approve selected pull request…", "Review the confirmation before submitting", "A", "A")
-		add("ask", "Ask agent about selected PR", "", "c", "c")
-		add("new", "Create worktree from selected PR", "", "n", "n")
+		add("state", "Cycle PR state filter", "Open, all, closed, or merged")
+		add("user", "Choose PR user filter", "Author, assignee, or requested reviewer")
+		add("mine", "Toggle my pull requests", "Filter by your GitHub account")
+		add("branch", "Toggle PR title / branch column", "")
+		add("checks", "Toggle failed GitHub Actions", "Show failed checks in details")
+		add("diff", "Open selected PR diff", "Full-screen source diff")
+		add("approve", "Approve selected pull request…", "Review the confirmation before submitting")
+		add("ask", "Ask agent about selected PR", "")
+		add("new", "Create worktree from selected PR", "")
 	}
 	if m.isTicketMode() {
-		add("ticket-read", "Read selected JIRA ticket", "Full-screen ticket reader", "Enter", "enter")
-		add("ticket-filters", "Configure ticket filters", "Assigned to me, active sprint, open tickets", "f", "f")
-		add("ticket-mine", "Toggle tickets assigned to me", "", "Y", "Y")
-		add("ticket-sprint", "Toggle active sprint tickets", "", "S", "S")
-		add("ticket-board", "Choose JIRA board or space", "", "b", "b")
-		add("ticket-status", "Change selected ticket status", "", "t", "t")
-		add("ticket-comment", "Comment on selected ticket", "", "C", "C")
-		add("ticket-assign", "Assign selected ticket", "", "A", "A")
-		add("new", "Create worktree from selected ticket", "", "n", "n")
-		add("stack-new", "Create ticket worktree on top of another…", "Start the ticket's branch from an existing worktree (stacked)", "N", "N")
+		add("ticket-read", "Read selected JIRA ticket", "Full-screen ticket reader")
+		add("ticket-filters", "Configure ticket filters", "Assigned to me, active sprint, open tickets")
+		add("ticket-mine", "Toggle tickets assigned to me", "")
+		add("ticket-sprint", "Toggle active sprint tickets", "")
+		add("ticket-board", "Choose JIRA board or space", "")
+		add("ticket-status", "Change selected ticket status", "")
+		add("ticket-comment", "Comment on selected ticket", "")
+		add("ticket-assign", "Assign selected ticket", "")
+		add("new", "Create worktree from selected ticket", "")
+		add("stack-new", "Create ticket worktree on top of another…", "Start the ticket's branch from an existing worktree (stacked)")
 	}
-	add("open-editor", "Open selection in "+m.configuredEditor().Name, "Open or create the selected worktree in your editor", "v", "v")
-	add("open-agent", "Open selection with AI agent", m.cfg.App.DefaultAgent, "i", "i")
-	add("open-browser", "Open selected PR / ticket in browser", "", "o", "o")
-	for idx, option := range enterActionOptions {
+	add("open-editor", "Open selection in "+m.configuredEditor().Name, "Open or create the selected worktree in your editor")
+	add("open-agent", "Open selection with AI agent", m.cfg.App.DefaultAgent)
+	add("open-browser", "Open selected PR / ticket in browser", "")
+	for _, option := range enterActionOptions {
 		label := option.Label
 		if option.Action == core.EnterActionVSCode {
 			label = m.configuredEditor().Name
 		}
-		entries = append(entries, paletteEntry{ID: fmt.Sprintf("enter:%d", idx), Title: "Set Enter action: " + label, Description: option.Description, Category: "Settings"})
+		entries = append(entries, entry(enterActionCommandID(option), "Set Enter action: "+label, option.Description, "Settings"))
 	}
-	for idx, agent := range m.cfg.App.Agents {
-		entries = append(entries, paletteEntry{ID: fmt.Sprintf("agent:%d", idx), Title: "Use " + agent.Name + " as default agent", Description: agent.Command, Category: "Settings"})
+	for _, agent := range m.cfg.App.Agents {
+		entries = append(entries, entry(cmdAgentPrefix+agent.Name, "Use "+agent.Name+" as default agent", agent.Command, "Settings"))
 	}
-	for idx, editor := range editorPresets {
-		entries = append(entries, paletteEntry{ID: fmt.Sprintf("editor:%d", idx), Title: "Use " + editor.Name + " as editor", Description: editor.Command, Category: "Settings"})
+	for _, editor := range editorPresets {
+		entries = append(entries, entry(cmdEditorPrefix+editor.Command, "Use "+editor.Name+" as editor", editor.Command, "Settings"))
 	}
-	for idx, profile := range m.cfg.App.Profiles {
-		entries = append(entries, paletteEntry{ID: fmt.Sprintf("profile:%d", idx), Title: "Switch to " + profile.Name, Description: profile.RepositoryPath, Category: "Profiles"})
+	for _, profile := range m.cfg.App.Profiles {
+		entries = append(entries, entry(cmdProfilePrefix+profile.Name, "Switch to "+profile.Name, profile.RepositoryPath, "Profiles"))
 	}
 	seen := make(map[string]bool)
 	for _, worktrees := range [][]Worktree{m.allWorktrees, m.paletteWorktrees} {
@@ -237,10 +254,15 @@ func paletteSubsequence(query, text string) bool {
 
 func (m model) updateCommandPalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	matches := m.paletteMatches()
+	if m.paletteToggleKey(msg) {
+		m.paletteOpen = false
+		m.paletteInput.Blur()
+		return m, nil
+	}
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
-	case "esc", "ctrl+p":
+	case "esc":
 		m.paletteOpen = false
 		m.paletteInput.Blur()
 		return m, nil
@@ -290,69 +312,24 @@ func (m model) executePaletteEntry(entry paletteEntry) (tea.Model, tea.Cmd) {
 	if wasFullscreen {
 		m.resize()
 	}
+	// The palette shows a view; its key toggles between that view and worktrees.
 	switch entry.ID {
-	case "worktrees":
-		return m.switchMode(modeWorktrees)
 	case "prs":
 		return m.switchMode(modePRs)
 	case "tickets":
 		return m.switchMode(modeTickets)
-	case "editor":
-		return m.openEditorSelector()
-	case "terminal":
-		return m.openSelectedWorktreeWithAction(core.EnterActionTerminal)
-	case "clear-filter":
-		m.filterQuery = ""
-		m.filterInput.SetValue("")
-		m.applyFilter()
-		return m, m.setTransientStatus("Filter cleared")
-	case "config-edit":
-		return m.editConfigInEditor()
-	case "config-edit-terminal":
-		return m.editConfigInTerminal()
-	case "config-reload":
-		return m.reloadConfig()
-	case "repo-add":
-		return m.openAddRepository()
-	case "project-new":
-		return m.openSetup(newProjectSetupModel(m.cfg, m.services))
-	case "repo-remove":
-		return m.openRepositoryPicker(pickRepoToRemove, Ticket{}, "")
-	case "pr-repo":
-		return m.openRepositoryPicker(pickRepoForPRRadar, Ticket{}, "")
-	case "stack-on":
-		return m.openStackOnSelected()
-	case "unstack":
-		return m.unstackSelected()
 	}
-	var idx int
-	if _, err := fmt.Sscanf(entry.ID, "enter:%d", &idx); err == nil && idx >= 0 && idx < len(enterActionOptions) {
-		option := enterActionOptions[idx]
-		m.cfg.App.DefaultEnterAction = option.Action
-		return m, m.persistConfig("Default Enter action set to " + m.configuredEnterActionLabel())
+	return m.runCommand(entry.ID)
+}
+
+// paletteToggleKey reports the key that opened the palette being pressed
+// again to close it. A key that types a character belongs to the search.
+func (m model) paletteToggleKey(msg tea.KeyMsg) bool {
+	name := keyName(msg)
+	if name == "" || textKey(name) {
+		return false
 	}
-	if _, err := fmt.Sscanf(entry.ID, "agent:%d", &idx); err == nil && idx >= 0 && idx < len(m.cfg.App.Agents) {
-		m.cfg.App.DefaultAgent = m.cfg.App.Agents[idx].Name
-		return m, m.persistConfig("Default AI agent set to " + m.cfg.App.DefaultAgent)
-	}
-	if _, err := fmt.Sscanf(entry.ID, "editor:%d", &idx); err == nil && idx >= 0 && idx < len(editorPresets) {
-		return m.saveEditor(editorPresets[idx])
-	}
-	if _, err := fmt.Sscanf(entry.ID, "profile:%d", &idx); err == nil && idx >= 0 && idx < len(m.cfg.App.Profiles) {
-		m.profileCursor = idx
-		return m.updateProfileSelector(tea.KeyMsg{Type: tea.KeyEnter})
-	}
-	if entry.Key == "" {
-		return m, nil
-	}
-	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(entry.Key)}
-	switch entry.Key {
-	case "tab":
-		keyMsg = tea.KeyMsg{Type: tea.KeyTab}
-	case "enter":
-		keyMsg = tea.KeyMsg{Type: tea.KeyEnter}
-	}
-	return m.update(keyMsg)
+	return slices.ContainsFunc(m.keymap().keysOf(cmdPalette), keySeq{name}.equal)
 }
 
 func (m model) selectPaletteWorktree(wt Worktree) (tea.Model, tea.Cmd) {

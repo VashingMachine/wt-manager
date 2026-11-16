@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/VashingMachine/wt-manager/internal/core"
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -237,7 +236,7 @@ func (m model) enterTicketMode() (tea.Model, tea.Cmd) {
 		m.ticketCacheLabel = ""
 		m.rebuildRows()
 		m.updateDetailContent()
-		m.statusMessage = "No JIRA board or space configured for this profile — press I to run setup"
+		m.statusMessage = "No JIRA board or space configured for this profile — " + m.howTo("setup", "run setup")
 		m.statusError = true
 		return m, nil
 	}
@@ -284,11 +283,30 @@ func (m model) loadTicketsCmd(refresh bool) tea.Cmd {
 	return loadTicketsCmd(m.services, m.cfg, m.ticketBoard, m.ticketMineOnly, m.ticketSprintOnly, refresh)
 }
 
-// updateTicketMode handles the keys that only exist in tickets mode. It returns
-// handled=false so the caller can fall through to the shared bindings.
-func (m model) updateTicketMode(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
-	switch {
-	case key.Matches(msg, m.keys.TicketFilters):
+// runTicketCommand runs the commands that only exist in tickets mode.
+func (m model) runTicketCommand(id string) (tea.Model, tea.Cmd) {
+	next, cmd, _ := m.execTicketCommand(id)
+	return next, cmd
+}
+
+func (m model) execTicketCommand(id string) (tea.Model, tea.Cmd, bool) {
+	switch id {
+	case "ticket-read":
+		selected := m.selectedTicketForDetail()
+		if selected == nil {
+			m.statusMessage = "Select a JIRA ticket first"
+			m.statusError = true
+			return m, nil, true
+		}
+		m.ticketReadMode = true
+		m.resize()
+		if !selected.Detail && !m.ticketDetailLoading {
+			next, cmd := m.startTicketDetailLoad(selected.Key)
+			return next, cmd, true
+		}
+		return m, nil, true
+
+	case "ticket-filters":
 		m.selectingTicketFilters = true
 		m.ticketFilterCursor = 0
 		m.ticketFilterMineOnly = m.ticketMineOnly
@@ -298,15 +316,15 @@ func (m model) updateTicketMode(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		m.statusError = false
 		return m, nil, true
 
-	case key.Matches(msg, m.keys.MineFilter):
+	case "ticket-mine":
 		m.ticketMineOnly = !m.ticketMineOnly
 		return m.reloadTicketsAfterScopeChange("assignee")
 
-	case key.Matches(msg, m.keys.SprintOnly):
+	case "ticket-sprint":
 		if !m.ticketBoard.SprintScoped(true) {
-			m.statusMessage = fmt.Sprintf("%s is a whole space, which has no sprint of its own — press b to pick a board for sprint scope", m.ticketBoard.Name)
+			m.statusMessage = fmt.Sprintf("%s is a whole space, which has no sprint of its own — %s", m.ticketBoard.Name, m.howTo("ticket-board", "pick a board for sprint scope"))
 			if m.ticketBoard.IsCombined() {
-				m.statusMessage = "Only spaces are configured, and spaces have no sprint of their own — add a board in setup (I) for sprint scope"
+				m.statusMessage = "Only spaces are configured, and spaces have no sprint of their own — " + m.howTo("setup", "add a board for sprint scope")
 			}
 			m.statusError = false
 			return m, nil, true
@@ -314,9 +332,9 @@ func (m model) updateTicketMode(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		m.ticketSprintOnly = !m.ticketSprintOnly
 		return m.reloadTicketsAfterScopeChange("sprint")
 
-	case key.Matches(msg, m.keys.BoardMenu):
+	case "ticket-board":
 		if m.cfg.ActiveProfile.Jira == nil || len(m.cfg.ActiveProfile.Jira.Boards) == 0 {
-			m.statusMessage = "No boards or spaces configured — press I to run setup"
+			m.statusMessage = "No boards or spaces configured — " + m.howTo("setup", "run setup")
 			m.statusError = true
 			return m, nil, true
 		}
@@ -326,7 +344,7 @@ func (m model) updateTicketMode(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		m.statusError = false
 		return m, nil, true
 
-	case key.Matches(msg, m.keys.SetStatus):
+	case "ticket-status":
 		selected := m.selectedTicket()
 		if selected == nil {
 			m.statusMessage = "Select a ticket first"
@@ -341,7 +359,7 @@ func (m model) updateTicketMode(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		m.statusError = false
 		return m, nil, true
 
-	case key.Matches(msg, m.keys.WriteNote):
+	case "ticket-comment":
 		selected := m.selectedTicket()
 		if selected == nil {
 			m.statusMessage = "Select a ticket first"
@@ -355,7 +373,7 @@ func (m model) updateTicketMode(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		m.statusError = false
 		return m, nil, true
 
-	case key.Matches(msg, m.keys.AssignSelf):
+	case "ticket-assign":
 		selected := m.selectedTicket()
 		if selected == nil {
 			m.statusMessage = "Select a ticket first"
@@ -647,16 +665,6 @@ func (m model) updateBoardSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateTicketReadMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, m.keys.Quit):
-		return m, tea.Quit
-	case key.Matches(msg, m.keys.OpenPR):
-		selected := m.selectedTicketForDetail()
-		if selected == nil || selected.URL == "" {
-			return m, nil
-		}
-		return m, openBrowserMessageCmd(m.services, selected.URL, "Opened JIRA ticket in browser")
-	}
 	switch msg.String() {
 	case "esc", "enter":
 		m.ticketReadMode = false
@@ -957,31 +965,31 @@ func (m *model) rebuildTicketRows() {
 
 func (m model) emptyTicketsMessage() string {
 	if m.cfg.ActiveProfile.Jira == nil {
-		return "JIRA is not configured for this profile — press I"
+		return "JIRA is not configured for this profile — " + m.howTo("setup", "set it up")
 	}
 	if m.filterQuery != "" {
 		return fmt.Sprintf("No tickets match %q", m.filterQuery)
 	}
 	if m.ticketOpenOnly {
-		return "No open tickets match the active filters — press f to adjust"
+		return "No open tickets match the active filters — " + m.howTo("ticket-filters", "adjust")
 	}
 	if m.ticketSprintScoped() {
 		return "No tickets in the active sprint"
 	}
 	if m.ticketBoard.IsSpace() {
 		if m.ticketMineOnly {
-			return "No tickets in this space are assigned to you — press Y to show the whole space"
+			return "No tickets in this space are assigned to you — " + m.howTo("ticket-mine", "show the whole space")
 		}
 		return "No tickets in this space"
 	}
 	if m.ticketBoard.IsCombined() {
 		if m.ticketMineOnly {
-			return "No tickets in any board or space are assigned to you — press Y to show everyone's"
+			return "No tickets in any board or space are assigned to you — " + m.howTo("ticket-mine", "show everyone's")
 		}
 		return "No tickets in any board or space"
 	}
 	if m.ticketMineOnly {
-		return "No tickets assigned to you — press Y to show the whole board"
+		return "No tickets assigned to you — " + m.howTo("ticket-mine", "show the whole board")
 	}
 	return "No tickets on this board"
 }

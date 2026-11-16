@@ -21,6 +21,9 @@ func (m model) View() string {
 	if m.paletteOpen {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, renderCommandPaletteModal(m))
 	}
+	if m.keybindings.open {
+		return renderKeybindingsScreen(m)
+	}
 	if m.logsOpen {
 		return m.sessionLogsView()
 	}
@@ -63,7 +66,10 @@ func (m model) View() string {
 	if m.isPRMode() {
 		tableTitle = infoStyle.Render("PR Radar")
 		if m.cfg.MultiRepository() {
-			tableTitle += " " + purpleStyle.Render(icons.Repo+" "+m.prCfg().RepositoryName()) + mutedStyle.Render("  R switches")
+			tableTitle += " " + purpleStyle.Render(icons.Repo+" "+m.prCfg().RepositoryName())
+			if label := m.keyLabel("pr-repo"); label != "" {
+				tableTitle += mutedStyle.Render("  " + label + " switches")
+			}
 		}
 	} else if m.isTicketMode() {
 		tableTitle = infoStyle.Render("JIRA Tickets")
@@ -88,7 +94,7 @@ func (m model) View() string {
 
 	footer := lipgloss.JoinVertical(lipgloss.Left,
 		m.statusBarView(),
-		subtleStyle.Render(m.help.View(m.keys)),
+		subtleStyle.Render(m.help.ShortHelpView(m.footerBindings())),
 	)
 
 	content := lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", footer)
@@ -243,13 +249,40 @@ func (m model) elapsedHint() string {
 }
 
 func (m model) quietStatusHint() string {
+	hint := fmt.Sprintf("%s %d worktrees", icons.Dot, len(m.visibleWorktrees))
 	if m.isPRMode() {
-		return fmt.Sprintf("%s %d PRs · ctrl+p commands · / filter", icons.Dot, len(m.visiblePRs))
+		hint = fmt.Sprintf("%s %d PRs", icons.Dot, len(m.visiblePRs))
+	} else if m.isTicketMode() {
+		hint = fmt.Sprintf("%s %d tickets", icons.Dot, len(m.visibleTickets))
 	}
-	if m.isTicketMode() {
-		return fmt.Sprintf("%s %d tickets · ctrl+p commands · / filter", icons.Dot, len(m.visibleTickets))
+	km := m.keymap()
+	for _, key := range []struct{ id, what string }{{cmdPalette, "commands"}, {"filter", "filter"}} {
+		if label := km.label(key.id); label != "" {
+			hint += " · " + label + " " + key.what
+		}
 	}
-	return fmt.Sprintf("%s %d worktrees · ctrl+p commands · / filter", icons.Dot, len(m.visibleWorktrees))
+	return hint
+}
+
+// readerFooter lists the keys of a full-screen reader. A hint names a command
+// by ID, or a fixed key when its ID is empty; commands without a key are
+// left out.
+func (m model) readerFooter(hints ...[3]string) string {
+	km := m.keymap()
+	parts := make([]string, 0, len(hints)+1)
+	for _, hint := range hints {
+		label := hint[1]
+		if hint[0] != "" {
+			label = km.label(hint[0])
+		}
+		if label != "" {
+			parts = append(parts, label+" "+hint[2])
+		}
+	}
+	if pending := m.pendingKeysHint(); pending != "" {
+		parts = append(parts, pending)
+	}
+	return strings.Join(parts, " | ")
 }
 
 func isSuccessStatus(message string) bool {
@@ -262,6 +295,9 @@ func isSuccessStatus(message string) bool {
 }
 
 func (m model) statusBarView() string {
+	if pending := m.pendingKeysHint(); pending != "" {
+		return statusStyle.Render(infoStyle.Render(pending))
+	}
 	if m.isBusy() {
 		message := m.statusMessage
 		if progress := m.progressHint(); progress != "" {
@@ -283,7 +319,7 @@ func (m model) statusBarView() string {
 		if remaining < 0 {
 			remaining = 0
 		}
-		return statusStyle.Render(warnStyle.Render(fmt.Sprintf("%s Press d again to delete %s (%.1fs)", icons.Warn, m.deleteArmedName, remaining.Seconds())))
+		return statusStyle.Render(warnStyle.Render(fmt.Sprintf("%s %s (%.1fs)", icons.Warn, m.deleteConfirmHint(m.deleteArmedName), remaining.Seconds())))
 	}
 	if strings.TrimSpace(m.statusMessage) == "" {
 		return statusStyle.Render(mutedStyle.Render(m.quietStatusHint()))
@@ -311,7 +347,7 @@ func (m model) fullScreenPRDiffView() string {
 		titleStyle.Render(clampRunewidth(title, width)),
 		subtleStyle.Render(clampRunewidth(meta, width)),
 	)
-	footerText := "esc close | j/k scroll | A approve | o open PR | r refresh | q quit"
+	footerText := m.readerFooter([3]string{"", "esc", "close"}, [3]string{"", "j/k", "scroll"}, [3]string{"approve", "", "approve"}, [3]string{"open-browser", "", "open PR"}, [3]string{"refresh", "", "refresh"}, [3]string{cmdQuit, "", "quit"})
 	status := m.statusMessage
 	if m.isBusy() {
 		status = fmt.Sprintf("%s %s", m.spinner.View(), status)
@@ -346,7 +382,7 @@ func (m model) fullScreenTicketView() string {
 		titleStyle.Render(clampRunewidth(title, width)),
 		subtleStyle.Render(clampRunewidth(meta, width)),
 	)
-	footer := subtleStyle.Render(clampRunewidth("esc close | j/k scroll | o open in browser | q quit", width))
+	footer := subtleStyle.Render(clampRunewidth(m.readerFooter([3]string{"", "esc", "close"}, [3]string{"", "j/k", "scroll"}, [3]string{"open-browser", "", "open in browser"}, [3]string{cmdQuit, "", "quit"}), width))
 	return lipgloss.NewStyle().Width(width).Height(max(1, m.height)).Render(lipgloss.JoinVertical(lipgloss.Left, header, m.detail.View(), footer))
 }
 
@@ -1013,7 +1049,10 @@ func renderNewWorktreeModal(m model) string {
 }
 
 func renderAgentSelectorModal(m model) string {
-	body := []string{"Choose which tool runs when pressing i.", ""}
+	body := []string{"Choose which tool the AI agent commands run.", ""}
+	if label := m.keyLabel("open-agent"); label != "" {
+		body[0] = "Choose which tool runs when pressing " + label + "."
+	}
 	if len(m.cfg.App.Agents) == 0 {
 		body = append(body, errorStyle.Render("No agents configured"))
 	} else {
@@ -1198,78 +1237,148 @@ func renderTicketFiltersModal(m model) string {
 	return renderModal("JIRA Ticket Filters", body, []keyHint{{"j/k", "move"}, {"space", "toggle"}, {"enter", "apply"}, {"esc", "cancel"}})
 }
 
-func helpKeyLine(key, action string) string {
-	return "  " + keyHintKeyStyle.Render(padCell(key, 8)) + " " + action
-}
-
 func helpSection(title string) string {
 	return infoStyle.Render(icons.Section + " " + title)
 }
 
-func renderHelpModal(m model) string {
-	lines := []string{
-		titleStyle.Render("Keybindings"),
-		"",
-		helpSection("Global"),
-		helpKeyLine("ctrl+p", "command palette (map ⌘P in your terminal)"),
-		helpKeyLine("h", "show or hide this help"),
-		helpKeyLine("q/ctrl+c", "quit"),
-		helpKeyLine("tab", "switch table/details focus"),
-		helpKeyLine("r", "refresh current mode"),
-		helpKeyLine("/", "filter current mode"),
-		helpKeyLine("esc", "cancel input, clear filter, or close help"),
-		helpKeyLine("s", "switch project"),
-		helpKeyLine("I", "edit project: repositories, agents, JIRA"),
-		helpKeyLine("m", "choose default AI agent"),
-		"",
-		helpSection("Worktrees"),
-		helpKeyLine("j/k", "move selection"),
-		helpKeyLine("a", "toggle managed/all worktrees"),
-		helpKeyLine("n", "create worktree (tab: on top of selected)"),
-		helpKeyLine("N", "create worktree on top of selected"),
-		helpKeyLine("B", "restack selected stacked worktree"),
-		helpKeyLine("X", "sweep clean worktrees untouched for days"),
-		helpKeyLine("d d", "delete selected worktree"),
-		helpKeyLine("o", "open selected local PR"),
-		helpKeyLine("enter", "run selected Enter action"),
-		helpKeyLine("e", "choose Enter action"),
-		helpKeyLine("v", "open worktree in "+m.configuredEditor().Name),
-		helpKeyLine("i", "open worktree with agent in a new terminal tab"),
-		"           terminal action opens worktree in a new terminal tab",
-		helpKeyLine("p", "toggle local PR body in details"),
-		"",
-		helpSection("PR Radar"),
-		helpKeyLine("P", "toggle PR Radar mode"),
-		helpKeyLine("S", "cycle state filter"),
-		helpKeyLine("u", "choose involved-user filter"),
-		helpKeyLine("Y", "toggle PRs authored by @me"),
-		helpKeyLine("b", "switch final column between title/branch"),
-		helpKeyLine("f", "show failed GitHub Actions in details"),
-		helpKeyLine("enter", "open full-screen PR diff"),
-		helpKeyLine("esc", "close full-screen PR diff"),
-		helpKeyLine("A", "approve selected PR"),
-		helpKeyLine("c", "ask configured agent about selected PR"),
-		helpKeyLine("n", "create worktree from selected PR branch"),
-		helpKeyLine("R", "choose the repository PR Radar shows"),
-		helpKeyLine("o", "open selected PR in browser"),
-		"",
-		helpSection("JIRA Tickets"),
-		helpKeyLine("J", "toggle JIRA Tickets mode"),
-		helpKeyLine("j/k", "move selection and load ticket details"),
-		helpKeyLine("enter", "open full-screen ticket reader"),
-		helpKeyLine("f", "configure ticket filters"),
-		helpKeyLine("Y", "toggle assigned-to-me/all tickets"),
-		helpKeyLine("S", "toggle active-sprint scope"),
-		helpKeyLine("b", "choose configured board"),
-		helpKeyLine("t", "change selected ticket status"),
-		helpKeyLine("C", "comment on selected ticket"),
-		helpKeyLine("A", "assign selected ticket"),
-		helpKeyLine("n", "create ticket worktree (asks when one exists)"),
-		helpKeyLine("N", "create ticket worktree on top of another"),
-		helpKeyLine("o", "open selected ticket in browser"),
-		"",
-		renderKeyHints([]keyHint{{"h/enter/esc", "close"}}),
+// helpPage collects the lines of the help page, so the key column can be as
+// wide as the longest key in use.
+type helpPage struct {
+	km      keymap
+	entries [][2]string
+}
+
+// key is the keybinding of a command, or a dash when it has none.
+func (h *helpPage) key(id string) string {
+	if label := h.km.shortcut(id); label != "" {
+		return label
 	}
+	return "—"
+}
+
+// keys is every keybinding of a command.
+func (h *helpPage) keys(id string) string {
+	if labels := keySeqLabels(h.km.keysOf(id)); len(labels) > 0 {
+		return strings.Join(labels, "/")
+	}
+	return "—"
+}
+
+func (h *helpPage) section(title string) {
+	if len(h.entries) > 0 {
+		h.entries = append(h.entries, [2]string{})
+	}
+	h.entries = append(h.entries, [2]string{"", title})
+}
+
+func (h *helpPage) add(key, action string) {
+	h.entries = append(h.entries, [2]string{key, action})
+}
+
+// command lists a command under its current key.
+func (h *helpPage) command(id, action string) {
+	h.add(h.key(id), action)
+}
+
+// note continues the line above it.
+func (h *helpPage) note(text string) {
+	h.entries = append(h.entries, [2]string{" ", text})
+}
+
+func (h *helpPage) lines() []string {
+	width := 8
+	for _, entry := range h.entries {
+		width = max(width, min(18, runewidth.StringWidth(entry[0])))
+	}
+	lines := make([]string, 0, len(h.entries))
+	for _, entry := range h.entries {
+		switch {
+		case entry[0] == "" && entry[1] == "":
+			lines = append(lines, "")
+		case entry[0] == "":
+			lines = append(lines, helpSection(entry[1]))
+		default:
+			lines = append(lines, "  "+keyHintKeyStyle.Render(padCell(entry[0], width))+" "+entry[1])
+		}
+	}
+	return lines
+}
+
+// renderHelpModal lists what the keys do. The keys shown are the ones in
+// effect, so the page stays right after they are customized.
+func renderHelpModal(m model) string {
+	page := &helpPage{km: m.keymap()}
+
+	page.section("Global")
+	page.command(cmdPalette, "command palette (map ⌘P in your terminal)")
+	page.command(cmdHelp, "show or hide this help")
+	page.command(cmdKeybindings, "customize these keys")
+	quit := "ctrl+c"
+	if label := page.km.label(cmdQuit); label != "" {
+		quit = label + "/ctrl+c"
+	}
+	page.add(quit, "quit")
+	page.command("focus", "switch table/details focus")
+	page.command("refresh", "refresh current mode")
+	page.command("filter", "filter current mode")
+	page.add("esc", "cancel input, clear filter, or close help")
+	page.command("profile-menu", "switch project")
+	page.command("setup", "edit project: repositories, agents, JIRA")
+	page.command("agent-menu", "choose default AI agent")
+
+	move := page.keys("up") + " " + page.keys("down")
+	page.section("Worktrees")
+	page.add(move, "move selection")
+	page.command("toggle-all", "toggle managed/all worktrees")
+	page.command("new", "create worktree (tab: on top of selected)")
+	page.command("stack-new", "create worktree on top of selected")
+	page.command("restack", "restack selected stacked worktree")
+	page.command("sweep", "sweep clean worktrees untouched for days")
+	page.command(cmdDelete, "delete selected worktree")
+	page.command("open-browser", "open selected local PR")
+	page.command("open", "run selected Enter action")
+	page.command("enter-menu", "choose Enter action")
+	page.command("open-editor", "open worktree in "+m.configuredEditor().Name)
+	page.command("open-agent", "open worktree with agent in a new terminal tab")
+	page.note("terminal action opens worktree in a new terminal tab")
+	page.command("body", "toggle local PR body in details")
+
+	page.section("PR Radar")
+	page.command("prs", "toggle PR Radar mode")
+	page.command("state", "cycle state filter")
+	page.command("user", "choose involved-user filter")
+	page.command("mine", "toggle PRs authored by @me")
+	page.command("branch", "switch final column between title/branch")
+	page.command("checks", "show failed GitHub Actions in details")
+	page.command("diff", "open full-screen PR diff")
+	page.add("esc", "close full-screen PR diff")
+	page.command("approve", "approve selected PR")
+	page.command("ask", "ask configured agent about selected PR")
+	page.command("new", "create worktree from selected PR branch")
+	page.command("pr-repo", "choose the repository PR Radar shows")
+	page.command("open-browser", "open selected PR in browser")
+
+	page.section("JIRA Tickets")
+	page.command("tickets", "toggle JIRA Tickets mode")
+	page.add(move, "move selection and load ticket details")
+	page.command("ticket-read", "open full-screen ticket reader")
+	page.command("ticket-filters", "configure ticket filters")
+	page.command("ticket-mine", "toggle assigned-to-me/all tickets")
+	page.command("ticket-sprint", "toggle active-sprint scope")
+	page.command("ticket-board", "choose configured board")
+	page.command("ticket-status", "change selected ticket status")
+	page.command("ticket-comment", "comment on selected ticket")
+	page.command("ticket-assign", "assign selected ticket")
+	page.command("new", "create ticket worktree (asks when one exists)")
+	page.command("stack-new", "create ticket worktree on top of another")
+	page.command("open-browser", "open selected ticket in browser")
+
+	closeKeys := "enter/esc"
+	if label := page.km.label(cmdHelp); label != "" {
+		closeKeys = label + "/" + closeKeys
+	}
+	lines := append([]string{titleStyle.Render("Keybindings"), ""}, page.lines()...)
+	lines = append(lines, "", renderKeyHints([]keyHint{{closeKeys, "close"}}))
 	return modalStyle.Width(max(72, min(92, m.width-8))).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 

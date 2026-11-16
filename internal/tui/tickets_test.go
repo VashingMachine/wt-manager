@@ -253,7 +253,7 @@ func TestTicketStatusAllowsDirectEntry(t *testing.T) {
 		t.Fatalf("ticket selection missing: cursor=%d tickets=%d", m.table.Cursor(), len(m.visibleTickets))
 	}
 
-	next, _, handled := m.updateTicketMode(teaKey("t"))
+	next, _, handled := m.dispatchKey(nil, teaKey("t"))
 	if !handled {
 		t.Fatal("ticket status key was not handled")
 	}
@@ -304,7 +304,7 @@ func TestTicketFiltersDefaultEnabledAndApplyOpenOnly(t *testing.T) {
 		t.Fatalf("visible tickets = %#v", m.visibleTickets)
 	}
 
-	next, _, handled := m.updateTicketMode(teaKey("f"))
+	next, _, handled := m.dispatchKey(nil, teaKey("f"))
 	if !handled {
 		t.Fatal("f did not open ticket filters")
 	}
@@ -372,7 +372,7 @@ func TestSpaceTicketsIgnoreSprintScope(t *testing.T) {
 		t.Fatalf("ticket summary = %q", summary)
 	}
 
-	next, cmd, handled := m.updateTicketMode(teaKey("S"))
+	next, cmd, handled := m.dispatchKey(nil, teaKey("S"))
 	got := next.(model)
 	if !handled || cmd != nil || !got.ticketSprintOnly || !strings.Contains(got.statusMessage, "whole space") {
 		t.Fatalf("S on a space = handled:%v cmd:%v sprint:%v status:%q", handled, cmd != nil, got.ticketSprintOnly, got.statusMessage)
@@ -414,7 +414,7 @@ func TestBoardSelectorOffersAllSources(t *testing.T) {
 		t.Fatalf("default source = %+v, summary %q", m.ticketBoard, m.ticketFilterSummary())
 	}
 
-	next, _, handled := m.updateTicketMode(teaKey("b"))
+	next, _, handled := m.dispatchKey(nil, teaKey("b"))
 	got := next.(model)
 	modal := ansi.Strip(renderBoardSelectorModal(got))
 	if !handled || !got.selectingBoard || got.boardCursor != 0 || !strings.Contains(modal, core.JiraAllSources+"  [APP, OPS]") || !strings.Contains(modal, "Operations (OPS)  [whole space]") {
@@ -428,7 +428,7 @@ func TestBoardSelectorOffersAllSources(t *testing.T) {
 		t.Fatalf("picked = %+v, default %q, want the space", got.ticketBoard, got.cfg.ActiveProfile.Jira.DefaultBoard)
 	}
 
-	next, _, _ = got.updateTicketMode(teaKey("b"))
+	next, _, _ = got.dispatchKey(nil, teaKey("b"))
 	got = next.(model)
 	for _, step := range []string{"k", "k", "enter"} {
 		next, _ = got.updateBoardSelector(teaKey(step))

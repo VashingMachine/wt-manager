@@ -154,7 +154,7 @@ func (m model) stackDetailLines(wt Worktree) []string {
 		}
 		lines = append(lines, "Stacked on: "+where)
 		if stackStateOf(wt).needsRestack() {
-			lines = append(lines, fmt.Sprintf("  %s %s: press B to restack", icons.Restack, m.stackStatusLine(wt)))
+			lines = append(lines, fmt.Sprintf("  %s %s: %s", icons.Restack, m.stackStatusLine(wt), m.howTo("restack", "restack")))
 		} else {
 			lines = append(lines, "  "+m.stackStatusLine(wt))
 		}

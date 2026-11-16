@@ -9,7 +9,6 @@ import (
 
 	"github.com/VashingMachine/wt-manager/internal/core"
 	"github.com/charmbracelet/bubbles/help"
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -84,48 +83,6 @@ type openPRWorktreeResult struct {
 	Err     error
 }
 
-type keyMap struct {
-	Palette       key.Binding
-	Up            key.Binding
-	Down          key.Binding
-	Focus         key.Binding
-	Refresh       key.Binding
-	ToggleAll     key.Binding
-	PRRadar       key.Binding
-	TicketMode    key.Binding
-	StateFilter   key.Binding
-	SprintOnly    key.Binding
-	BoardMenu     key.Binding
-	SetStatus     key.Binding
-	WriteNote     key.Binding
-	AssignSelf    key.Binding
-	UserFilter    key.Binding
-	MineFilter    key.Binding
-	BranchView    key.Binding
-	FailedGHA     key.Binding
-	TicketFilters key.Binding
-	HelpPage      key.Binding
-	AskPR         key.Binding
-	PRDiff        key.Binding
-	ApprovePR     key.Binding
-	Filter        key.Binding
-	ToggleBody    key.Binding
-	OpenPR        key.Binding
-	OpenCode      key.Binding
-	OpenAgent     key.Binding
-	EnterAction   key.Binding
-	AgentMenu     key.Binding
-	ProfileMenu   key.Binding
-	PRRepository  key.Binding
-	Setup         key.Binding
-	New           key.Binding
-	StackNew      key.Binding
-	Restack       key.Binding
-	Sweep         key.Binding
-	Delete        key.Binding
-	Quit          key.Binding
-}
-
 const (
 	deleteConfirmWindow = 1500 * time.Millisecond
 	statusClearAfter    = 4 * time.Second
@@ -162,63 +119,10 @@ var enterActionOptions = []enterActionOption{
 	{Action: core.EnterActionTerminal, Label: "Terminal", Description: "Open terminal in worktree"},
 }
 
-func defaultKeys() keyMap {
-	return keyMap{
-		Palette:       key.NewBinding(key.WithKeys("ctrl+p"), key.WithHelp("ctrl+p", "commands")),
-		Up:            key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("k/up", "move")),
-		Down:          key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("j/down", "move")),
-		Focus:         key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "switch pane")),
-		Refresh:       key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
-		ToggleAll:     key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "toggle all worktrees")),
-		PRRadar:       key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "PR radar")),
-		TicketMode:    key.NewBinding(key.WithKeys("J"), key.WithHelp("J", "JIRA tickets")),
-		StateFilter:   key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "PR state")),
-		SprintOnly:    key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "active sprint")),
-		BoardMenu:     key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "board")),
-		SetStatus:     key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "set status")),
-		WriteNote:     key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "comment")),
-		AssignSelf:    key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "assign")),
-		UserFilter:    key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "PR user")),
-		MineFilter:    key.NewBinding(key.WithKeys("Y"), key.WithHelp("Y", "my PRs")),
-		BranchView:    key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "title/branch")),
-		FailedGHA:     key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "failed checks")),
-		TicketFilters: key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "ticket filters")),
-		HelpPage:      key.NewBinding(key.WithKeys("h"), key.WithHelp("h", "help")),
-		AskPR:         key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "ask agent")),
-		PRDiff:        key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open/diff")),
-		ApprovePR:     key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "approve PR")),
-		Filter:        key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
-		ToggleBody:    key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "toggle PR body")),
-		OpenPR:        key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open PR in browser")),
-		OpenCode:      key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "open editor")),
-		OpenAgent:     key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "open agent")),
-		EnterAction:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "enter action")),
-		AgentMenu:     key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "select agent")),
-		ProfileMenu:   key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "switch project")),
-		PRRepository:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "PR repository")),
-		Setup:         key.NewBinding(key.WithKeys("I"), key.WithHelp("I", "edit project")),
-		New:           key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new worktree")),
-		StackNew:      key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "new worktree on top of selected")),
-		Restack:       key.NewBinding(key.WithKeys("B"), key.WithHelp("B", "restack worktree")),
-		Sweep:         key.NewBinding(key.WithKeys("X"), key.WithHelp("X", "sweep stale worktrees")),
-		Delete:        key.NewBinding(key.WithKeys("d"), key.WithHelp("d d", "delete worktree")),
-		Quit:          key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-	}
-}
-
-func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Palette, k.HelpPage, k.Refresh, k.PRRadar, k.TicketMode, k.Filter, k.PRDiff, k.OpenPR, k.Quit}
-}
-
-func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Palette, k.Up, k.Down, k.Focus, k.HelpPage, k.Refresh, k.ToggleAll, k.PRRadar, k.TicketMode, k.Filter}, {k.StateFilter, k.SprintOnly, k.BoardMenu, k.SetStatus, k.WriteNote, k.AssignSelf, k.UserFilter, k.MineFilter, k.BranchView, k.FailedGHA, k.TicketFilters, k.PRDiff, k.ApprovePR, k.AskPR, k.PRRepository, k.New, k.StackNew, k.Restack, k.Sweep, k.ProfileMenu, k.Setup, k.ToggleBody, k.OpenPR, k.OpenCode, k.OpenAgent, k.EnterAction, k.AgentMenu, k.Delete, k.Quit}}
-}
-
 type model struct {
 	services                       core.Services
 	configSaveState                *configSaveState
 	cfg                            Config
-	keys                           keyMap
 	help                           help.Model
 	table                          table.Model
 	detail                         viewport.Model
@@ -389,6 +293,11 @@ type model struct {
 	// statusAfterLoad replaces the usual load summary once, so the outcome of
 	// an action survives the refresh it triggers.
 	statusAfterLoad string
+	// pendingKeys are the keys pressed so far of a keybinding that takes
+	// several, waiting for the next one.
+	pendingKeys keySeq
+	// keybindings is the screen that customizes keys.
+	keybindings keybindingsScreen
 }
 
 func NewModel(cfg Config, services core.Services) model {
@@ -473,8 +382,8 @@ func NewModel(cfg Config, services core.Services) model {
 		services:            services,
 		configSaveState:     newConfigSaveState(services, cfg.App),
 		cfg:                 cfg,
-		keys:                defaultKeys(),
 		help:                h,
+		keybindings:         newKeybindingsScreen(),
 		table:               tbl,
 		detail:              vp,
 		filterInput:         filterInput,
@@ -1072,6 +981,8 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.setTransientStatus(msg.Message)
 	case tea.KeyMsg:
+		pending := m.pendingKeys
+		m.pendingKeys = nil
 		if m.paletteOpen {
 			return m.updateCommandPalette(msg)
 		}
@@ -1082,14 +993,25 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setup = &setup
 			return m, cmd
 		}
+		if m.keybindings.open {
+			return m.updateKeybindings(msg)
+		}
 		if m.editingEditor {
 			return m.updateEditorInput(msg)
 		}
 		if m.selectingEditor {
 			return m.updateEditorSelector(msg)
 		}
-		if key.Matches(msg, m.keys.Palette) && !m.hasTextOrConfirmationModal() {
-			return m.openCommandPalette()
+		// Keybindings answer wherever no draft or confirmation owns the
+		// keyboard: every command in the main view, and the few that the logs,
+		// the help page and the full-screen readers leave reachable.
+		if !m.hasTextOrConfirmationModal() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			if next, cmd, handled := m.dispatchKey(pending, msg); handled {
+				return next, cmd
+			}
 		}
 		if m.logsOpen {
 			return m.updateSessionLogs(msg)
@@ -1211,438 +1133,16 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.setTransientStatus("Filter cleared")
 			}
 		}
-
-		if key.Matches(msg, m.keys.Filter) {
-			m.clearDeleteArm()
-			m.filtering = true
-			m.filterPrevQuery = m.filterQuery
-			m.filterInput.SetValue(m.filterQuery)
-			m.filterInput.CursorEnd()
-			m.filterInput.Focus()
-			m.statusMessage = map[viewMode]string{
-				modeWorktrees: "Filter by worktree or branch",
-				modePRs:       "Filter remote pull requests",
-				modeTickets:   "Filter JIRA tickets",
-			}[m.mode]
-			m.statusError = false
-			return m, nil
-		}
-
-		if key.Matches(msg, m.keys.HelpPage) {
-			m.showingHelp = true
-			m.statusMessage = "Help"
-			m.statusError = false
-			return m, nil
-		}
-
-		if m.focusTable {
-			if key.Matches(msg, m.keys.Up) {
-				m.clearDeleteArm()
-				if m.isPRMode() {
-					return m.movePRSelectionAndLoad(-1)
-				}
-				if m.isTicketMode() {
-					return m.moveTicketSelectionAndLoad(-1)
-				}
-				m.moveSelection(-1)
-				return m, nil
-			}
-			if key.Matches(msg, m.keys.Down) {
-				m.clearDeleteArm()
-				if m.isPRMode() {
-					return m.movePRSelectionAndLoad(1)
-				}
-				if m.isTicketMode() {
-					return m.moveTicketSelectionAndLoad(1)
-				}
-				m.moveSelection(1)
-				return m, nil
-			}
-		}
-
-		if key.Matches(msg, m.keys.Quit) {
-			return m, tea.Quit
-		}
-		if key.Matches(msg, m.keys.Focus) {
-			m.clearDeleteArm()
-			m.focusTable = !m.focusTable
-			m.table.Focus()
-			if !m.focusTable {
-				m.table.Blur()
-			}
-			return m, m.setTransientStatus(map[bool]string{true: "Table focused", false: "Details focused"}[m.focusTable])
-		}
-		if key.Matches(msg, m.keys.Refresh) {
-			m.clearDeleteArm()
-			if m.isTicketMode() {
-				m.rememberTicketSelection()
-				m.cancelTicketDetailLoad()
-				return m, tea.Batch(m.loadTicketsCmd(true), m.startLoading(loadingTickets, "Refreshing JIRA tickets..."))
-			}
-			if m.isPRMode() {
-				m.rememberPRSelection()
-				m.cancelPRDetailLoad()
-				m.confirmingPRApproval = false
-				m.prApprovalPendingNumber = 0
-				m.prApprovalAwaitingDetailNumber = 0
-				m.prApprovalWarnings = nil
-				m.prListLoading = true
-				return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.prCfg(), false), m.startLoading(loadingPRs, "Refreshing remote PRs..."))
-			}
-			m.rememberSelection()
-			m.refreshPRIndex = true
-			return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, "Refreshing worktrees..."))
-		}
-		if key.Matches(msg, m.keys.PRRadar) {
-			return m.switchMode(m.toggleMode(modePRs))
-		}
-		if key.Matches(msg, m.keys.TicketMode) {
-			return m.switchMode(m.toggleMode(modeTickets))
-		}
-		if m.isTicketMode() {
-			if next, cmd, handled := m.updateTicketMode(msg); handled {
-				return next, cmd
-			}
-		}
-		if m.isPRMode() && key.Matches(msg, m.keys.PRRepository) {
-			if !m.cfg.MultiRepository() {
-				return m, m.setTransientStatus("This project has one repository; add another from the command palette")
-			}
-			return m.openRepositoryPicker(pickRepoForPRRadar, Ticket{}, "")
-		}
-		if m.isPRMode() && key.Matches(msg, m.keys.StateFilter) {
-			m.cyclePRStateFilter()
-			m.applyPRFilter()
-			m.statusMessage = m.prFilterSummary()
-			m.statusError = false
-			return m, nil
-		}
-		if m.isPRMode() && key.Matches(msg, m.keys.UserFilter) {
-			m.prUserOptions = append([]string{"all"}, m.services.RemotePRUsers(m.remotePRs)...)
-			m.prUserCursor = m.currentPRUserIndex()
-			m.selectingPRUser = true
-			m.statusMessage = "Filter PRs by user"
-			m.statusError = false
-			return m, nil
-		}
-		if m.isPRMode() && key.Matches(msg, m.keys.MineFilter) {
-			if m.prAuthorFilter != "" {
-				m.prAuthorFilter = ""
-				m.applyPRFilter()
-				m.statusMessage = m.prFilterSummary()
-				m.statusError = false
-				return m, nil
-			}
-			if m.prCurrentUser == "" {
-				m.statusMessage = "Current GitHub user is unknown; refresh PR Radar first"
-				m.statusError = true
-				return m, nil
-			}
-			m.prAuthorFilter = m.prCurrentUser
-			m.applyPRFilter()
-			m.statusMessage = m.prFilterSummary()
-			m.statusError = false
-			return m, nil
-		}
-		if m.isPRMode() && key.Matches(msg, m.keys.BranchView) {
-			m.prShowBranch = !m.prShowBranch
-			m.rebuildRows()
-			m.statusMessage = map[bool]string{true: "Showing PR branches", false: "Showing PR titles"}[m.prShowBranch]
-			m.statusError = false
-			return m, nil
-		}
-		if m.isPRMode() && key.Matches(msg, m.keys.FailedGHA) {
-			m.prShowFailedGHA = !m.prShowFailedGHA
-			m.updateDetailContent()
-			m.statusMessage = map[bool]string{true: "Showing failed GitHub Actions in Details", false: "Hiding failed GitHub Actions"}[m.prShowFailedGHA]
-			m.statusError = false
-			return m, nil
-		}
-		if m.isPRMode() && key.Matches(msg, m.keys.AskPR) {
-			selected := m.selectedRemotePRForDetail()
-			if selected == nil {
-				m.statusMessage = "Select a remote PR first"
-				m.statusError = true
-				return m, nil
-			}
-			m.askingPR = true
-			m.prQuestionInput.SetValue("")
-			m.prQuestionInput.Focus()
-			m.statusMessage = fmt.Sprintf("Ask %s about PR #%d", m.prAgentLabel(), selected.Number)
-			m.statusError = false
-			return m, nil
-		}
-		if m.isPRMode() && key.Matches(msg, m.keys.PRDiff) {
-			selected := m.selectedRemotePR()
-			if selected == nil {
-				m.statusMessage = "Select a remote PR first"
-				m.statusError = true
-				return m, nil
-			}
-			m.prDiffMode = true
-			m.resize()
-			m.statusMessage = "Showing full-screen PR diff"
-			m.statusError = false
-			if m.prDiffMode && (m.prDetail == nil || m.prDetail.Number != selected.Number) && !m.prDetailLoading {
-				return m.startPRDetailLoad(selected.Number)
-			}
-			if m.prDiffMode && m.prDetailLoading {
-				m.statusMessage = fmt.Sprintf("Loading PR #%d diff...", selected.Number)
-			}
-			return m, nil
-		}
-		if m.isTicketMode() && key.Matches(msg, m.keys.PRDiff) {
-			selected := m.selectedTicketForDetail()
-			if selected == nil {
-				m.statusMessage = "Select a JIRA ticket first"
-				m.statusError = true
-				return m, nil
-			}
-			m.ticketReadMode = true
-			m.resize()
-			if !selected.Detail && !m.ticketDetailLoading {
-				return m.startTicketDetailLoad(selected.Key)
-			}
-			return m, nil
-		}
-		if m.isWorktreeMode() && key.Matches(msg, m.keys.PRDiff) {
-			return m.openSelectedWorktreeWithAction(m.cfg.App.DefaultEnterAction)
-		}
-		if m.isPRMode() && key.Matches(msg, m.keys.ApprovePR) {
-			return m.beginPRApproval()
-		}
-		if key.Matches(msg, m.keys.EnterAction) {
-			if !m.isWorktreeMode() {
-				m.statusMessage = "Enter action is available for local worktrees"
-				m.statusError = true
-				return m, nil
-			}
-			m.clearDeleteArm()
-			m.selectingEnterAction = true
-			m.enterActionCursor = m.defaultEnterActionIndex()
-			m.statusMessage = "Select default Enter action"
-			m.statusError = false
-			return m, nil
-		}
-		if key.Matches(msg, m.keys.ToggleAll) {
-			if !m.isWorktreeMode() {
-				m.statusMessage = "Toggle all worktrees is unavailable in PR Radar"
-				m.statusError = true
-				return m, nil
-			}
-			m.clearDeleteArm()
-			m.showAll = !m.showAll
-			m.rememberSelection()
-			message := map[bool]string{true: "Showing all repo worktrees", false: "Showing managed worktrees only"}[m.showAll]
-			return m, tea.Batch(loadWorktreesCmd(m.services, m.cfg, m.showAll), m.startLoading(loadingWorktrees, message))
-		}
-		if key.Matches(msg, m.keys.ToggleBody) {
-			if m.isTicketMode() {
-				m.statusMessage = "PR body toggle is unavailable in JIRA tickets"
-				m.statusError = true
-				return m, nil
-			}
-			m.showPRBody = !m.showPRBody
-			m.updateDetailContent()
-			return m, nil
-		}
-		if key.Matches(msg, m.keys.OpenPR) {
-			if m.isTicketMode() {
-				selected := m.selectedTicketForDetail()
-				if selected == nil || selected.URL == "" {
-					m.statusMessage = "Selected row has no JIRA ticket URL"
-					m.statusError = true
-					return m, nil
-				}
-				return m, openBrowserMessageCmd(m.services, selected.URL, "Opened JIRA ticket in browser")
-			}
-			if m.isPRMode() {
-				selected := m.selectedRemotePRForDetail()
-				if selected == nil {
-					m.statusMessage = "Selected row has no PR"
-					m.statusError = true
-					return m, nil
-				}
-				return m, openBrowserCmd(m.services, selected.URL)
-			}
-			selected := m.selectedWorktree()
-			if selected == nil || selected.PR == nil {
-				m.statusMessage = "Selected worktree has no PR"
-				m.statusError = true
-				return m, nil
-			}
-			return m, openBrowserCmd(m.services, selected.PR.URL)
-		}
-		if key.Matches(msg, m.keys.OpenCode) {
-			if m.isTicketMode() {
-				selected := m.selectedTicket()
-				if selected == nil {
-					return m, nil
-				}
-				if selected.Worktree == nil || selected.Worktree.Missing || selected.Worktree.Prunable {
-					return m.startTicketWorktreeCreation(*selected, core.EnterActionVSCode)
-				}
-				return m.openWorktreeWithAction(*selected.Worktree, core.EnterActionVSCode)
-			}
-			if m.isPRMode() {
-				selected := m.selectedRemotePRForDetail()
-				if selected == nil {
-					m.statusMessage = "Select a remote PR first"
-					m.statusError = true
-					return m, nil
-				}
-				prCfg := m.prCfg()
-				if m.deferPendingWorktreeAction(m.services.CreateWorktreePath(prCfg, selected.HeadRefName), core.EnterActionVSCode) {
-					return m, nil
-				}
-				return m, tea.Batch(m.ops.enqueue(gitQueueKey(prCfg), openPRWorktreeInEditorCmd(m.services, m.services, prCfg, *selected, m.configuredEditor())), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for %s...", selected.Number, m.configuredEditor().Name)))
-			}
-			selected := m.selectedWorktree()
-			if selected == nil {
-				return m, nil
-			}
-			return m.openWorktreeWithAction(*selected, core.EnterActionVSCode)
-		}
-		if key.Matches(msg, m.keys.OpenAgent) {
-			if m.isTicketMode() {
-				selected := m.selectedTicket()
-				if selected == nil {
-					return m, nil
-				}
-				if selected.Worktree == nil || selected.Worktree.Missing || selected.Worktree.Prunable {
-					return m.startTicketWorktreeCreation(*selected, core.EnterActionAgent)
-				}
-				return m.openWorktreeWithAction(*selected.Worktree, core.EnterActionAgent)
-			}
-			if m.isPRMode() {
-				selected := m.selectedRemotePRForDetail()
-				if selected == nil {
-					m.statusMessage = "Select a remote PR first"
-					m.statusError = true
-					return m, nil
-				}
-				prCfg := m.prCfg()
-				if m.deferPendingWorktreeAction(m.services.CreateWorktreePath(prCfg, selected.HeadRefName), core.EnterActionAgent) {
-					return m, nil
-				}
-				agent := m.defaultAgent()
-				if agent == nil {
-					m.statusMessage = "No AI agent configured"
-					m.statusError = true
-					return m, nil
-				}
-				return m, tea.Batch(m.ops.enqueue(gitQueueKey(prCfg), openPRWorktreeAgentCmd(m.services, m.services, prCfg, *selected, *agent)), m.startLoading(loadingMutation, fmt.Sprintf("Preparing PR #%d worktree for %s...", selected.Number, agent.Name)))
-			}
-			selected := m.selectedWorktree()
-			if selected == nil {
-				return m, nil
-			}
-			return m.openWorktreeWithAction(*selected, core.EnterActionAgent)
-		}
-		if key.Matches(msg, m.keys.AgentMenu) {
-			m.clearDeleteArm()
-			m.selectingAgent = true
-			m.agentCursor = m.defaultAgentIndex()
-			m.statusMessage = "Select default AI agent"
-			m.statusError = false
-			return m, nil
-		}
-		if key.Matches(msg, m.keys.ProfileMenu) {
-			m.clearDeleteArm()
-			m.selectingProfile = true
-			m.profileCursor = m.defaultProfileIndex()
-			m.statusMessage = "Select repository profile"
-			m.statusError = false
-			return m, nil
-		}
-		if key.Matches(msg, m.keys.Setup) {
-			return m.openSetup(m.projectSetup())
-		}
-		if key.Matches(msg, m.keys.New) {
-			m.clearDeleteArm()
-			if m.isTicketMode() {
-				selected := m.selectedTicket()
-				if selected == nil {
-					m.statusMessage = "Select a JIRA ticket first"
-					m.statusError = true
-					return m, nil
-				}
-				return m.startTicketWorktreeCreation(*selected, "")
-			}
-			if m.isPRMode() {
-				selected := m.selectedRemotePRForDetail()
-				if selected == nil || strings.TrimSpace(selected.HeadRefName) == "" {
-					m.statusMessage = "Selected PR has no branch name"
-					m.statusError = true
-					return m, nil
-				}
-				branch := selected.HeadRefName
-				prCfg := m.prCfg()
-				m.beginWorktreeCreation(Worktree{
-					Name:       branch,
-					Branch:     branch,
-					Path:       m.services.CreateWorktreePath(prCfg, branch),
-					Managed:    true,
-					Repository: prCfg.RepositoryName(),
-				}, "")
-				return m, tea.Batch(m.ops.enqueue(gitQueueKey(prCfg), createWorktreeCmd(m.services, prCfg, branch)), m.startLoading(loadingMutation, fmt.Sprintf("Creating worktree for PR #%d (%s)...", selected.Number, branch)))
-			}
-			if m.cfg.MultiRepository() {
-				return m.openRepositoryPicker(pickRepoForWorktree, Ticket{}, "")
-			}
-			return m.openNewWorktreeInput("")
-		}
-		if key.Matches(msg, m.keys.StackNew) {
-			return m.startStackedWorktree()
-		}
-		if key.Matches(msg, m.keys.Restack) {
-			return m.openRestackConfirmation()
-		}
-		if key.Matches(msg, m.keys.Sweep) {
-			return m.startSweepScan()
-		}
-		if key.Matches(msg, m.keys.Delete) {
-			if !m.isWorktreeMode() {
-				m.statusMessage = "Delete is available for local worktrees"
-				m.statusError = true
-				return m, nil
-			}
-			selected := m.selectedWorktree()
-			if selected == nil {
-				return m, nil
-			}
-			if selected.IsMain {
-				m.statusMessage = "The main repository worktree cannot be deleted"
-				m.statusError = true
-				return m, nil
-			}
-
-			now := time.Now()
-			if m.deleteArmedPath == selected.Path && now.Sub(m.deleteArmedAt) <= deleteConfirmWindow {
-				wt := *selected
-				m.rememberSelection()
-				m.clearDeleteArm()
-				if m.pendingDeletes == nil {
-					m.pendingDeletes = make(map[string]pendingDelete)
-				}
-				m.pendingDeletes[wt.Path] = pendingDelete{Worktree: wt, Index: m.worktreeIndex(wt.Path)}
-				m.optimisticRemove(wt.Path)
-				wtCfg := m.worktreeCfg(wt)
-				return m, tea.Batch(m.ops.enqueue(gitQueueKey(wtCfg), removeWorktreeCmd(m.services, wtCfg, wt)), m.startLoading(loadingMutation, fmt.Sprintf("Deleting %s...", wt.Name)))
-			}
-
-			m.deleteArmedPath = selected.Path
-			m.deleteArmedName = selected.Name
-			m.deleteArmedAt = now
-			m.statusMessage = fmt.Sprintf("Press d again to delete %s", selected.Name)
-			m.statusError = false
-			return m, deleteArmTickCmd(selected.Path, now)
-		}
 	}
 
 	if m.paletteOpen {
 		var cmd tea.Cmd
 		m.paletteInput, cmd = m.paletteInput.Update(msg)
+		return m, cmd
+	}
+	if m.keybindings.open {
+		var cmd tea.Cmd
+		m.keybindings.filter, cmd = m.keybindings.filter.Update(msg)
 		return m, cmd
 	}
 	if m.editingEditor {
@@ -1798,30 +1298,6 @@ func (m model) updatePRApprovalConfirmation(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 }
 
 func (m model) updatePRDiffMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, m.keys.Quit):
-		return m, tea.Quit
-	case key.Matches(msg, m.keys.Refresh):
-		m.rememberPRSelection()
-		m.cancelPRDetailLoad()
-		m.confirmingPRApproval = false
-		m.prApprovalPendingNumber = 0
-		m.prApprovalAwaitingDetailNumber = 0
-		m.prApprovalWarnings = nil
-		m.prListLoading = true
-		return m, tea.Batch(loadRemotePullRequestsCmd(m.services, m.prCfg(), false), m.startLoading(loadingPRs, "Refreshing remote PRs..."))
-	case key.Matches(msg, m.keys.ApprovePR):
-		return m.beginPRApproval()
-	case key.Matches(msg, m.keys.OpenPR):
-		selected := m.selectedRemotePRForDetail()
-		if selected == nil {
-			m.statusMessage = "Selected row has no PR"
-			m.statusError = true
-			return m, nil
-		}
-		return m, openBrowserCmd(m.services, selected.URL)
-	}
-
 	switch msg.String() {
 	case "esc":
 		m.prDiffMode = false
@@ -1872,7 +1348,7 @@ func (m model) updateHelpPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
-	case "esc", "h", "enter":
+	case "esc", "enter":
 		m.showingHelp = false
 		return m, m.setTransientStatus("Help closed")
 	}
@@ -2768,7 +2244,7 @@ func (m *model) updateDetailContent() {
 	if m.cfg.MultiRepository() {
 		repository = m.worktreeRepository(*selected)
 	}
-	m.detail.SetContent(worktreeDetailViewContentWithStack(selected, repository, m.stackDetailLines(*selected), m.showPRBody, m.detail.Width))
+	m.detail.SetContent(worktreeDetailViewContentWithStack(selected, repository, m.stackDetailLines(*selected), m.showPRBody, m.detail.Width, m.howTo("body", "toggle full body")))
 	m.detail.GotoTop()
 }
 
@@ -3192,12 +2668,12 @@ func detailViewContent(wt *Worktree, showPRBody bool, width int) string {
 
 // worktreeDetailViewContent names the worktree's repository when one is given.
 func worktreeDetailViewContent(wt *Worktree, repository string, showPRBody bool, width int) string {
-	return worktreeDetailViewContentWithStack(wt, repository, nil, showPRBody, width)
+	return worktreeDetailViewContentWithStack(wt, repository, nil, showPRBody, width, "press p to toggle full body")
 }
 
 // worktreeDetailViewContentWithStack also says where the worktree sits in a
 // stack, in the lines the model prepared.
-func worktreeDetailViewContentWithStack(wt *Worktree, repository string, stack []string, showPRBody bool, width int) string {
+func worktreeDetailViewContentWithStack(wt *Worktree, repository string, stack []string, showPRBody bool, width int, bodyHint string) string {
 	if wt == nil {
 		return "No worktree selected"
 	}
@@ -3275,7 +2751,7 @@ func worktreeDetailViewContentWithStack(wt *Worktree, repository string, stack [
 				preview = "No PR description"
 			}
 			lines = append(lines, fmt.Sprintf("  preview: %s", truncateText(preview, max(20, width-12))))
-			lines = append(lines, "  press p to toggle full body")
+			lines = append(lines, "  "+bodyHint)
 		}
 	}
 

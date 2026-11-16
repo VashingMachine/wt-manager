@@ -98,7 +98,7 @@ func TestPaletteSearchMatchesCommandsSettingsAndWorktrees(t *testing.T) {
 	for _, tc := range []struct{ query, id string }{
 		{"rfrsh", "refresh"}, {"CONFIGURE EDITOR", "editor"}, {"billing", "worktree:/projects/billing"},
 		{"APP-123", "worktree:/projects/billing"}, {"/projects/billing", "worktree:/projects/billing"},
-		{"billing APP-123", "worktree:/projects/billing"}, {"IntelliJ", "editor:1"},
+		{"billing APP-123", "worktree:/projects/billing"}, {"IntelliJ", "editor:idea"},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			m.paletteInput.SetValue(tc.query)
@@ -154,12 +154,12 @@ func TestPaletteNavigationAndDirectEnterConfiguration(t *testing.T) {
 func TestPalettePersistsAgentAndEditorChoices(t *testing.T) {
 	m, spy := enterActionTestModel()
 	m.cfg.App.Agents = append(m.cfg.App.Agents, AgentTool{Name: "codex", Command: "codex"})
-	m, cmd := choosePaletteEntry(t, m, "agent:1")
+	m, cmd := choosePaletteEntry(t, m, "agent:codex")
 	cmd()
 	if spy.saved.DefaultAgent != "codex" || m.paletteOpen {
 		t.Fatal("agent choice was not saved")
 	}
-	m, cmd = choosePaletteEntry(t, m, "editor:1")
+	m, cmd = choosePaletteEntry(t, m, "editor:idea")
 	cmd()
 	if spy.saved.Editor.Command != "idea" || m.cfg.App.Editor.Name != "IntelliJ IDEA" || m.paletteOpen {
 		t.Fatal("editor choice was not saved")
@@ -291,7 +291,7 @@ func TestPalettePreservesDraftsAndFullscreenOnCancel(t *testing.T) {
 func TestPaletteDirectProfileSwitch(t *testing.T) {
 	m, spy := enterActionTestModel()
 	m.cfg.App.Profiles = []RepositoryProfile{{Name: "another", RepositoryPath: "/tmp/another", WorktreesDir: "/tmp/trees", GitHubRepo: "owner/repo"}}
-	m, cmd := choosePaletteEntry(t, m, "profile:0")
+	m, cmd := choosePaletteEntry(t, m, "profile:another")
 	if m.cfg.ActiveProfile.Name != "another" || m.paletteOpen || m.selectingProfile || cmd == nil {
 		t.Fatal("palette did not switch profile")
 	}
