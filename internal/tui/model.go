@@ -235,6 +235,8 @@ type model struct {
 	ticketWorktreeChoice           ticketWorktreeChoice
 	addingRepository               *repositoryEditor
 	showingHelp                    bool
+	helpTab                        viewMode
+	helpScroll                     int
 	agentCursor                    int
 	enterActionCursor              int
 	profileCursor                  int
@@ -1340,17 +1342,6 @@ func (m model) updatePRUserSelector(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusMessage = m.prFilterSummary()
 		m.statusError = false
 		return m, nil
-	}
-	return m, nil
-}
-
-func (m model) updateHelpPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
-		return m, tea.Quit
-	case "esc", "enter":
-		m.showingHelp = false
-		return m, m.setTransientStatus("Help closed")
 	}
 	return m, nil
 }

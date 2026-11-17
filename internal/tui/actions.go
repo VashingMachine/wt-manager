@@ -22,7 +22,7 @@ func (m model) commandReachable(id string) bool {
 	case m.logsOpen:
 		return id == cmdPalette
 	case m.showingHelp:
-		return id == cmdPalette || id == cmdHelp
+		return id == cmdPalette || id == cmdHelp || id == cmdKeybindings
 	case m.isPRMode() && m.prDiffMode:
 		return slices.Contains([]string{cmdPalette, cmdQuit, "refresh", "approve", "open-browser"}, id)
 	case m.isTicketMode() && m.ticketReadMode:
@@ -237,17 +237,6 @@ func (m model) execChoiceCommand(id string) (tea.Model, tea.Cmd, bool) {
 		}
 	}
 	return m, nil, false
-}
-
-func (m model) toggleHelp() (tea.Model, tea.Cmd) {
-	if m.showingHelp {
-		m.showingHelp = false
-		return m, m.setTransientStatus("Help closed")
-	}
-	m.showingHelp = true
-	m.statusMessage = "Help"
-	m.statusError = false
-	return m, nil
 }
 
 func (m model) startFilter() (tea.Model, tea.Cmd) {

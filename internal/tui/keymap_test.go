@@ -272,10 +272,10 @@ func TestHintsShowCustomizedKeys(t *testing.T) {
 	if shortcuts["refresh"] != "f5" || shortcuts["delete"] != "x x" || shortcuts["body"] != "" || shortcuts["filter"] != "/" {
 		t.Fatalf("palette shortcuts = %v", shortcuts)
 	}
-	help := ansi.Strip(renderHelpModal(m))
-	for _, want := range []string{"f5       refresh current mode", "x x      delete selected worktree", "—        toggle local PR body", "ctrl+r   command palette", ",        customize these keys"} {
-		if !strings.Contains(help, want) {
-			t.Fatalf("help page is missing %q:\n%s", want, help)
+	help := ansi.Strip(renderHelpPage(m))
+	for key, text := range map[string]string{"f5": "refresh this view", "x x": "delete (press twice)", "—": "full PR description", "ctrl+r": "command palette", ",": "customize these keys"} {
+		if !helpPageLists(help, key, text) {
+			t.Fatalf("help page does not list %q as %q:\n%s", key, text, help)
 		}
 	}
 	if view := ansi.Strip(m.View()); !strings.Contains(view, "ctrl+r commands") || !strings.Contains(view, "f5 refresh") || strings.Contains(view, "ctrl+p") {

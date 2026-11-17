@@ -363,7 +363,7 @@ func TestPaletteViewFitsTerminalAndShowsShortcut(t *testing.T) {
 		}
 	}
 	m, _ := enterActionTestModel()
-	if !strings.Contains(ansi.Strip(renderHelpModal(m)), "ctrl+p") {
+	if !strings.Contains(ansi.Strip(renderHelpPage(m)), "ctrl+p") {
 		t.Fatal("help omitted palette shortcut")
 	}
 }

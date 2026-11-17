@@ -279,6 +279,8 @@ These are the default keys. Every one of them can be changed, and commands witho
 
 In JIRA Tickets mode, `f` opens the ticket filter dialog, `Y` toggles assigned-to-me/all tickets, `S` toggles active-sprint scope, `b` selects all boards and spaces together or a single configured one, `t` changes status, `C` comments, `A` assigns, `n` creates or reuses a ticket worktree, `N` creates one on top of another worktree, `o` opens the ticket in a browser, and `enter` opens the full-screen ticket reader.
 
+`h` opens the help page. It lists the keys that work in every view next to the keys of one view, starting with the view you are in and grouped by what they are for. `tab` shows the keys of another view, `,` goes on to customize them, and `esc` closes the page. The page always shows the keys in effect, fits an 80x24 terminal, and scrolls with the arrow keys on a smaller one.
+
 ### Customizing Keybindings
 
 Press `,`, or run **Customize keyboard shortcuts…** from the command palette, to open the keybindings screen. It lists every command the palette offers with its keys, including the commands that have no key yet:

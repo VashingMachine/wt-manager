@@ -33,21 +33,18 @@ func (m model) View() string {
 	if m.editingEditor {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, renderEditorInputModal(m))
 	}
+	if m.showingHelp {
+		return renderHelpPage(m)
+	}
 	if m.isPRMode() && m.prDiffMode {
 		view := m.fullScreenPRDiffView()
 		if m.confirmingPRApproval {
 			view = overlay(view, renderPRApprovalModal(m), m.width, m.height)
 		}
-		if m.showingHelp {
-			view = overlay(view, renderHelpModal(m), m.width, m.height)
-		}
 		return view
 	}
 	if m.isTicketMode() && m.ticketReadMode {
 		view := m.fullScreenTicketView()
-		if m.showingHelp {
-			view = overlay(view, renderHelpModal(m), m.width, m.height)
-		}
 		return view
 	}
 
@@ -159,9 +156,6 @@ func (m model) View() string {
 	}
 	if m.selectingTicketFilters {
 		view = overlay(view, renderTicketFiltersModal(m), m.width, m.height)
-	}
-	if m.showingHelp {
-		view = overlay(view, renderHelpModal(m), m.width, m.height)
 	}
 
 	return view
@@ -1235,151 +1229,6 @@ func renderTicketFiltersModal(m model) string {
 		body = append(body, selectorLine(idx == m.ticketFilterCursor, check+" "+option.label, false))
 	}
 	return renderModal("JIRA Ticket Filters", body, []keyHint{{"j/k", "move"}, {"space", "toggle"}, {"enter", "apply"}, {"esc", "cancel"}})
-}
-
-func helpSection(title string) string {
-	return infoStyle.Render(icons.Section + " " + title)
-}
-
-// helpPage collects the lines of the help page, so the key column can be as
-// wide as the longest key in use.
-type helpPage struct {
-	km      keymap
-	entries [][2]string
-}
-
-// key is the keybinding of a command, or a dash when it has none.
-func (h *helpPage) key(id string) string {
-	if label := h.km.shortcut(id); label != "" {
-		return label
-	}
-	return "—"
-}
-
-// keys is every keybinding of a command.
-func (h *helpPage) keys(id string) string {
-	if labels := keySeqLabels(h.km.keysOf(id)); len(labels) > 0 {
-		return strings.Join(labels, "/")
-	}
-	return "—"
-}
-
-func (h *helpPage) section(title string) {
-	if len(h.entries) > 0 {
-		h.entries = append(h.entries, [2]string{})
-	}
-	h.entries = append(h.entries, [2]string{"", title})
-}
-
-func (h *helpPage) add(key, action string) {
-	h.entries = append(h.entries, [2]string{key, action})
-}
-
-// command lists a command under its current key.
-func (h *helpPage) command(id, action string) {
-	h.add(h.key(id), action)
-}
-
-// note continues the line above it.
-func (h *helpPage) note(text string) {
-	h.entries = append(h.entries, [2]string{" ", text})
-}
-
-func (h *helpPage) lines() []string {
-	width := 8
-	for _, entry := range h.entries {
-		width = max(width, min(18, runewidth.StringWidth(entry[0])))
-	}
-	lines := make([]string, 0, len(h.entries))
-	for _, entry := range h.entries {
-		switch {
-		case entry[0] == "" && entry[1] == "":
-			lines = append(lines, "")
-		case entry[0] == "":
-			lines = append(lines, helpSection(entry[1]))
-		default:
-			lines = append(lines, "  "+keyHintKeyStyle.Render(padCell(entry[0], width))+" "+entry[1])
-		}
-	}
-	return lines
-}
-
-// renderHelpModal lists what the keys do. The keys shown are the ones in
-// effect, so the page stays right after they are customized.
-func renderHelpModal(m model) string {
-	page := &helpPage{km: m.keymap()}
-
-	page.section("Global")
-	page.command(cmdPalette, "command palette (map ⌘P in your terminal)")
-	page.command(cmdHelp, "show or hide this help")
-	page.command(cmdKeybindings, "customize these keys")
-	quit := "ctrl+c"
-	if label := page.km.label(cmdQuit); label != "" {
-		quit = label + "/ctrl+c"
-	}
-	page.add(quit, "quit")
-	page.command("focus", "switch table/details focus")
-	page.command("refresh", "refresh current mode")
-	page.command("filter", "filter current mode")
-	page.add("esc", "cancel input, clear filter, or close help")
-	page.command("profile-menu", "switch project")
-	page.command("setup", "edit project: repositories, agents, JIRA")
-	page.command("agent-menu", "choose default AI agent")
-
-	move := page.keys("up") + " " + page.keys("down")
-	page.section("Worktrees")
-	page.add(move, "move selection")
-	page.command("toggle-all", "toggle managed/all worktrees")
-	page.command("new", "create worktree (tab: on top of selected)")
-	page.command("stack-new", "create worktree on top of selected")
-	page.command("restack", "restack selected stacked worktree")
-	page.command("sweep", "sweep clean worktrees untouched for days")
-	page.command(cmdDelete, "delete selected worktree")
-	page.command("open-browser", "open selected local PR")
-	page.command("open", "run selected Enter action")
-	page.command("enter-menu", "choose Enter action")
-	page.command("open-editor", "open worktree in "+m.configuredEditor().Name)
-	page.command("open-agent", "open worktree with agent in a new terminal tab")
-	page.note("terminal action opens worktree in a new terminal tab")
-	page.command("body", "toggle local PR body in details")
-
-	page.section("PR Radar")
-	page.command("prs", "toggle PR Radar mode")
-	page.command("state", "cycle state filter")
-	page.command("user", "choose involved-user filter")
-	page.command("mine", "toggle PRs authored by @me")
-	page.command("branch", "switch final column between title/branch")
-	page.command("checks", "show failed GitHub Actions in details")
-	page.command("diff", "open full-screen PR diff")
-	page.add("esc", "close full-screen PR diff")
-	page.command("approve", "approve selected PR")
-	page.command("ask", "ask configured agent about selected PR")
-	page.command("new", "create worktree from selected PR branch")
-	page.command("pr-repo", "choose the repository PR Radar shows")
-	page.command("open-browser", "open selected PR in browser")
-
-	page.section("JIRA Tickets")
-	page.command("tickets", "toggle JIRA Tickets mode")
-	page.add(move, "move selection and load ticket details")
-	page.command("ticket-read", "open full-screen ticket reader")
-	page.command("ticket-filters", "configure ticket filters")
-	page.command("ticket-mine", "toggle assigned-to-me/all tickets")
-	page.command("ticket-sprint", "toggle active-sprint scope")
-	page.command("ticket-board", "choose configured board")
-	page.command("ticket-status", "change selected ticket status")
-	page.command("ticket-comment", "comment on selected ticket")
-	page.command("ticket-assign", "assign selected ticket")
-	page.command("new", "create ticket worktree (asks when one exists)")
-	page.command("stack-new", "create ticket worktree on top of another")
-	page.command("open-browser", "open selected ticket in browser")
-
-	closeKeys := "enter/esc"
-	if label := page.km.label(cmdHelp); label != "" {
-		closeKeys = label + "/" + closeKeys
-	}
-	lines := append([]string{titleStyle.Render("Keybindings"), ""}, page.lines()...)
-	lines = append(lines, "", renderKeyHints([]keyHint{{closeKeys, "close"}}))
-	return modalStyle.Width(max(72, min(92, m.width-8))).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
 func overlay(base, modal string, width, height int) string {

@@ -431,11 +431,15 @@ func TestStackNewUsesParentRepository(t *testing.T) {
 func TestHelpListsStackAndSweepKeys(t *testing.T) {
 	m := stackTestModel(&stackSpy{})
 	m.showingHelp = true
-	help := ansi.Strip(renderHelpModal(m))
-	for _, want := range []string{"create worktree on top of selected", "restack selected stacked worktree", "sweep clean worktrees", "create ticket worktree on top of another"} {
-		if !strings.Contains(help, want) {
-			t.Fatalf("help is missing %q", want)
+	help := ansi.Strip(renderHelpPage(m))
+	for key, text := range map[string]string{"N": "new, on top of selected", "B": "restack onto its base", "X": "sweep stale worktrees"} {
+		if !helpPageLists(help, key, text) {
+			t.Fatalf("help does not list %q as %q:\n%s", key, text, help)
 		}
+	}
+	m.helpTab = modeTickets
+	if help = ansi.Strip(renderHelpPage(m)); !helpPageLists(help, "N", "…on top of another worktree") {
+		t.Fatalf("JIRA help does not list stacking a ticket worktree:\n%s", help)
 	}
 }
 

@@ -487,12 +487,28 @@ func TestPRApprovalResultRefreshesSelectedDetail(t *testing.T) {
 	}
 }
 
-func TestHelpModalListsKeybindings(t *testing.T) {
+// Assures that the help page lists the keys that work in every view beside
+// the keys of one view, each group under its own heading.
+func TestHelpPageListsKeysByGroup(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	content := ansi.Strip(renderHelpModal(m))
-	for _, want := range []string{"Keybindings", "Global", "Worktrees", "PR Radar", "f        show failed GitHub Actions", "enter    open full-screen PR diff", "esc      close full-screen PR diff", "A        approve selected PR", "h        show or hide this help"} {
+	m.showingHelp = true
+	content := ansi.Strip(renderHelpPage(m))
+	for _, want := range []string{"HELP", "Keyboard shortcuts", "EVERY VIEW", "Get around", "Commands & settings", "Worktrees", "PR Radar", "JIRA Tickets", "Open", "Create", "Manage"} {
 		if !strings.Contains(content, want) {
-			t.Fatalf("help modal missing %q in %q", want, content)
+			t.Fatalf("help page is missing %q:\n%s", want, content)
+		}
+	}
+	for key, text := range map[string]string{"↑/k": "↓/j", "↓/j": "move selection", "esc": "clear filter / go back", "ctrl+p": "command palette", "h": "this help", "q": "quit (ctrl+c too)", "enter": "open in VS Code", "n": "new worktree", "d d": "delete (press twice)"} {
+		if !helpPageLists(content, key, text) {
+			t.Fatalf("help page does not list %q as %q:\n%s", key, text, content)
+		}
+	}
+
+	m.helpTab = modePRs
+	content = ansi.Strip(renderHelpPage(m))
+	for key, text := range map[string]string{"enter": "read the diff full screen", "A": "approve the pull request", "f": "failed checks in details", "ctrl+p": "command palette"} {
+		if !helpPageLists(content, key, text) {
+			t.Fatalf("PR Radar help does not list %q as %q:\n%s", key, text, content)
 		}
 	}
 }
