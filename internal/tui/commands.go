@@ -190,7 +190,7 @@ func loadTicketsCmd(services core.Services, cfg Config, board JiraBoard, mineOnl
 
 		return ticketListResult{
 			Source:    source,
-			Tickets:   services.AttachTicketContext(tickets, worktrees, pullRequests),
+			Tickets:   core.AttachTicketContext(tickets, worktrees, pullRequests),
 			Worktrees: worktrees,
 			Warning:   warning,
 			FetchedAt: time.Now(),
@@ -212,8 +212,8 @@ func ensureTicketWorktreeCmd(services core.Services, cfg Config, ticket Ticket) 
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
-		branch := services.TicketBranchName(ticket)
-		path := services.CreateWorktreePath(cfg, branch)
+		branch := core.TicketBranchName(ticket)
+		path := core.CreateWorktreePath(cfg, branch)
 		existing, err := services.CreateWorktree(ctx, cfg, branch, path)
 		return ticketWorktreeResult{
 			Key:      ticket.Key,
@@ -229,7 +229,7 @@ func askPullRequestAgentCmd(services core.AgentService, cfg Config, agent AgentT
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
 
-		prompt := services.BuildPullRequestChatPrompt(pullRequest, question)
+		prompt := core.BuildPullRequestChatPrompt(pullRequest, question)
 		answer, err := services.RunAgentWithPrompt(ctx, cfg.ActiveProfile.RepositoryPath, agent.Command, prompt)
 		return askPRResult{Question: question, Answer: strings.TrimSpace(answer), Err: err}
 	}
@@ -289,7 +289,7 @@ func createWorktreeCmd(services core.WorktreeService, cfg Config, name string) t
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
 
-		path := services.CreateWorktreePath(cfg, name)
+		path := core.CreateWorktreePath(cfg, name)
 		existing, err := services.CreateWorktree(ctx, cfg, name, path)
 		return createResult{Path: path, Name: name, Existing: existing, Err: err}
 	}

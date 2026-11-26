@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/VashingMachine/wt-manager/internal/core"
+	"github.com/VashingMachine/wt-manager/internal/fspath"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -83,7 +84,7 @@ func (e *repositoryEditor) openDetails(repoPath string, name string, worktrees s
 	e.nameInput.Width = 40
 	e.nameInput.SetValue(name)
 	e.nameInput.CursorEnd()
-	e.worktrees = newWorktreesPicker(e.services, e.homeDir, setupDirectorySeeds(e.services, e.homeDir, worktrees), worktrees)
+	e.worktrees = newWorktreesPicker(e.services, e.homeDir, setupDirectorySeeds(e.homeDir, worktrees), worktrees)
 	e.worktrees.input.Prompt = ""
 	e.worktrees.rows = 5
 	e.worktrees.plan(worktrees)
@@ -153,7 +154,7 @@ func (e repositoryEditor) Update(msg tea.Msg) (repositoryEditor, tea.Cmd) {
 		// Until it is edited by hand, the worktrees folder follows the name.
 		if name := strings.TrimSpace(e.nameInput.Value()); name != before && name != "" && !e.worktreesEdited {
 			suggested := e.suggestedWorktrees(name)
-			e.worktrees.input.SetValue(e.services.CompactPath(suggested, e.homeDir))
+			e.worktrees.input.SetValue(fspath.Compact(suggested, e.homeDir))
 			e.worktrees.plan(suggested)
 		}
 		return e, cmd
@@ -174,14 +175,14 @@ func (e *repositoryEditor) chooseFolder() {
 	selected := e.folder.SelectedPath()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	repoPath, ok := e.services.RepoRootFromDir(ctx, e.services.ExpandPath(selected, e.homeDir))
+	repoPath, ok := e.services.RepoRootFromDir(ctx, core.ExpandPath(selected, e.homeDir))
 	if !ok {
-		e.err = fmt.Sprintf("%s is not inside a git repository", e.services.CompactPath(selected, e.homeDir))
+		e.err = fmt.Sprintf("%s is not inside a git repository", fspath.Compact(selected, e.homeDir))
 		return
 	}
 	for _, sibling := range e.siblings {
-		if e.services.CanonicalPath(sibling.RepositoryPath) == e.services.CanonicalPath(repoPath) {
-			e.err = fmt.Sprintf("%s is already part of this project", e.services.CompactPath(repoPath, e.homeDir))
+		if fspath.Canonical(sibling.RepositoryPath) == fspath.Canonical(repoPath) {
+			e.err = fmt.Sprintf("%s is already part of this project", fspath.Compact(repoPath, e.homeDir))
 			return
 		}
 	}
@@ -219,7 +220,7 @@ func (e *repositoryEditor) save() {
 	e.result = core.Repository{
 		Name:           name,
 		RepositoryPath: e.repoPath,
-		WorktreesDir:   filepath.Clean(e.services.ExpandPath(worktrees, e.homeDir)),
+		WorktreesDir:   filepath.Clean(core.ExpandPath(worktrees, e.homeDir)),
 		RemoteName:     e.remote,
 		GitHubRepo:     e.github,
 	}
@@ -247,7 +248,7 @@ func (e repositoryEditor) View(width int) []string {
 			github = e.github
 		}
 		lines = append(lines,
-			mutedStyle.Render("Folder    ")+subtleStyle.Render(e.services.CompactPath(e.repoPath, e.homeDir)),
+			mutedStyle.Render("Folder    ")+subtleStyle.Render(fspath.Compact(e.repoPath, e.homeDir)),
 			mutedStyle.Render("Remote    ")+subtleStyle.Render(fmt.Sprintf("%s · GitHub %s", emptyDash(e.remote), github)),
 			"",
 			label("Name", editorFieldName)+e.nameInput.View(),
@@ -272,7 +273,7 @@ func (e repositoryEditor) View(width int) []string {
 
 // worktreesNote explains what happens with the chosen worktrees folder.
 func (e repositoryEditor) worktreesNote() string {
-	worktrees := filepath.Clean(e.services.ExpandPath(strings.TrimSpace(e.worktrees.input.Value()), e.homeDir))
+	worktrees := filepath.Clean(core.ExpandPath(strings.TrimSpace(e.worktrees.input.Value()), e.homeDir))
 	for _, sibling := range e.siblings {
 		if filepath.Clean(sibling.WorktreesDir) == worktrees {
 			name := strings.TrimSpace(e.nameInput.Value())

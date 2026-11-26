@@ -54,7 +54,7 @@ func (s *configSaveState) markSynced(services core.ConfigService, app AppConfig)
 	if s == nil || services == nil {
 		return
 	}
-	fingerprint := configFingerprint(services, app)
+	fingerprint := configFingerprint(app)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.synced = fingerprint
@@ -64,9 +64,9 @@ func (s *configSaveState) markSynced(services core.ConfigService, app AppConfig)
 
 // configFingerprint identifies a config by its normalized content, so a file
 // that differs only in formatting or defaults counts as unchanged.
-func configFingerprint(services core.ConfigService, app AppConfig) string {
+func configFingerprint(app AppConfig) string {
 	app = cloneAppConfig(app)
-	if normalized, _, err := services.NormalizeAppConfig(app); err == nil {
+	if normalized, _, err := core.NormalizeAppConfig(app); err == nil {
 		app = normalized
 	}
 	data, _ := json.Marshal(app)
@@ -91,7 +91,7 @@ func (s *configSaveState) checkDisk(services core.ConfigService, path string) *c
 	}
 	wasInvalid := s.invalid != nil
 	s.invalid = nil
-	if fingerprint := configFingerprint(services, app); fingerprint != s.synced {
+	if fingerprint := configFingerprint(app); fingerprint != s.synced {
 		s.synced = fingerprint
 		return &configFileResult{App: app, Changed: true}
 	}
@@ -101,11 +101,11 @@ func (s *configSaveState) checkDisk(services core.ConfigService, path string) *c
 	return nil
 }
 
-func (s *configSaveState) recordWrite(services core.ConfigService, path string, app AppConfig) {
+func (s *configSaveState) recordWrite(path string, app AppConfig) {
 	if s.synced == "" {
 		return
 	}
-	s.synced = configFingerprint(services, app)
+	s.synced = configFingerprint(app)
 	if info, err := os.Stat(path); err == nil {
 		s.modTime, s.size = info.ModTime(), info.Size()
 	}
@@ -154,7 +154,7 @@ func (m model) persistConfigWith(message string, quiet bool) tea.Cmd {
 		if err != nil {
 			return actionResult{Err: fmt.Errorf("save config failed: %w", err)}
 		}
-		state.recordWrite(services, path, app)
+		state.recordWrite(path, app)
 		if quiet {
 			return nil
 		}

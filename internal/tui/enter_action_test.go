@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/VashingMachine/wt-manager/internal/app"
 	"github.com/VashingMachine/wt-manager/internal/core"
-	"github.com/VashingMachine/wt-manager/internal/services"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -17,7 +17,7 @@ type enterActionSpyServices struct {
 }
 
 func newEnterActionSpyServices() *enterActionSpyServices {
-	return &enterActionSpyServices{Services: services.NewService()}
+	return &enterActionSpyServices{Services: app.NewServices(nil)}
 }
 
 func (s *enterActionSpyServices) OpenEditorWorktree(ctx context.Context, wt Worktree, editor core.EditorTool) error {
@@ -181,7 +181,7 @@ func TestWorktreeActionsWaitForPendingCreation(t *testing.T) {
 	for _, action := range []string{core.EnterActionVSCode, core.EnterActionAgent, core.EnterActionTerminal} {
 		t.Run(action, func(t *testing.T) {
 			m, spy := enterActionTestModel()
-			path := m.services.CreateWorktreePath(m.cfg, "feature/pending")
+			path := core.CreateWorktreePath(m.cfg, "feature/pending")
 			worktree := Worktree{Name: "feature/pending", Branch: "feature/pending", Path: path, Managed: true}
 			m.beginWorktreeCreation(worktree, "")
 
@@ -249,7 +249,7 @@ func TestTicketAgentActionWaitsForWorktreeCreation(t *testing.T) {
 // Assures that a failed creation discards its deferred opener rather than running it on a missing path.
 func TestFailedWorktreeCreationDiscardsDeferredAction(t *testing.T) {
 	m, spy := enterActionTestModel()
-	path := m.services.CreateWorktreePath(m.cfg, "feature/fails")
+	path := core.CreateWorktreePath(m.cfg, "feature/fails")
 	worktree := Worktree{Name: "feature/fails", Branch: "feature/fails", Path: path, Managed: true}
 	m.beginWorktreeCreation(worktree, "")
 	next, _ := m.openWorktreeWithAction(worktree, core.EnterActionAgent)

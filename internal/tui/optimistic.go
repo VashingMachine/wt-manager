@@ -224,7 +224,7 @@ func (m *model) paintCachedTickets() bool {
 	if !ok {
 		return false
 	}
-	m.tickets = m.services.AttachTicketContext(cached, m.allWorktrees, m.allPRIndexes())
+	m.tickets = core.AttachTicketContext(cached, m.allWorktrees, m.allPRIndexes())
 	m.ticketsSource = m.ticketSource()
 	m.ticketsFetchedAt = fetchedAt
 	m.ticketCacheLabel = "cached"

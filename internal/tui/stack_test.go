@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VashingMachine/wt-manager/internal/app"
 	"github.com/VashingMachine/wt-manager/internal/core"
 	"github.com/VashingMachine/wt-manager/internal/services"
+	"github.com/VashingMachine/wt-manager/internal/testkit"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -97,7 +99,7 @@ func stackWorktrees() []Worktree {
 
 // stackTestModel shows a project where "child" is stacked on "base".
 func stackTestModel(spy *stackSpy) model {
-	spy.Services = services.NewService()
+	spy.Services = app.NewServices(nil)
 	spy.worktrees = stackWorktrees()
 	m := NewModel(Config{
 		HomeDir:    "/home/me",
@@ -474,20 +476,20 @@ func rowFor(t *testing.T, m model, name string) (Worktree, []string) {
 
 // Assures, against a real repository, that a stacked worktree is listed under its parent, asks for a restack once the parent gains a commit, and is clean again after restacking.
 func TestStackLifecycleAgainstGit(t *testing.T) {
-	cfg := testGitRepo(t)
+	cfg := testkit.GitRepo(t)
 	ctx := context.Background()
-	svc := services.NewService()
-	parentPath := svc.CreateWorktreePath(cfg, "parent")
+	svc := app.NewServices(nil)
+	parentPath := core.CreateWorktreePath(cfg, "parent")
 	if _, err := svc.CreateWorktree(ctx, cfg, "parent", parentPath); err != nil {
 		t.Fatalf("CreateWorktree() error = %v", err)
 	}
-	childPath := svc.CreateWorktreePath(cfg, "child")
+	childPath := core.CreateWorktreePath(cfg, "child")
 	if err := svc.CreateStackedWorktree(ctx, cfg, "child", childPath, "parent"); err != nil {
 		t.Fatalf("CreateStackedWorktree() error = %v", err)
 	}
-	writeRepoFile(t, childPath, "child.txt", "child\n")
-	runGit(t, childPath, "add", ".")
-	runGit(t, childPath, "commit", "-m", "child work")
+	testkit.WriteRepoFile(t, childPath, "child.txt", "child\n")
+	testkit.RunGit(t, childPath, "add", ".")
+	testkit.RunGit(t, childPath, "commit", "-m", "child work")
 
 	m := NewModel(cfg, svc)
 	m.ready = true
@@ -504,9 +506,9 @@ func TestStackLifecycleAgainstGit(t *testing.T) {
 		t.Fatalf("fresh stacked row = %v (state %q)", row, stateLabel(child))
 	}
 
-	writeRepoFile(t, parentPath, "parent.txt", "parent\n")
-	runGit(t, parentPath, "add", ".")
-	runGit(t, parentPath, "commit", "-m", "parent work")
+	testkit.WriteRepoFile(t, parentPath, "parent.txt", "parent\n")
+	testkit.RunGit(t, parentPath, "add", ".")
+	testkit.RunGit(t, parentPath, "commit", "-m", "parent work")
 	m = loadFromGit(t, m, svc)
 	child, _ = rowFor(t, m, "child")
 	if stateLabel(child) != "restack" || child.Status.ParentBehind != 1 {

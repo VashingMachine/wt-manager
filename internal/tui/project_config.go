@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/VashingMachine/wt-manager/internal/core"
+	"github.com/VashingMachine/wt-manager/internal/fspath"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -66,7 +67,7 @@ func (m model) handleConfigFile(msg configFileResult) (tea.Model, tea.Cmd) {
 	case !msg.Changed:
 		return m, nil
 	}
-	message := "Reloaded config from " + m.services.CompactPath(m.cfg.ConfigPath, m.cfg.HomeDir)
+	message := "Reloaded config from " + fspath.Compact(m.cfg.ConfigPath, m.cfg.HomeDir)
 	if msg.Rejected != "" {
 		message = fmt.Sprintf("Config changed on disk and was reloaded; %q was not saved, so repeat it", msg.Rejected)
 	}
@@ -82,7 +83,7 @@ func (m model) applyConfig(app AppConfig, message string) (tea.Model, tea.Cmd) {
 		previous = &profile
 	}
 	m.cfg.App = app
-	profile := m.services.FindProfile(app.Profiles, app.DefaultProfile)
+	profile := core.FindProfile(app.Profiles, app.DefaultProfile)
 	if profile == nil {
 		m.statusMessage = "The config has no projects; " + m.howTo("setup", "set one up")
 		m.statusError = true
@@ -118,7 +119,7 @@ func terminalEditor(getenv func(string) string) string {
 
 func (m model) editConfigInEditor() (tea.Model, tea.Cmd) {
 	path, editor, services := m.cfg.ConfigPath, m.configuredEditor(), m.services
-	shown := services.CompactPath(path, m.cfg.HomeDir)
+	shown := fspath.Compact(path, m.cfg.HomeDir)
 	m.statusMessage = fmt.Sprintf("Opening %s in %s...", shown, editor.Name)
 	m.statusError = false
 	return m, func() tea.Msg {
@@ -168,7 +169,7 @@ func (m model) reloadConfig() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.configSaveState.markSynced(m.services, app)
-	return m.applyConfig(app, "Reloaded config from "+m.services.CompactPath(m.cfg.ConfigPath, m.cfg.HomeDir))
+	return m.applyConfig(app, "Reloaded config from "+fspath.Compact(m.cfg.ConfigPath, m.cfg.HomeDir))
 }
 
 // --- repositories of the active project --------------------------------------
@@ -205,9 +206,9 @@ func (m model) projectSetup() setupModel {
 	setupCfg.SetupRepo = m.cfg.ActiveProfile.RepositoryPath
 	setupCfg.SetupReason = ""
 	if current, ok := m.services.InferRepoFromCWD(); ok {
-		if _, _, owned := findRepositoryOwner(m.services, m.cfg.App.Profiles, m.cfg.HomeDir, current); !owned {
+		if _, _, owned := findRepositoryOwner(m.cfg.App.Profiles, m.cfg.HomeDir, current); !owned {
 			setupCfg.SetupRepo = current
-			setupCfg.SetupReason = m.services.CompactPath(current, m.cfg.HomeDir) + " is not part of a project yet"
+			setupCfg.SetupReason = fspath.Compact(current, m.cfg.HomeDir) + " is not part of a project yet"
 		}
 	}
 	return newSetupModel(setupCfg, false, m.services)
@@ -223,9 +224,9 @@ func (m model) openSetup(setup setupModel) (tea.Model, tea.Cmd) {
 }
 
 func (m model) projectHasRepository(path string) bool {
-	want := m.services.CanonicalPath(path)
+	want := fspath.Canonical(path)
 	for _, repository := range m.cfg.Repositories() {
-		if m.services.CanonicalPath(repository.RepositoryPath) == want {
+		if fspath.Canonical(repository.RepositoryPath) == want {
 			return true
 		}
 	}
@@ -262,8 +263,8 @@ func (m model) saveAddedRepository(editor repositoryEditor) (tea.Model, tea.Cmd)
 		return m, nil
 	}
 	added := editor.result
-	added.RepositoryPath = m.services.CompactPath(added.RepositoryPath, m.cfg.HomeDir)
-	added.WorktreesDir = m.services.CompactPath(added.WorktreesDir, m.cfg.HomeDir)
+	added.RepositoryPath = fspath.Compact(added.RepositoryPath, m.cfg.HomeDir)
+	added.WorktreesDir = fspath.Compact(added.WorktreesDir, m.cfg.HomeDir)
 	profile := m.cfg.App.Profiles[idx]
 	app, err := m.withProjectRepositories(idx, append(slices.Clone(profile.RepositoryList()), added))
 	if err != nil {
@@ -272,7 +273,7 @@ func (m model) saveAddedRepository(editor repositoryEditor) (tea.Model, tea.Cmd)
 		m.addingRepository = &editor
 		return m, nil
 	}
-	if err := os.MkdirAll(m.services.ExpandPath(added.WorktreesDir, m.cfg.HomeDir), 0o755); err != nil {
+	if err := os.MkdirAll(core.ExpandPath(added.WorktreesDir, m.cfg.HomeDir), 0o755); err != nil {
 		editor.done = false
 		editor.err = fmt.Sprintf("Create worktrees folder failed: %v", err)
 		m.addingRepository = &editor
@@ -321,7 +322,7 @@ func (m model) removeRepository(name string) (tea.Model, tea.Cmd) {
 func (m model) withProjectRepositories(idx int, repositories []core.Repository) (AppConfig, error) {
 	app := cloneAppConfig(m.cfg.App)
 	app.Profiles[idx] = app.Profiles[idx].WithRepositories(repositories)
-	normalized, _, err := m.services.NormalizeAppConfig(app)
+	normalized, _, err := core.NormalizeAppConfig(app)
 	return normalized, err
 }
 

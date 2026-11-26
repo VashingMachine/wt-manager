@@ -332,7 +332,7 @@ func (m model) runPRCommand(id string) (tea.Model, tea.Cmd) {
 		m.statusMessage = m.prFilterSummary()
 		m.statusError = false
 	case "user":
-		m.prUserOptions = append([]string{"all"}, m.services.RemotePRUsers(m.remotePRs)...)
+		m.prUserOptions = append([]string{"all"}, core.RemotePRUsers(m.remotePRs)...)
 		m.prUserCursor = m.currentPRUserIndex()
 		m.selectingPRUser = true
 		m.statusMessage = "Filter PRs by user"
@@ -486,7 +486,7 @@ func (m model) openSelectionWith(action string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		prCfg := m.prCfg()
-		if m.deferPendingWorktreeAction(m.services.CreateWorktreePath(prCfg, selected.HeadRefName), action) {
+		if m.deferPendingWorktreeAction(core.CreateWorktreePath(prCfg, selected.HeadRefName), action) {
 			return m, nil
 		}
 		if action == core.EnterActionAgent {
@@ -550,7 +550,7 @@ func (m model) createWorktreeForSelection() (tea.Model, tea.Cmd) {
 		m.beginWorktreeCreation(Worktree{
 			Name:       branch,
 			Branch:     branch,
-			Path:       m.services.CreateWorktreePath(prCfg, branch),
+			Path:       core.CreateWorktreePath(prCfg, branch),
 			Managed:    true,
 			Repository: prCfg.RepositoryName(),
 		}, "")

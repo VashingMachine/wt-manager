@@ -6,13 +6,14 @@ import (
 
 	"github.com/VashingMachine/wt-manager/internal/app"
 	"github.com/VashingMachine/wt-manager/internal/cli"
+	"github.com/VashingMachine/wt-manager/internal/tui"
 )
 
 const usage = "usage: wt-manager [--init]\n" + cli.Usage
 
 func main() {
 	if cli.IsCommand(os.Args[1:]) {
-		os.Exit(cli.Main(os.Args[1:]))
+		os.Exit(cli.Main(os.Args[1:], app.NewServices(nil)))
 	}
 	forceSetup := false
 	for _, arg := range os.Args[1:] {
@@ -36,7 +37,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	p := application.NewProgram(cfg)
+	p := tui.NewProgram(cfg, application.Services())
 	_, err = p.Run()
 	application.Close()
 	if err != nil {

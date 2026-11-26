@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/VashingMachine/wt-manager/internal/core"
+	"github.com/VashingMachine/wt-manager/internal/fspath"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -298,9 +299,9 @@ func (m model) ticketWorktrees(key string) []Worktree {
 		if wt.Missing || wt.Prunable {
 			continue
 		}
-		found := m.services.TicketKeyFromBranch(wt.Branch)
+		found := core.TicketKeyFromBranch(wt.Branch)
 		if found == "" {
-			found = m.services.TicketKeyFromBranch(wt.Name)
+			found = core.TicketKeyFromBranch(wt.Name)
 		}
 		if found == key {
 			wt.Repository = m.worktreeRepository(wt)
@@ -334,7 +335,7 @@ func renderRepositoryPickerModal(m model) string {
 		current = m.prCfg().RepositoryName()
 	}
 	for idx, repository := range repositories {
-		label := fmt.Sprintf("%d  %-14s %s", idx+1, repository.Name, m.services.CompactPath(repository.RepositoryPath, m.cfg.HomeDir))
+		label := fmt.Sprintf("%d  %-14s %s", idx+1, repository.Name, fspath.Compact(repository.RepositoryPath, m.cfg.HomeDir))
 		line := selectorLine(idx == m.repoPickerCursor, label, repository.Name == current)
 		creating := m.repoPickerPurpose == pickRepoForWorktree || m.repoPickerPurpose == pickRepoForTicket
 		if repository.Name == last && creating {

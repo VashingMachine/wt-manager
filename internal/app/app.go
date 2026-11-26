@@ -1,3 +1,7 @@
+// Package app is the composition root: the one place that knows every concrete
+// integration. It builds them, hands them to the application layer
+// (internal/services) and owns the persistent cache. Everything else depends
+// on interfaces only.
 package app
 
 import (
@@ -6,11 +10,36 @@ import (
 
 	"github.com/VashingMachine/wt-manager/internal/cache"
 	"github.com/VashingMachine/wt-manager/internal/core"
+	"github.com/VashingMachine/wt-manager/internal/integrations/agent"
+	"github.com/VashingMachine/wt-manager/internal/integrations/browser"
+	"github.com/VashingMachine/wt-manager/internal/integrations/configfile"
+	"github.com/VashingMachine/wt-manager/internal/integrations/editor"
+	"github.com/VashingMachine/wt-manager/internal/integrations/git"
+	"github.com/VashingMachine/wt-manager/internal/integrations/github"
+	"github.com/VashingMachine/wt-manager/internal/integrations/jira"
+	"github.com/VashingMachine/wt-manager/internal/integrations/terminal"
 	"github.com/VashingMachine/wt-manager/internal/services"
-	"github.com/VashingMachine/wt-manager/internal/tui"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
+// NewServices wires the real integrations into the application. A nil store
+// means an in-memory cache: one-shot commands and tests use it so they never
+// touch the user's persistent cache.
+//
+// A new integration is added here, next to its port in services.Integrations.
+func NewServices(store *cache.Store) *services.Service {
+	return services.New(services.Integrations{
+		Config:   configfile.New(),
+		Git:      git.New(),
+		GitHub:   github.New(),
+		Jira:     jira.New(),
+		Terminal: terminal.New(),
+		Editor:   editor.New(),
+		Browser:  browser.New(),
+		Agents:   agent.New(),
+	}, store)
+}
+
+// App is the running application: its services and the cache behind them.
 type App struct {
 	services core.Services
 	cache    *cache.Store
@@ -25,7 +54,7 @@ func New() *App {
 		removeLegacyCache(homeDir)
 		store, openErr = cache.Open(cache.DefaultPath(homeDir))
 	}
-	svc := services.NewServiceWithCache(store)
+	svc := NewServices(store)
 	if openErr != nil {
 		svc.RecordSessionEvent("persistent cache disabled: "+openErr.Error(), true)
 	}
@@ -41,12 +70,13 @@ func removeLegacyCache(homeDir string) {
 	}
 }
 
-func (a *App) DefaultConfig(forceSetup bool) (core.Config, error) {
-	return a.services.DefaultConfig(forceSetup)
+// Services is what the UIs drive.
+func (a *App) Services() core.Services {
+	return a.services
 }
 
-func (a *App) NewProgram(cfg core.Config) *tea.Program {
-	return tea.NewProgram(tui.NewModel(cfg, a.services), tea.WithAltScreen())
+func (a *App) DefaultConfig(forceSetup bool) (core.Config, error) {
+	return a.services.DefaultConfig(forceSetup)
 }
 
 // Close flushes cache writes still queued in the background.

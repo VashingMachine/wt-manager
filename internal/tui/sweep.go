@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/VashingMachine/wt-manager/internal/core"
+	"github.com/VashingMachine/wt-manager/internal/fspath"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -253,7 +254,7 @@ func renderSweepModal(m model) string {
 		body = append(body, mutedStyle.Render(fmt.Sprintf("  %d more below", len(dialog.Items)-end)))
 	}
 	body = append(body, "", fmt.Sprintf("%d of %d selected", len(dialog.selected()), len(dialog.Items)))
-	body = append(body, mutedStyle.Render(fmt.Sprintf("Change the age with sweep.olderThanDays in %s", m.services.CompactPath(m.cfg.ConfigPath, m.cfg.HomeDir))))
+	body = append(body, mutedStyle.Render(fmt.Sprintf("Change the age with sweep.olderThanDays in %s", fspath.Compact(m.cfg.ConfigPath, m.cfg.HomeDir))))
 	hints := []keyHint{{"j/k", "move"}, {"space", "toggle"}, {"a", "all/none"}, {"enter", "remove"}, {"esc", "cancel"}}
 	return renderWideModal("Sweep Worktrees", body, hints, max(72, min(104, m.width-8)))
 }

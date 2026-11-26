@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/VashingMachine/wt-manager/internal/fspath"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -69,7 +70,7 @@ func renderKeybindingsScreen(m model) string {
 	}
 	lines := []string{paletteSplitLine(title, customized, layout.width)}
 	if layout.roomy {
-		lines = append(lines, mutedStyle.Render("Every command and its keys. Changes are saved to "+m.services.CompactPath(m.cfg.ConfigPath, m.cfg.HomeDir)+" as you make them."), "")
+		lines = append(lines, mutedStyle.Render("Every command and its keys. Changes are saved to "+fspath.Compact(m.cfg.ConfigPath, m.cfg.HomeDir)+" as you make them."), "")
 	}
 	lines = append(lines,
 		renderKeybindingFilter(m, layout.width, len(rows)),

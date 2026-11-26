@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/VashingMachine/wt-manager/internal/core"
+	"github.com/VashingMachine/wt-manager/internal/testkit"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -377,7 +378,7 @@ func TestTerminalResizePreservesSelectedRow(t *testing.T) {
 		case modeWorktrees:
 			m.selectedPath = m.allWorktrees[0].Path
 		case modePRs:
-			m.visiblePRs = []RemotePullRequest{remotePRFixture(42, "OPEN", "dev", "Selected PR", "fix/resize")}
+			m.visiblePRs = []RemotePullRequest{testkit.RemotePR(42, "OPEN", "dev", "Selected PR", "fix/resize")}
 			m.selectedPRNumber = 42
 		case modeTickets:
 			m.visibleTickets = []Ticket{{Key: "APP-42", Summary: "Selected ticket"}}
@@ -429,7 +430,7 @@ func TestConfiguredEditorIsUsedByEveryWorktreeEntryPoint(t *testing.T) {
 				m.rebuildRows()
 			case "pr":
 				m.mode = modePRs
-				m.visiblePRs = []RemotePullRequest{remotePRFixture(1, "OPEN", "dev", "Fix", "fix/editor")}
+				m.visiblePRs = []RemotePullRequest{testkit.RemotePR(1, "OPEN", "dev", "Fix", "fix/editor")}
 				m.prDetail = &m.visiblePRs[0]
 				m.table.SetRows(nil)
 				m.table.SetColumns(m.activeColumns())

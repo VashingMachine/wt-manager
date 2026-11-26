@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/VashingMachine/wt-manager/internal/core"
-	"github.com/VashingMachine/wt-manager/internal/services"
+	"github.com/VashingMachine/wt-manager/internal/fspath"
 )
 
 // Usage documents the commands.
@@ -42,14 +42,14 @@ func IsCommand(args []string) bool {
 }
 
 // Main runs a command against the real terminal and environment.
-func Main(args []string) int {
+func Main(args []string, services core.Services) int {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wt-manager: %v\n", err)
 		return 1
 	}
 	workingDir, _ := os.Getwd()
-	return Run(Options{Args: args, In: os.Stdin, Out: os.Stdout, HomeDir: homeDir, WorkingDir: workingDir, Services: services.NewService()})
+	return Run(Options{Args: args, In: os.Stdin, Out: os.Stdout, HomeDir: homeDir, WorkingDir: workingDir, Services: services})
 }
 
 // Run executes the command in opts.Args and returns the process exit code.
@@ -99,11 +99,11 @@ type command struct {
 func (c *command) services() core.Services { return c.opts.Services }
 
 func (c *command) compact(path string) string {
-	return c.services().CompactPath(path, c.opts.HomeDir)
+	return fspath.Compact(path, c.opts.HomeDir)
 }
 
 func (c *command) expand(path string) string {
-	return c.services().ExpandPath(path, c.opts.HomeDir)
+	return core.ExpandPath(path, c.opts.HomeDir)
 }
 
 // absolute expands ~ and resolves a relative answer against the folder the
@@ -117,15 +117,15 @@ func (c *command) absolute(path string) string {
 }
 
 func (c *command) samePath(left string, right string) bool {
-	return c.services().CanonicalPath(c.expand(left)) == c.services().CanonicalPath(c.expand(right))
+	return fspath.Canonical(c.expand(left)) == fspath.Canonical(c.expand(right))
 }
 
 // loadConfig reads the config without rewriting it; a missing file starts
 // from the defaults the app uses.
 func (c *command) loadConfig() (core.AppConfig, string, bool, error) {
-	path := services.DefaultConfigPath(c.opts.HomeDir)
+	path := core.DefaultConfigPath(c.opts.HomeDir)
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		return c.services().DefaultAppConfig(), path, false, nil
+		return core.DefaultAppConfig(), path, false, nil
 	}
 	app, err := c.services().ReadAppConfig(path)
 	if err != nil {
@@ -135,7 +135,7 @@ func (c *command) loadConfig() (core.AppConfig, string, bool, error) {
 }
 
 func (c *command) save(path string, app core.AppConfig) error {
-	normalized, _, err := c.services().NormalizeAppConfig(app)
+	normalized, _, err := core.NormalizeAppConfig(app)
 	if err != nil {
 		return err
 	}

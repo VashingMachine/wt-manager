@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/VashingMachine/wt-manager/internal/core"
+	"github.com/VashingMachine/wt-manager/internal/fspath"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -104,13 +105,13 @@ func newSetupModel(cfg Config, startup bool, services core.Services) setupModel 
 	projectName := ""
 	if repoPath != "" {
 		projectName = core.RepositoryNameFromPath(repoPath)
-		if idx, _, ok := findRepositoryOwner(services, cfg.App.Profiles, cfg.HomeDir, repoPath); ok {
+		if idx, _, ok := findRepositoryOwner(cfg.App.Profiles, cfg.HomeDir, repoPath); ok {
 			projectName = cfg.App.Profiles[idx].Name
 		}
 	}
 	s := newSetupModelFor(cfg, startup, services, repoPath, projectName)
 	if s.jiraConfig == nil && cfg.ActiveProfile.Jira != nil && repoPath != "" &&
-		services.CanonicalPath(services.ExpandPath(cfg.ActiveProfile.RepositoryPath, cfg.HomeDir)) == services.CanonicalPath(repoPath) {
+		fspath.Canonical(core.ExpandPath(cfg.ActiveProfile.RepositoryPath, cfg.HomeDir)) == fspath.Canonical(repoPath) {
 		s.jiraConfig = copyJiraConfig(cfg.ActiveProfile.Jira)
 	}
 	return s
@@ -121,12 +122,12 @@ func newSetupModel(cfg Config, startup bool, services core.Services) setupModel 
 func newProjectSetupModel(cfg Config, services core.Services) setupModel {
 	repoPath := ""
 	if found, ok := services.InferRepoFromCWD(); ok {
-		if _, _, owned := findRepositoryOwner(services, cfg.App.Profiles, cfg.HomeDir, found); !owned {
+		if _, _, owned := findRepositoryOwner(cfg.App.Profiles, cfg.HomeDir, found); !owned {
 			repoPath = found
 		}
 	}
 	projectName := core.RepositoryNameFromPath(repoPath)
-	if services.FindProfile(cfg.App.Profiles, projectName) != nil {
+	if core.FindProfile(cfg.App.Profiles, projectName) != nil {
 		projectName = ""
 	}
 	cfg.SetupReason = "Set up a new project"
@@ -176,7 +177,7 @@ func newSetupModelFor(cfg Config, startup bool, services core.Services, repoPath
 		customName:     customName,
 		customCommand:  customCommand,
 		jiraBoardInput: jiraBoardInput,
-		agentOptions:   detectSetupAgents(services, existingAgents, cfg.App.DefaultAgent, exec.LookPath),
+		agentOptions:   detectSetupAgents(existingAgents, cfg.App.DefaultAgent, exec.LookPath),
 	}
 	s.seedRepositories(projectName)
 	s.focusStep()
@@ -190,9 +191,9 @@ func (s *setupModel) seedRepositories(name string) {
 	s.editing = ""
 	s.repositories = nil
 	s.jiraConfig = nil
-	if profile := s.services.FindProfile(s.cfg.App.Profiles, name); name != "" && profile != nil {
+	if profile := core.FindProfile(s.cfg.App.Profiles, name); name != "" && profile != nil {
 		s.editing = profile.Name
-		s.repositories = slices.Clone(s.services.ResolveProfilePaths(*profile, s.cfg.HomeDir).Repositories)
+		s.repositories = slices.Clone(core.ResolveProfilePaths(*profile, s.cfg.HomeDir).Repositories)
 		s.jiraConfig = copyJiraConfig(profile.Jira)
 	}
 	if s.setupRepo != "" && s.repositoryIndex(s.setupRepo) < 0 {
@@ -202,9 +203,9 @@ func (s *setupModel) seedRepositories(name string) {
 }
 
 func (s setupModel) repositoryIndex(path string) int {
-	want := s.services.CanonicalPath(s.services.ExpandPath(path, s.cfg.HomeDir))
+	want := fspath.Canonical(core.ExpandPath(path, s.cfg.HomeDir))
 	for idx, repository := range s.repositories {
-		if s.services.CanonicalPath(repository.RepositoryPath) == want {
+		if fspath.Canonical(repository.RepositoryPath) == want {
 			return idx
 		}
 	}
@@ -341,7 +342,7 @@ func (s *setupModel) applyProjectName(name string) {
 	if name == s.seededFor || name == s.editing {
 		return
 	}
-	if s.services.FindProfile(s.cfg.App.Profiles, name) != nil {
+	if core.FindProfile(s.cfg.App.Profiles, name) != nil {
 		s.seedRepositories(name)
 		return
 	}
@@ -353,14 +354,14 @@ func (s *setupModel) applyProjectName(name string) {
 // projectHint says what saving under the typed name does.
 func (s setupModel) projectHint() string {
 	name := strings.TrimSpace(s.projectInput.Value())
-	existing := s.services.FindProfile(s.cfg.App.Profiles, name)
+	existing := core.FindProfile(s.cfg.App.Profiles, name)
 	switch {
 	case name == "":
 		return "Name the project its repositories are managed under."
 	case existing != nil:
 		hint := fmt.Sprintf("Edits project %s (%s)", name, strings.Join(repositoryNames(existing.RepositoryList()), ", "))
 		if s.setupRepo != "" {
-			if _, _, owned := findRepositoryOwner(s.services, []RepositoryProfile{*existing}, s.cfg.HomeDir, s.setupRepo); !owned {
+			if _, _, owned := findRepositoryOwner([]RepositoryProfile{*existing}, s.cfg.HomeDir, s.setupRepo); !owned {
 				hint += " and adds " + core.RepositoryNameFromPath(s.setupRepo)
 			}
 		}
@@ -771,8 +772,8 @@ func (s setupModel) repositoriesView() []string {
 		if github == "" {
 			github = "from " + emptyDash(repository.RemoteName)
 		}
-		label := fmt.Sprintf("%-*s  %s", nameWidth, repository.Name, s.services.CompactPath(repository.RepositoryPath, s.cfg.HomeDir))
-		detail := fmt.Sprintf("%*s  worktrees %s · GitHub %s", nameWidth, "", s.services.CompactPath(repository.WorktreesDir, s.cfg.HomeDir), github)
+		label := fmt.Sprintf("%-*s  %s", nameWidth, repository.Name, fspath.Compact(repository.RepositoryPath, s.cfg.HomeDir))
+		detail := fmt.Sprintf("%*s  worktrees %s · GitHub %s", nameWidth, "", fspath.Compact(repository.WorktreesDir, s.cfg.HomeDir), github)
 		lines = append(lines, selectorLine(idx == s.repoCursor, label, false), mutedStyle.Render("  "+detail))
 	}
 	if len(s.repositories) == 0 {
@@ -850,11 +851,11 @@ func (s setupModel) reviewView() []string {
 			github = warnStyle.Render("no GitHub")
 		}
 		lines = append(lines,
-			"  "+infoStyle.Render(fmt.Sprintf("%-*s", nameWidth, repository.Name))+"  "+s.services.CompactPath(repository.RepositoryPath, cfg.HomeDir),
-			mutedStyle.Render(fmt.Sprintf("  %*s  worktrees %s · GitHub ", nameWidth, "", s.services.CompactPath(repository.WorktreesDir, cfg.HomeDir)))+github,
+			"  "+infoStyle.Render(fmt.Sprintf("%-*s", nameWidth, repository.Name))+"  "+fspath.Compact(repository.RepositoryPath, cfg.HomeDir),
+			mutedStyle.Render(fmt.Sprintf("  %*s  worktrees %s · GitHub ", nameWidth, "", fspath.Compact(repository.WorktreesDir, cfg.HomeDir)))+github,
 		)
 		if _, err := os.Stat(repository.WorktreesDir); errors.Is(err, os.ErrNotExist) {
-			notes = append(notes, fmt.Sprintf("%s will be created", s.services.CompactPath(repository.WorktreesDir, cfg.HomeDir)))
+			notes = append(notes, fmt.Sprintf("%s will be created", fspath.Compact(repository.WorktreesDir, cfg.HomeDir)))
 		}
 		if cfg.ForRepository(repository.Name).SharesWorktreesDir() {
 			notes = append(notes, fmt.Sprintf("%s shares its worktrees folder; its worktree folders start with %q", repository.Name, repository.Name+"-"))
@@ -891,8 +892,8 @@ func setupCardStyle(width int) lipgloss.Style {
 
 // --- agents helpers -----------------------------------------------------------
 
-func detectSetupAgents(services core.Services, existing []AgentTool, defaultAgent string, lookup func(string) (string, error)) []setupAgentOption {
-	defaults := services.DefaultAppConfig().Agents
+func detectSetupAgents(existing []AgentTool, defaultAgent string, lookup func(string) (string, error)) []setupAgentOption {
+	defaults := core.DefaultAppConfig().Agents
 	options := make([]setupAgentOption, 0, len(defaults)+len(existing))
 	seen := map[string]struct{}{}
 	for _, agent := range defaults {
@@ -991,8 +992,8 @@ func buildSetupConfig(s setupModel) (Config, error) {
 		if repository.GitHubRepo == "" {
 			repository.GitHubRepo = s.services.InferGitHubRepo(ctx, RepositoryProfile{RepositoryPath: repository.RepositoryPath, RemoteName: repository.RemoteName})
 		}
-		repository.RepositoryPath = s.services.CompactPath(repository.RepositoryPath, s.cfg.HomeDir)
-		repository.WorktreesDir = s.services.CompactPath(s.services.ExpandPath(repository.WorktreesDir, s.cfg.HomeDir), s.cfg.HomeDir)
+		repository.RepositoryPath = fspath.Compact(repository.RepositoryPath, s.cfg.HomeDir)
+		repository.WorktreesDir = fspath.Compact(core.ExpandPath(repository.WorktreesDir, s.cfg.HomeDir), s.cfg.HomeDir)
 		repositories = append(repositories, repository)
 	}
 
@@ -1036,15 +1037,15 @@ func buildSetupConfig(s setupModel) (Config, error) {
 		app.Profiles = append(app.Profiles, profile)
 	}
 	app.Agents = agents
-	if s.services.FindAgent(agents, app.DefaultAgent) == nil {
+	if core.FindAgent(agents, app.DefaultAgent) == nil {
 		app.DefaultAgent = agents[0].Name
 	}
 	app.DefaultProfile = name
-	normalized, _, err := s.services.NormalizeAppConfig(app)
+	normalized, _, err := core.NormalizeAppConfig(app)
 	if err != nil {
 		return Config{}, err
 	}
-	selected := s.services.FindProfile(normalized.Profiles, name)
+	selected := core.FindProfile(normalized.Profiles, name)
 	if selected == nil {
 		return Config{}, fmt.Errorf("project %q not found", name)
 	}
@@ -1060,11 +1061,11 @@ func buildSetupConfig(s setupModel) (Config, error) {
 }
 
 // findRepositoryOwner finds the project a repository belongs to.
-func findRepositoryOwner(services core.Services, profiles []RepositoryProfile, homeDir string, repoPath string) (int, core.Repository, bool) {
-	want := services.CanonicalPath(services.ExpandPath(repoPath, homeDir))
+func findRepositoryOwner(profiles []RepositoryProfile, homeDir, repoPath string) (int, core.Repository, bool) {
+	want := fspath.Canonical(core.ExpandPath(repoPath, homeDir))
 	for idx, profile := range profiles {
 		for _, repository := range profile.RepositoryList() {
-			if services.CanonicalPath(services.ExpandPath(repository.RepositoryPath, homeDir)) == want {
+			if fspath.Canonical(core.ExpandPath(repository.RepositoryPath, homeDir)) == want {
 				return idx, repository, true
 			}
 		}

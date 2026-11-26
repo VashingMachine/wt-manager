@@ -7,8 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/VashingMachine/wt-manager/internal/app"
 	"github.com/VashingMachine/wt-manager/internal/core"
 	"github.com/VashingMachine/wt-manager/internal/services"
+	"github.com/VashingMachine/wt-manager/internal/testkit"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -28,30 +30,30 @@ func (offlineServices) CheckAtlassianCLI(context.Context) []string      { return
 
 func newWizardHome(t *testing.T) wizardHome {
 	t.Helper()
-	return wizardHome{home: t.TempDir(), svc: offlineServices{services.NewService()}}
+	return wizardHome{home: t.TempDir(), svc: offlineServices{app.NewServices(nil)}}
 }
 
 // repo creates ~/projects/<name> as a git repository with a GitHub remote.
 func (w wizardHome) repo(t *testing.T, name string) string {
 	t.Helper()
 	path := gitInit(t, filepath.Join(w.home, "projects", name))
-	runGit(t, path, "remote", "add", "origin", "git@github.com:acme/"+name+".git")
+	testkit.RunGit(t, path, "remote", "add", "origin", "git@github.com:acme/"+name+".git")
 	return path
 }
 
 func (w wizardHome) config(app AppConfig, setupRepo string) Config {
 	cfg := Config{HomeDir: w.home, ConfigPath: filepath.Join(w.home, ".wt-manager.json"), App: app, SetupRepo: setupRepo, ConfigExists: len(app.Profiles) > 0}
 	if len(app.Profiles) > 0 {
-		cfg.ActiveProfile = w.svc.ResolveProfilePaths(app.Profiles[0], w.home)
+		cfg.ActiveProfile = core.ResolveProfilePaths(app.Profiles[0], w.home)
 	}
 	return cfg
 }
 
 func (w wizardHome) shop(repositories ...core.Repository) AppConfig {
-	app := w.svc.DefaultAppConfig()
+	app := core.DefaultAppConfig()
 	app.DefaultProfile = "shop"
 	app.Profiles = []RepositoryProfile{{Name: "shop", Repositories: repositories, Jira: &JiraConfig{Site: "acme.atlassian.net", Boards: []JiraBoard{{ID: 1, Name: "Shop board"}}}}}
-	normalized, _, err := w.svc.NormalizeAppConfig(app)
+	normalized, _, err := core.NormalizeAppConfig(app)
 	if err != nil {
 		panic(err)
 	}
@@ -95,7 +97,7 @@ func TestSetupWizardSetsUpProjectWithSeveralRepositories(t *testing.T) {
 	w := newWizardHome(t)
 	backend := w.repo(t, "backend")
 	w.repo(t, "frontend")
-	setup := newSetupModel(w.config(w.svc.DefaultAppConfig(), backend), true, w.svc)
+	setup := newSetupModel(w.config(core.DefaultAppConfig(), backend), true, w.svc)
 	if setup.step != setupStepProject || setup.projectInput.Value() != "backend" || !strings.Contains(setup.projectHint(), "new project") {
 		t.Fatalf("project step = %v %q %q", setup.step, setup.projectInput.Value(), setup.projectHint())
 	}
@@ -197,7 +199,7 @@ func TestSetupWizardJoinsOrRenamesProjects(t *testing.T) {
 func TestSetupWizardEscStepsBack(t *testing.T) {
 	w := newWizardHome(t)
 	api := w.repo(t, "api")
-	setup := newSetupModel(w.config(w.svc.DefaultAppConfig(), api), false, w.svc)
+	setup := newSetupModel(w.config(core.DefaultAppConfig(), api), false, w.svc)
 	setup = wizardKeys(t, setup, "enter", "a")
 	if setup.editor == nil {
 		t.Fatal("a did not open the repository editor")
@@ -220,7 +222,7 @@ func TestSetupWizardEscStepsBack(t *testing.T) {
 		t.Fatalf("result = %#v", result)
 	}
 
-	startup := newSetupModel(w.config(w.svc.DefaultAppConfig(), api), true, w.svc)
+	startup := newSetupModel(w.config(core.DefaultAppConfig(), api), true, w.svc)
 	startup, cmd := startup.Update(teaKeyType("esc"))
 	if cmd != nil || !startup.statusErr || !strings.Contains(ansi.Strip(startup.View(100)), "ctrl+c quit") {
 		t.Fatalf("startup esc: cmd=%v status=%q", cmd, startup.status)
@@ -230,7 +232,7 @@ func TestSetupWizardEscStepsBack(t *testing.T) {
 // Assures that a project needs a repository: without one the repository editor opens by itself and continuing is refused.
 func TestSetupWizardRequiresRepository(t *testing.T) {
 	w := newWizardHome(t)
-	setup := newSetupModel(w.config(w.svc.DefaultAppConfig(), ""), true, w.svc)
+	setup := newSetupModel(w.config(core.DefaultAppConfig(), ""), true, w.svc)
 	setup.setupRepo = ""
 	setup.seedRepositories("")
 	setup.projectInput.SetValue("empty")
@@ -248,7 +250,7 @@ func TestSetupWizardRequiresRepository(t *testing.T) {
 func TestSetupWizardShowsProgress(t *testing.T) {
 	w := newWizardHome(t)
 	api := w.repo(t, "api")
-	setup := wizardKeys(t, newSetupModel(w.config(w.svc.DefaultAppConfig(), api), true, w.svc), "enter", "tab")
+	setup := wizardKeys(t, newSetupModel(w.config(core.DefaultAppConfig(), api), true, w.svc), "enter", "tab")
 	line := ansi.Strip(setup.stagesLine())
 	if !strings.Contains(line, icons.OK+" Project") || !strings.Contains(line, icons.OK+" Repositories") || !strings.Contains(line, "3 Agents") || !strings.Contains(line, "5 Review") {
 		t.Fatalf("progress = %q", line)

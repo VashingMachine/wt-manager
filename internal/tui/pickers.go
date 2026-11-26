@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/VashingMachine/wt-manager/internal/core"
+	"github.com/VashingMachine/wt-manager/internal/fspath"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -52,13 +53,13 @@ type directoryPicker struct {
 	rows     int
 }
 
-func newPickerInput(services core.Services, homeDir string, initial string) textinput.Model {
+func newPickerInput(homeDir, initial string) textinput.Model {
 	input := textinput.New()
 	input.Prompt = "search/path: "
 	input.Placeholder = "~/projects"
 	input.CharLimit = 240
 	input.Width = 72
-	input.SetValue(services.CompactPath(initial, homeDir))
+	input.SetValue(fspath.Compact(initial, homeDir))
 	input.CursorEnd()
 	input.Focus()
 	return input
@@ -67,7 +68,7 @@ func newPickerInput(services core.Services, homeDir string, initial string) text
 func newDirectoryPicker(services core.Services, homeDir string, seeds []string, initial string) directoryPicker {
 	picker := directoryPicker{
 		services: services,
-		input:    newPickerInput(services, homeDir, initial),
+		input:    newPickerInput(homeDir, initial),
 		dirs:     discoverDirectories(services, seeds, folderSearchDepth, folderSearchLimit),
 		homeDir:  homeDir,
 		rows:     pickerRows,
@@ -87,7 +88,7 @@ func newWorktreesPicker(services core.Services, homeDir string, seeds []string, 
 	}
 	picker := directoryPicker{
 		services: services,
-		input:    newPickerInput(services, homeDir, initial),
+		input:    newPickerInput(homeDir, initial),
 		dirs:     dirs,
 		homeDir:  homeDir,
 		rows:     pickerRows,
@@ -122,17 +123,17 @@ func insideCheckout(dir string, seeds []string) bool {
 func newRepositoryPicker(services core.Services, homeDir string, paths []string, initial string, exclude []string) directoryPicker {
 	excluded := map[string]bool{}
 	for _, path := range exclude {
-		excluded[services.CanonicalPath(services.ExpandPath(path, homeDir))] = true
+		excluded[fspath.Canonical(core.ExpandPath(path, homeDir))] = true
 	}
 	var repositories []string
-	for _, repository := range discoverRepositories(services, repositorySeeds(services, homeDir, paths...), repositorySearchDepth, repositorySearchLimit, repositorySearchBudget) {
+	for _, repository := range discoverRepositories(repositorySeeds(homeDir, paths...), repositorySearchDepth, repositorySearchLimit, repositorySearchBudget) {
 		if !excluded[repository] {
 			repositories = append(repositories, repository)
 		}
 	}
 	picker := directoryPicker{
 		services: services,
-		input:    newPickerInput(services, homeDir, initial),
+		input:    newPickerInput(homeDir, initial),
 		mode:     pickRepositories,
 		dirs:     repositories,
 		exclude:  excluded,
@@ -148,7 +149,7 @@ func (p *directoryPicker) plan(path string) {
 	if path == "" {
 		return
 	}
-	path = filepath.Clean(p.services.ExpandPath(path, p.homeDir))
+	path = filepath.Clean(core.ExpandPath(path, p.homeDir))
 	for _, existing := range p.planned {
 		if existing == path {
 			return
@@ -184,7 +185,7 @@ func (p *directoryPicker) label(path string) string {
 	if label, ok := p.labels[path]; ok {
 		return label
 	}
-	label := p.services.CompactPath(path, p.homeDir)
+	label := fspath.Compact(path, p.homeDir)
 	p.labels[path] = label
 	return label
 }
@@ -201,7 +202,7 @@ func (p *directoryPicker) refilter() {
 	if typed := p.typedCandidate(query); typed != "" {
 		kept := p.filtered[:0:0]
 		for _, path := range p.filtered {
-			if p.services.CanonicalPath(path) != typed {
+			if fspath.Canonical(path) != typed {
 				kept = append(kept, path)
 			}
 		}
@@ -222,7 +223,7 @@ func (p directoryPicker) typedCandidate(query string) string {
 	if !pathLike(query) {
 		return ""
 	}
-	typed := p.services.CanonicalPath(p.services.ExpandPath(query, p.homeDir))
+	typed := fspath.Canonical(core.ExpandPath(query, p.homeDir))
 	if p.exclude[typed] {
 		return ""
 	}
@@ -240,7 +241,7 @@ func (p directoryPicker) typedCandidate(query string) string {
 // SelectedPath is the highlighted row, or the typed path when nothing matches.
 func (p directoryPicker) SelectedPath() string {
 	if len(p.filtered) == 0 {
-		return p.services.ExpandPath(strings.TrimSpace(p.input.Value()), p.homeDir)
+		return core.ExpandPath(strings.TrimSpace(p.input.Value()), p.homeDir)
 	}
 	return p.filtered[min(max(p.cursor, 0), len(p.filtered)-1)]
 }
@@ -255,7 +256,7 @@ func (p directoryPicker) View(width int) string {
 	end := min(len(p.filtered), start+rows)
 	for i := start; i < end; i++ {
 		path := p.filtered[i]
-		label := p.services.CompactPath(path, p.homeDir)
+		label := fspath.Compact(path, p.homeDir)
 		if _, err := os.Stat(path); err != nil {
 			label += mutedStyle.Render("  new folder")
 		}
@@ -276,13 +277,13 @@ func (p directoryPicker) View(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func setupDirectorySeeds(services core.Services, homeDir string, paths ...string) []string {
+func setupDirectorySeeds(homeDir string, paths ...string) []string {
 	seeds := []string{}
 	for _, path := range paths {
 		if path == "" {
 			continue
 		}
-		expanded := services.ExpandPath(path, homeDir)
+		expanded := core.ExpandPath(path, homeDir)
 		seeds = append(seeds, expanded, filepath.Dir(expanded))
 	}
 	seeds = append(seeds,
@@ -296,13 +297,13 @@ func setupDirectorySeeds(services core.Services, homeDir string, paths ...string
 
 // repositorySeeds starts the repository search next to paths (siblings of a
 // repository are the likeliest candidates), then in common source folders.
-func repositorySeeds(services core.Services, homeDir string, paths ...string) []string {
+func repositorySeeds(homeDir string, paths ...string) []string {
 	seeds := []string{}
 	for _, path := range paths {
 		if path == "" {
 			continue
 		}
-		expanded := services.ExpandPath(path, homeDir)
+		expanded := core.ExpandPath(path, homeDir)
 		if _, checkout := gitMarker(expanded); !checkout {
 			seeds = append(seeds, expanded)
 		}
@@ -335,7 +336,7 @@ func walkDirectories(services core.Services, path string, depth int, maxDepth in
 	if err != nil || !info.IsDir() {
 		return
 	}
-	clean := services.CanonicalPath(path)
+	clean := fspath.Canonical(path)
 	if _, ok := seen[clean]; ok {
 		return
 	}
@@ -369,7 +370,7 @@ func gitMarker(dir string) (repository bool, checkout bool) {
 // first. It never looks inside a checkout below a seed (a seed itself, such
 // as a home folder kept in git, is still searched), and stops after maxDirs
 // folders or once budget has passed.
-func discoverRepositories(services core.Services, seeds []string, maxDepth int, maxDirs int, budget time.Duration) []string {
+func discoverRepositories(seeds []string, maxDepth, maxDirs int, budget time.Duration) []string {
 	type folder struct {
 		path  string
 		depth int
@@ -388,7 +389,7 @@ func discoverRepositories(services core.Services, seeds []string, maxDepth int, 
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		clean := services.CanonicalPath(current.path)
+		clean := fspath.Canonical(current.path)
 		if _, ok := seen[clean]; ok {
 			continue
 		}
@@ -440,8 +441,8 @@ func uniqueCleanPaths(paths []string) []string {
 	return result
 }
 
-func filterDirectories(services core.Services, dirs []string, query string, homeDir string) []string {
-	return filterDirectoriesBy(dirs, query, func(path string) string { return services.CompactPath(path, homeDir) })
+func filterDirectories(dirs []string, query, homeDir string) []string {
+	return filterDirectoriesBy(dirs, query, func(path string) string { return fspath.Compact(path, homeDir) })
 }
 
 // filterDirectoriesBy ranks folders by how well their label (a ~-relative

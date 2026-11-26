@@ -1,0 +1,117 @@
+# Lints the dependency rules of the architecture (see "Architecture" in
+# AGENTS.md). `go test ./internal/arch` checks the same rules without this
+# tool; keep the two in step when a package is added or a rule changes.
+#
+#   golangci-lint run ./...
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - depguard
+  settings:
+    depguard:
+      rules:
+        # The domain depends on nothing and has no side effects.
+        core:
+          files:
+            - "**/internal/core/*.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/VashingMachine/wt-manager/internal
+              desc: core is the domain and imports no other package of this module
+            - pkg: os$
+              desc: core has no side effects; code that touches files belongs in an integration
+            - pkg: os/exec
+              desc: core has no side effects; code that runs programs belongs in an integration
+            - pkg: io/ioutil
+              desc: core has no side effects; code that touches files belongs in an integration
+            - pkg: net$
+              desc: core has no side effects; code that talks to a network belongs in an integration
+            - pkg: net/http
+              desc: core has no side effects; code that talks to a network belongs in an integration
+            - pkg: database/sql
+              desc: core has no side effects; storage belongs in internal/cache
+
+        # The UIs see the domain and its ports only.
+        ui:
+          files:
+            - "**/internal/tui/*.go"
+            - "**/internal/cli/*.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/VashingMachine/wt-manager/internal/services
+              desc: a UI reaches the application through core.Services, which main hands to it
+            - pkg: github.com/VashingMachine/wt-manager/internal/integrations
+              desc: a UI never talks to an integration; add a method to core/ports.go and implement it in services
+            - pkg: github.com/VashingMachine/wt-manager/internal/app
+              desc: the composition root wires the UIs, not the other way round
+            - pkg: github.com/VashingMachine/wt-manager/internal/cache
+              desc: caching is a decision of the application layer (internal/services)
+            - pkg: github.com/VashingMachine/wt-manager/internal/shell
+              desc: running commands is the job of an integration
+
+        # The application reaches the outside world only through its ports.
+        services:
+          files:
+            - "**/internal/services/*.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/VashingMachine/wt-manager/internal/integrations
+              desc: services uses integrations through the interfaces in services/ports.go; internal/app wires the real ones
+            - pkg: github.com/VashingMachine/wt-manager/internal/tui
+              desc: the application does not know its UIs
+            - pkg: github.com/VashingMachine/wt-manager/internal/cli
+              desc: the application does not know its UIs
+            - pkg: github.com/VashingMachine/wt-manager/internal/app
+              desc: the composition root wires services, not the other way round
+
+        # One outside system per package; they never know each other.
+        integrations:
+          files:
+            - "**/internal/integrations/**/*.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/VashingMachine/wt-manager/internal/integrations
+              desc: integrations never import each other; combine them in internal/services
+            - pkg: github.com/VashingMachine/wt-manager/internal/services
+              desc: an integration implements a port of services without importing it
+            - pkg: github.com/VashingMachine/wt-manager/internal/cache
+              desc: caching is a decision of the application layer (internal/services)
+            - pkg: github.com/VashingMachine/wt-manager/internal/tui
+              desc: an integration does not know the UIs
+            - pkg: github.com/VashingMachine/wt-manager/internal/cli
+              desc: an integration does not know the UIs
+            - pkg: github.com/VashingMachine/wt-manager/internal/app
+              desc: the composition root wires integrations, not the other way round
+
+        # Helpers everything may use, so they depend on nothing themselves.
+        leaves:
+          files:
+            - "**/internal/fspath/*.go"
+            - "**/internal/shell/*.go"
+            - "**/internal/cache/*.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/VashingMachine/wt-manager/internal
+              desc: fspath, shell and cache are leaves and import no other package of this module
+
+        # The composition root wires the application; main starts the UIs.
+        app:
+          files:
+            - "**/internal/app/*.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/VashingMachine/wt-manager/internal/tui
+              desc: main hands the services to the UI; app stays importable by UI tests
+            - pkg: github.com/VashingMachine/wt-manager/internal/cli
+              desc: main hands the services to the UI; app stays importable by UI tests
+
+        # Test fixtures never end up in the binary.
+        production:
+          files:
+            - "$all"
+            - "!$test"
+          deny:
+            - pkg: github.com/VashingMachine/wt-manager/internal/testkit
+              desc: testkit holds test fixtures; only _test.go files import it

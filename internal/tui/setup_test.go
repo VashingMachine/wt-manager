@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VashingMachine/wt-manager/internal/app"
 	"github.com/VashingMachine/wt-manager/internal/core"
-	"github.com/VashingMachine/wt-manager/internal/services"
+	"github.com/VashingMachine/wt-manager/internal/fspath"
+	"github.com/VashingMachine/wt-manager/internal/testkit"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -20,8 +22,9 @@ func TestSetupAgentDetection(t *testing.T) {
 		}
 		return "", os.ErrNotExist
 	}
-	svc := services.NewService()
-	options := detectSetupAgents(svc, []AgentTool{{Name: "custom", Command: "custom --flag"}}, "custom", lookup)
+	svc := app.NewServices(nil)
+	var _ core.Services = svc
+	options := detectSetupAgents([]AgentTool{{Name: "custom", Command: "custom --flag"}}, "custom", lookup)
 	selected := agentNames(selectedSetupAgents(options))
 	got := strings.Join(selected, ",")
 	for _, want := range []string{"codex", "claude", "custom"} {
@@ -32,12 +35,12 @@ func TestSetupAgentDetection(t *testing.T) {
 }
 
 func TestDirectoryPickerTypingJDoesNotMoveSelection(t *testing.T) {
-	svc := services.NewService()
+	svc := app.NewServices(nil)
 	homeDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(homeDir, "projects"), 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	picker := newDirectoryPicker(svc, homeDir, setupDirectorySeeds(svc, homeDir), homeDir)
+	picker := newDirectoryPicker(svc, homeDir, setupDirectorySeeds(homeDir), homeDir)
 	picker.input.SetValue("~/pro")
 	picker.input.CursorEnd()
 	picker.refilter()
@@ -53,7 +56,7 @@ func TestDirectoryPickerTypingJDoesNotMoveSelection(t *testing.T) {
 }
 
 func TestSetupWizardSelectsCreatedProjectsFolderWhenTypingJ(t *testing.T) {
-	svc := services.NewService()
+	svc := app.NewServices(nil)
 	homeDir := t.TempDir()
 	repo := filepath.Join(homeDir, "solen", "app")
 	projects := filepath.Join(homeDir, "projects")
@@ -63,17 +66,17 @@ func TestSetupWizardSelectsCreatedProjectsFolderWhenTypingJ(t *testing.T) {
 	if err := os.MkdirAll(projects, 0o755); err != nil {
 		t.Fatalf("MkdirAll(projects) error = %v", err)
 	}
-	runGit(t, repo, "init")
-	runGit(t, repo, "config", "user.email", "test@example.com")
-	runGit(t, repo, "config", "user.name", "Test User")
-	writeRepoFile(t, repo, "README.md", "hello\n")
-	runGit(t, repo, "add", ".")
-	runGit(t, repo, "commit", "-m", "initial")
+	testkit.RunGit(t, repo, "init")
+	testkit.RunGit(t, repo, "config", "user.email", "test@example.com")
+	testkit.RunGit(t, repo, "config", "user.name", "Test User")
+	testkit.WriteRepoFile(t, repo, "README.md", "hello\n")
+	testkit.RunGit(t, repo, "add", ".")
+	testkit.RunGit(t, repo, "commit", "-m", "initial")
 
 	setupCfg := Config{
 		HomeDir:    homeDir,
 		ConfigPath: filepath.Join(homeDir, ".wt-manager.json"),
-		App:        svc.DefaultAppConfig(),
+		App:        core.DefaultAppConfig(),
 		SetupRepo:  repo,
 	}
 	setup := newSetupModel(setupCfg, true, svc)
@@ -95,12 +98,12 @@ func TestSetupWizardSelectsCreatedProjectsFolderWhenTypingJ(t *testing.T) {
 	if len(setup.editor.worktrees.filtered) == 0 {
 		t.Fatal("worktree picker has no matches for ~/projects")
 	}
-	if svc.CanonicalPath(setup.editor.worktrees.filtered[0]) != svc.CanonicalPath(projects) {
+	if fspath.Canonical(setup.editor.worktrees.filtered[0]) != fspath.Canonical(projects) {
 		t.Fatalf("first match = %q, want %q", setup.editor.worktrees.filtered[0], projects)
 	}
 
 	setup = updateSetupForTest(t, setup, teaKey("enter"))
-	if setup.editor != nil || svc.CanonicalPath(setup.repositories[0].WorktreesDir) != svc.CanonicalPath(projects) {
+	if setup.editor != nil || fspath.Canonical(setup.repositories[0].WorktreesDir) != fspath.Canonical(projects) {
 		t.Fatalf("editor open = %v, worktreesDir = %q, want %q", setup.editor != nil, setup.repositories[0].WorktreesDir, projects)
 	}
 	setup = updateSetupForTest(t, setup, tea.KeyMsg{Type: tea.KeyTab})
@@ -133,7 +136,7 @@ func TestSetupWizardSelectsCreatedProjectsFolderWhenTypingJ(t *testing.T) {
 	if result.Config.ActiveProfile.WorktreesDir != projects {
 		t.Fatalf("ActiveProfile.WorktreesDir = %q, want %q", result.Config.ActiveProfile.WorktreesDir, projects)
 	}
-	profile := svc.FindProfile(result.Config.App.Profiles, "app")
+	profile := core.FindProfile(result.Config.App.Profiles, "app")
 	if profile == nil {
 		t.Fatalf("persisted profile app missing in %#v", result.Config.App.Profiles)
 	}
@@ -143,29 +146,29 @@ func TestSetupWizardSelectsCreatedProjectsFolderWhenTypingJ(t *testing.T) {
 }
 
 func TestDirectoryPickerFindsProjectsForTypo(t *testing.T) {
-	svc := services.NewService()
+	svc := app.NewServices(nil)
 	homeDir := t.TempDir()
 	projects := filepath.Join(homeDir, "projects")
 	if err := os.MkdirAll(projects, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	picker := newDirectoryPicker(svc, homeDir, setupDirectorySeeds(svc, homeDir), homeDir)
+	picker := newDirectoryPicker(svc, homeDir, setupDirectorySeeds(homeDir), homeDir)
 	picker.input.SetValue("~/proects")
 	picker.refilter()
 
 	if len(picker.filtered) == 0 {
 		t.Fatal("filtered = empty, want ~/projects match")
 	}
-	if svc.CanonicalPath(picker.filtered[0]) != svc.CanonicalPath(projects) {
+	if fspath.Canonical(picker.filtered[0]) != fspath.Canonical(projects) {
 		t.Fatalf("first match = %q, want %q", picker.filtered[0], projects)
 	}
-	if selected := picker.SelectedPath(); svc.CanonicalPath(selected) != svc.CanonicalPath(projects) {
+	if selected := picker.SelectedPath(); fspath.Canonical(selected) != fspath.Canonical(projects) {
 		t.Fatalf("SelectedPath() = %q, want %q", selected, projects)
 	}
 }
 
 func TestSetupWizardTypoSearchSelectsProjectsFolder(t *testing.T) {
-	svc := services.NewService()
+	svc := app.NewServices(nil)
 	homeDir := t.TempDir()
 	repo := filepath.Join(homeDir, "imaginary", "repo")
 	projects := filepath.Join(homeDir, "projects")
@@ -175,12 +178,12 @@ func TestSetupWizardTypoSearchSelectsProjectsFolder(t *testing.T) {
 	if err := os.MkdirAll(projects, 0o755); err != nil {
 		t.Fatalf("MkdirAll(projects) error = %v", err)
 	}
-	runGit(t, repo, "init")
+	testkit.RunGit(t, repo, "init")
 
 	setup := newSetupModel(Config{
 		HomeDir:    homeDir,
 		ConfigPath: filepath.Join(homeDir, ".wt-manager.json"),
-		App:        svc.DefaultAppConfig(),
+		App:        core.DefaultAppConfig(),
 		SetupRepo:  repo,
 	}, true, svc)
 	setup = updateSetupForTest(t, setup, teaKey("enter"))
@@ -192,17 +195,17 @@ func TestSetupWizardTypoSearchSelectsProjectsFolder(t *testing.T) {
 	if len(setup.editor.worktrees.filtered) == 0 {
 		t.Fatal("worktree picker has no matches for ~/proects")
 	}
-	if svc.CanonicalPath(setup.editor.worktrees.filtered[0]) != svc.CanonicalPath(projects) {
+	if fspath.Canonical(setup.editor.worktrees.filtered[0]) != fspath.Canonical(projects) {
 		t.Fatalf("first match = %q, want %q", setup.editor.worktrees.filtered[0], projects)
 	}
 	selected := setup.editor.worktrees.SelectedPath()
-	if svc.CanonicalPath(selected) != svc.CanonicalPath(projects) {
+	if fspath.Canonical(selected) != fspath.Canonical(projects) {
 		t.Fatalf("SelectedPath() = %q, want %q", selected, projects)
 	}
 }
 
 func TestDirectoryPickerUsesTypedMissingPathWhenNoMatch(t *testing.T) {
-	svc := services.NewService()
+	svc := app.NewServices(nil)
 	homeDir := t.TempDir()
 	picker := newDirectoryPicker(svc, homeDir, []string{homeDir}, homeDir)
 	missing := filepath.Join(homeDir, "new-worktrees")
@@ -215,12 +218,12 @@ func TestDirectoryPickerUsesTypedMissingPathWhenNoMatch(t *testing.T) {
 }
 
 func TestCompleteSetupWritesConfigAndCreatesWorktreesDir(t *testing.T) {
-	svc := services.NewService()
-	cfg := testGitRepo(t)
+	svc := app.NewServices(nil)
+	cfg := testkit.GitRepo(t)
 	homeDir := cfg.HomeDir
 	configPath := filepath.Join(homeDir, ".wt-manager.json")
 	worktreesDir := filepath.Join(homeDir, "new-worktrees")
-	setupCfg := Config{HomeDir: homeDir, ConfigPath: configPath, App: svc.DefaultAppConfig(), SetupRepo: cfg.ActiveProfile.RepositoryPath}
+	setupCfg := Config{HomeDir: homeDir, ConfigPath: configPath, App: core.DefaultAppConfig(), SetupRepo: cfg.ActiveProfile.RepositoryPath}
 	setup := newSetupModel(setupCfg, true, svc)
 	setup.repositories[0].WorktreesDir = worktreesDir
 	setup.projectInput.SetValue("app")
@@ -319,9 +322,9 @@ func (jiraLinkServices) ResolveJiraBoard(_ context.Context, link string) (JiraBo
 // however many of its tickets are pasted, keeps different spaces apart, and
 // opens tickets on all of them together.
 func TestSetupJiraStepAddsSpacesFromTicketLinks(t *testing.T) {
-	cfg := testGitRepo(t)
-	svc := jiraLinkServices{offlineServices{services.NewService()}}
-	setup := newSetupModel(Config{HomeDir: cfg.HomeDir, ConfigPath: filepath.Join(cfg.HomeDir, ".wt-manager.json"), App: svc.DefaultAppConfig(), SetupRepo: cfg.ActiveProfile.RepositoryPath}, true, svc)
+	cfg := testkit.GitRepo(t)
+	svc := jiraLinkServices{offlineServices{app.NewServices(nil)}}
+	setup := newSetupModel(Config{HomeDir: cfg.HomeDir, ConfigPath: filepath.Join(cfg.HomeDir, ".wt-manager.json"), App: core.DefaultAppConfig(), SetupRepo: cfg.ActiveProfile.RepositoryPath}, true, svc)
 	setup.step = setupStepJira
 
 	for _, link := range []string{

@@ -1,9 +1,13 @@
 package tui
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/VashingMachine/wt-manager/internal/testkit"
+)
 
 func TestChecksSummaryAndReviewReadiness(t *testing.T) {
-	pr := remotePRFixture(10, "OPEN", "alice", "Ready PR", "feature/ready")
+	pr := testkit.RemotePR(10, "OPEN", "alice", "Ready PR", "feature/ready")
 	pr.StatusCheckRollup = []StatusCheck{{Name: "test", Status: "completed", Conclusion: "success"}}
 	if got := checksSummary(pr.StatusCheckRollup); got != "1 pass" {
 		t.Fatalf("checksSummary(pass) = %q", got)

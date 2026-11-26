@@ -30,7 +30,7 @@ func sweepSandbox(t *testing.T) (sandbox, string) {
 	if err := os.WriteFile(filepath.Join(s.worktree("old-dirty"), "notes.txt"), []byte("wip\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	app := s.svc.DefaultAppConfig()
+	app := core.DefaultAppConfig()
 	app.DefaultProfile = "shop"
 	app.Profiles = []core.RepositoryProfile{{Name: "shop", RepositoryPath: "~/projects/api", WorktreesDir: "~/worktrees/api", RemoteName: "origin"}}
 	s.writeConfig(t, app)

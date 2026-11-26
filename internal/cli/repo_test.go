@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/VashingMachine/wt-manager/internal/app"
 	"github.com/VashingMachine/wt-manager/internal/core"
 	"github.com/VashingMachine/wt-manager/internal/services"
 )
@@ -18,7 +19,7 @@ type sandbox struct {
 
 func newSandbox(t *testing.T) sandbox {
 	t.Helper()
-	return sandbox{home: t.TempDir(), svc: services.NewService()}
+	return sandbox{home: t.TempDir(), svc: app.NewServices(nil)}
 }
 
 // repo creates a git repository under ~/projects with the given remotes
@@ -46,7 +47,7 @@ func git(t *testing.T, dir string, args ...string) {
 	}
 }
 
-func (s sandbox) configPath() string { return services.DefaultConfigPath(s.home) }
+func (s sandbox) configPath() string { return core.DefaultConfigPath(s.home) }
 
 func (s sandbox) writeConfig(t *testing.T, app core.AppConfig) {
 	t.Helper()
@@ -81,7 +82,7 @@ func (s sandbox) run(t *testing.T, workingDir string, answers string, args ...st
 }
 
 func shopConfig(s sandbox) core.AppConfig {
-	app := s.svc.DefaultAppConfig()
+	app := core.DefaultAppConfig()
 	app.DefaultProfile = "shop"
 	app.Profiles = []core.RepositoryProfile{{Name: "shop", RepositoryPath: "~/projects/api", WorktreesDir: "~/worktrees/api", RemoteName: "origin", GitHubRepo: "acme/api"}}
 	return app
@@ -186,7 +187,7 @@ func TestRepoAddFolderArgumentAndDeclinedSave(t *testing.T) {
 }
 
 func shopWithWeb(s sandbox) core.AppConfig {
-	app := s.svc.DefaultAppConfig()
+	app := core.DefaultAppConfig()
 	app.DefaultProfile = "shop"
 	app.Profiles = []core.RepositoryProfile{
 		{Name: "shop", Repositories: []core.Repository{

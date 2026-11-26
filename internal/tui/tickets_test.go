@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VashingMachine/wt-manager/internal/app"
 	"github.com/VashingMachine/wt-manager/internal/core"
-	"github.com/VashingMachine/wt-manager/internal/services"
+	"github.com/VashingMachine/wt-manager/internal/testkit"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -45,7 +46,7 @@ func (s *ticketLoadSpyServices) LoadPullRequestIndex(ctx context.Context, cfg Co
 func TestTicketLoadFetchesIndependentContextConcurrently(t *testing.T) {
 	release := make(chan struct{})
 	spy := &ticketLoadSpyServices{
-		Services: services.NewService(),
+		Services: app.NewServices(nil),
 		started:  make(chan string, 3),
 		release:  release,
 	}
@@ -184,7 +185,7 @@ func TestFailedTicketWorktreeCreationRollsBackTicketAssociation(t *testing.T) {
 
 func TestTicketModeRendersJoinedContext(t *testing.T) {
 	m := layoutTestModel(150, 32)
-	m.services = services.NewService()
+	m.services = app.NewServices(nil)
 	m.mode = modeTickets
 	m.ticketBoard = JiraBoard{ID: 456, Name: "App Board"}
 	m.tickets = []Ticket{{
@@ -222,7 +223,7 @@ func TestTicketModeRendersJoinedContext(t *testing.T) {
 
 func TestTicketEnterOpensReader(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	m.services = services.NewService()
+	m.services = app.NewServices(nil)
 	m.mode = modeTickets
 	m.tickets = []Ticket{{Key: "APP-123", Summary: "Failure", Detail: true, Description: "Readable description"}}
 	m.visibleTickets = m.tickets
@@ -241,7 +242,7 @@ func TestTicketEnterOpensReader(t *testing.T) {
 
 func TestTicketStatusAllowsDirectEntry(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	m.services = services.NewService()
+	m.services = app.NewServices(nil)
 	m.mode = modeTickets
 	m.tickets = []Ticket{{Key: "APP-123", Status: "In Progress"}}
 	m.visibleTickets = m.tickets
@@ -288,7 +289,7 @@ func TestTicketFiltersDefaultEnabledAndApplyOpenOnly(t *testing.T) {
 				Boards: []JiraBoard{{ID: 123, Name: "App Board"}},
 			},
 		},
-	}, services.NewService())
+	}, app.NewServices(nil))
 	m.ready = true
 	m.loading = false
 	m.mode = modeTickets
@@ -327,12 +328,12 @@ func TestTicketFiltersDefaultEnabledAndApplyOpenOnly(t *testing.T) {
 }
 
 func TestBuildSetupConfigPersistsJira(t *testing.T) {
-	svc := services.NewService()
-	cfg := testGitRepo(t)
+	svc := app.NewServices(nil)
+	cfg := testkit.GitRepo(t)
 	setup := newSetupModel(Config{
 		HomeDir:    cfg.HomeDir,
 		ConfigPath: cfg.HomeDir + "/.wt-manager.json",
-		App:        svc.DefaultAppConfig(),
+		App:        core.DefaultAppConfig(),
 		SetupRepo:  cfg.ActiveProfile.RepositoryPath,
 	}, true, svc)
 	setup.repositories[0].WorktreesDir = cfg.ActiveProfile.WorktreesDir
@@ -361,7 +362,7 @@ func TestBuildSetupConfigPersistsJira(t *testing.T) {
 // the ticket status line names the space without claiming a sprint scope.
 func TestSpaceTicketsIgnoreSprintScope(t *testing.T) {
 	space := JiraBoard{Name: "Operations (OPS)", Projects: []string{"OPS"}}
-	m := NewModel(Config{ActiveProfile: RepositoryProfile{Name: "ops", Jira: &JiraConfig{Boards: []JiraBoard{space}}}}, services.NewService())
+	m := NewModel(Config{ActiveProfile: RepositoryProfile{Name: "ops", Jira: &JiraConfig{Boards: []JiraBoard{space}}}}, app.NewServices(nil))
 	m.ready = true
 	m.loading = false
 	m.mode = modeTickets
@@ -406,7 +407,7 @@ func TestTicketSourceKeySeparatesSpaces(t *testing.T) {
 func TestBoardSelectorOffersAllSources(t *testing.T) {
 	board := JiraBoard{ID: 123, Name: "App Board", Projects: []string{"APP"}}
 	space := JiraBoard{Name: "Operations (OPS)", Projects: []string{"OPS"}}
-	m := NewModel(Config{ActiveProfile: RepositoryProfile{Name: "app", Jira: &JiraConfig{Boards: []JiraBoard{board, space}}}}, services.NewService())
+	m := NewModel(Config{ActiveProfile: RepositoryProfile{Name: "app", Jira: &JiraConfig{Boards: []JiraBoard{board, space}}}}, app.NewServices(nil))
 	m.ready = true
 	m.loading = false
 	m.mode = modeTickets
@@ -442,7 +443,7 @@ func TestBoardSelectorOffersAllSources(t *testing.T) {
 // Assures that a project with a single board or space is not offered an
 // all-sources choice that would only repeat it.
 func TestBoardSelectorSkipsAllSourcesForOneSource(t *testing.T) {
-	m := NewModel(Config{ActiveProfile: RepositoryProfile{Name: "app", Jira: &JiraConfig{Boards: []JiraBoard{{ID: 123, Name: "App Board", Projects: []string{"APP"}}}}}}, services.NewService())
+	m := NewModel(Config{ActiveProfile: RepositoryProfile{Name: "app", Jira: &JiraConfig{Boards: []JiraBoard{{ID: 123, Name: "App Board", Projects: []string{"APP"}}}}}}, app.NewServices(nil))
 	if options := m.ticketSourceOptions(); len(options) != 1 || options[0].IsCombined() {
 		t.Fatalf("ticketSourceOptions() = %+v, want only the board", options)
 	}

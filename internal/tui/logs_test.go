@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/VashingMachine/wt-manager/internal/services"
+	"github.com/VashingMachine/wt-manager/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -22,7 +22,7 @@ type logSpyServices struct {
 func TestSessionLogRetainsReplacedStatusError(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	m, _ := enterActionTestModel()
-	s := services.NewService()
+	s := app.NewServices(nil)
 	m.services = s
 	fullError := "open IntelliJ IDEA: " + strings.Repeat("long execution detail ", 80) + "final error detail"
 	next, _ := m.Update(actionResult{Err: errors.New(fullError)})

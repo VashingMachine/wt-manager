@@ -1,6 +1,7 @@
 package core
 
 import (
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -90,4 +91,43 @@ func normalizeKeyStep(step string) string {
 	}
 	normalized.WriteString(key)
 	return normalized.String()
+}
+
+// normalizeKeybindings gives customized keybindings their canonical spelling
+// and drops blank and repeated keys. Command IDs it does not know are kept:
+// they may belong to a project or agent that is configured again later.
+func normalizeKeybindings(keybindings map[string][]string) (map[string][]string, bool) {
+	if keybindings == nil {
+		return nil, false
+	}
+	normalized := make(map[string][]string, len(keybindings))
+	changed := false
+	for command, keys := range keybindings {
+		id := strings.TrimSpace(command)
+		if id == "" {
+			changed = true
+			continue
+		}
+		// An empty list means "no key", so it is written as [] rather than null.
+		cleaned := make([]string, 0, len(keys))
+		for _, key := range keys {
+			key = NormalizeKeybinding(key)
+			if key == "" || slices.Contains(cleaned, key) {
+				continue
+			}
+			cleaned = append(cleaned, key)
+		}
+		if id != command || keys == nil || !slices.Equal(cleaned, keys) {
+			changed = true
+		}
+		if _, duplicate := normalized[id]; duplicate {
+			changed = true
+			continue
+		}
+		normalized[id] = cleaned
+	}
+	if len(normalized) == 0 {
+		return nil, true
+	}
+	return normalized, changed
 }

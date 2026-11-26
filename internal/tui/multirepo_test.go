@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VashingMachine/wt-manager/internal/app"
 	"github.com/VashingMachine/wt-manager/internal/core"
-	"github.com/VashingMachine/wt-manager/internal/services"
+	"github.com/VashingMachine/wt-manager/internal/testkit"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -38,7 +39,7 @@ func (s *multiRepoSpy) InferRepoFromCWD() (string, bool) {
 }
 
 func newMultiRepoSpy() *multiRepoSpy {
-	return &multiRepoSpy{Services: services.NewService(), worktrees: map[string][]Worktree{}, discoverErr: map[string]error{}, prIndexes: map[string][]PullRequest{}}
+	return &multiRepoSpy{Services: app.NewServices(nil), worktrees: map[string][]Worktree{}, discoverErr: map[string]error{}, prIndexes: map[string][]PullRequest{}}
 }
 
 func (s *multiRepoSpy) DiscoverWorktrees(_ context.Context, cfg Config, _ bool) ([]Worktree, error) {
@@ -436,7 +437,7 @@ func TestPRRadarSwitchesRepository(t *testing.T) {
 	if m.prCfg().RepoSlug != "owner/web" || spy.prLists[len(spy.prLists)-1] != "owner/web" {
 		t.Fatalf("PR Radar repository = %q, lists = %v", m.prCfg().RepoSlug, spy.prLists)
 	}
-	next, _ := m.Update(remotePRListResult{RepoSlug: "owner/api", PullRequests: []RemotePullRequest{remotePRFixture(5, "OPEN", "me", "old", "old")}})
+	next, _ := m.Update(remotePRListResult{RepoSlug: "owner/api", PullRequests: []RemotePullRequest{testkit.RemotePR(5, "OPEN", "me", "old", "old")}})
 	if got := next.(model); len(got.remotePRs) != 0 {
 		t.Fatal("a PR list of the previous repository replaced the current one")
 	}
@@ -519,14 +520,14 @@ func configFileModel(t *testing.T) (model, string) {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".wt-manager.json")
-	svc := services.NewService()
-	app := svc.DefaultAppConfig()
+	svc := app.NewServices(nil)
+	app := core.DefaultAppConfig()
 	app.DefaultProfile = "shop"
 	app.Profiles = []RepositoryProfile{{Name: "shop", RepositoryPath: "/src/api", WorktreesDir: "/wt/api", RemoteName: "origin", GitHubRepo: "owner/api"}}
 	if err := svc.WriteAppConfig(path, app); err != nil {
 		t.Fatalf("WriteAppConfig() error = %v", err)
 	}
-	m := NewModel(Config{HomeDir: dir, ConfigPath: path, App: app, ActiveProfile: svc.ResolveProfilePaths(app.Profiles[0], dir), RepoSlug: "owner/api", ConfigExists: true}, newMultiRepoSpy())
+	m := NewModel(Config{HomeDir: dir, ConfigPath: path, App: app, ActiveProfile: core.ResolveProfilePaths(app.Profiles[0], dir), RepoSlug: "owner/api", ConfigExists: true}, newMultiRepoSpy())
 	m.ready = true
 	m.loading = false
 	m.width, m.height = 140, 30
@@ -639,7 +640,7 @@ func TestPersistConfigKeepsExternalEdits(t *testing.T) {
 // Assures that the app's own saves are not mistaken for external edits.
 func TestOwnConfigSavesAreNotReloaded(t *testing.T) {
 	m, path := configFileModel(t)
-	m.services = services.NewService()
+	m.services = app.NewServices(nil)
 	m.cfg.App.DefaultAgent = "claude"
 	if result, ok := m.persistConfig("Saved")().(actionResult); !ok || result.Err != nil {
 		t.Fatalf("save = %#v", result)
@@ -653,15 +654,15 @@ func TestOwnConfigSavesAreNotReloaded(t *testing.T) {
 
 // Assures that the add-repository helper turns a project into a multi-repository one, with defaults following the project's layout.
 func TestAddRepositoryHelperAddsRepositoryToProject(t *testing.T) {
-	cfg := testGitRepo(t)
+	cfg := testkit.GitRepo(t)
 	web := filepath.Join(cfg.HomeDir, "web")
 	if err := os.MkdirAll(web, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	runGit(t, web, "init")
-	svc := services.NewService()
+	testkit.RunGit(t, web, "init")
+	svc := app.NewServices(nil)
 	cfg.ConfigPath = filepath.Join(cfg.HomeDir, ".wt-manager.json")
-	cfg.App = svc.DefaultAppConfig()
+	cfg.App = core.DefaultAppConfig()
 	cfg.App.DefaultProfile = "test"
 	cfg.App.Profiles = []RepositoryProfile{cfg.ActiveProfile}
 	if err := svc.WriteAppConfig(cfg.ConfigPath, cfg.App); err != nil {

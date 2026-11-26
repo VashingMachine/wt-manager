@@ -165,11 +165,11 @@ func (m model) selectTicketWorktree(key string, worktree Worktree) (tea.Model, t
 // createTicketWorktree creates the ticket's worktree in the repository cfg is
 // scoped to.
 func (m model) createTicketWorktree(ticket Ticket, cfg Config, action string) (tea.Model, tea.Cmd) {
-	branch := m.services.TicketBranchName(ticket)
+	branch := core.TicketBranchName(ticket)
 	worktree := Worktree{
 		Name:       branch,
 		Branch:     branch,
-		Path:       m.services.CreateWorktreePath(cfg, branch),
+		Path:       core.CreateWorktreePath(cfg, branch),
 		Managed:    true,
 		Repository: cfg.RepositoryName(),
 	}
@@ -351,7 +351,7 @@ func (m model) execTicketCommand(id string) (tea.Model, tea.Cmd, bool) {
 			m.statusError = true
 			return m, nil, true
 		}
-		m.ticketStatusOptions = m.services.TicketStatuses(m.tickets)
+		m.ticketStatusOptions = core.TicketStatuses(m.tickets)
 		m.ticketStatusOptions = append(m.ticketStatusOptions, customTicketStatusLabel)
 		m.ticketStatusCursor = m.currentTicketStatusIndex()
 		m.selectingTicketStatus = true
@@ -381,7 +381,7 @@ func (m model) execTicketCommand(id string) (tea.Model, tea.Cmd, bool) {
 			return m, nil, true
 		}
 		m.ticketAssigneeOptions = []JiraUser{{AccountID: core.TicketAssigneeSelf, DisplayName: "@me (yourself)"}}
-		m.ticketAssigneeOptions = append(m.ticketAssigneeOptions, m.services.TicketAssignees(m.tickets)...)
+		m.ticketAssigneeOptions = append(m.ticketAssigneeOptions, core.TicketAssignees(m.tickets)...)
 		m.ticketAssigneeOptions = append(m.ticketAssigneeOptions, JiraUser{AccountID: customTicketAssigneeLabel, DisplayName: customTicketAssigneeLabel})
 		m.ticketAssigneeCursor = 0
 		m.selectingTicketAssignee = true
@@ -941,7 +941,7 @@ func (m *model) clearTicketWorktree(key string, path string) {
 // --- filtering and rows ------------------------------------------------------
 
 func (m *model) applyTicketFilter() {
-	m.visibleTickets = m.services.FilterTickets(m.tickets, m.filterQuery, m.ticketStatusFilter, m.ticketOpenOnly)
+	m.visibleTickets = core.FilterTickets(m.tickets, m.filterQuery, m.ticketStatusFilter, m.ticketOpenOnly)
 	m.rebuildRows()
 	m.selectTicketByKey()
 	m.updateDetailContent()

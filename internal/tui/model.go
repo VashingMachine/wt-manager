@@ -302,6 +302,11 @@ type model struct {
 	keybindings keybindingsScreen
 }
 
+// NewProgram returns the terminal UI, ready to run on the alternate screen.
+func NewProgram(cfg Config, services core.Services) *tea.Program {
+	return tea.NewProgram(NewModel(cfg, services), tea.WithAltScreen())
+}
+
 func NewModel(cfg Config, services core.Services) model {
 	columns := []table.Column{{Title: "Worktree", Width: 20}, {Title: "Branch", Width: 28}, {Title: "State", Width: 10}, {Title: "Delta", Width: 10}, {Title: "PR", Width: 14}, {Title: "Last Commit", Width: 40}}
 	tbl := table.New(table.WithColumns(columns), table.WithRows(nil), table.WithFocused(true), table.WithHeight(12))
@@ -1221,7 +1226,7 @@ func (m model) updateNewWorktree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.beginWorktreeCreation(Worktree{
 			Name:       name,
 			Branch:     name,
-			Path:       m.services.CreateWorktreePath(cfg, name),
+			Path:       core.CreateWorktreePath(cfg, name),
 			Managed:    true,
 			Repository: cfg.RepositoryName(),
 		}, "")
@@ -1590,7 +1595,7 @@ func (m *model) applyFilter() {
 }
 
 func (m *model) applyPRFilter() {
-	m.visiblePRs = m.services.FilterRemotePullRequestsWithAuthor(m.remotePRs, m.filterQuery, m.prStateFilter, m.prUserFilter, m.prAuthorFilter)
+	m.visiblePRs = core.FilterRemotePullRequestsWithAuthor(m.remotePRs, m.filterQuery, m.prStateFilter, m.prUserFilter, m.prAuthorFilter)
 	m.rebuildRows()
 	m.selectPRByNumber()
 	m.updateDetailContent()
@@ -2042,11 +2047,11 @@ func (m model) openWorktreeWithAction(wt Worktree, action string) (tea.Model, te
 }
 
 func (m model) defaultAgent() *AgentTool {
-	return m.services.FindAgent(m.cfg.App.Agents, m.cfg.App.DefaultAgent)
+	return core.FindAgent(m.cfg.App.Agents, m.cfg.App.DefaultAgent)
 }
 
 func (m model) copilotAgent() *AgentTool {
-	if agent := m.services.FindAgent(m.cfg.App.Agents, "copilot"); agent != nil {
+	if agent := core.FindAgent(m.cfg.App.Agents, "copilot"); agent != nil {
 		return agent
 	}
 	return m.defaultAgent()

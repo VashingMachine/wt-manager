@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VashingMachine/wt-manager/internal/app"
 	"github.com/VashingMachine/wt-manager/internal/core"
+	"github.com/VashingMachine/wt-manager/internal/fspath"
 	"github.com/VashingMachine/wt-manager/internal/services"
 )
 
@@ -30,7 +32,7 @@ func TestConfiguredProfileWithRealGitAndGitHubCLI(t *testing.T) {
 	requireExecutable(t, "gh")
 	requireCommand(t, ctx, "gh", "auth", "status")
 
-	svc := services.NewService()
+	svc := app.NewServices(nil)
 	cfg := loadLiveProfileConfig(t, svc)
 
 	if cfg.RepoSlug == "" {
@@ -47,7 +49,7 @@ func TestConfiguredProfileWithRealGitAndGitHubCLI(t *testing.T) {
 	if !ok {
 		t.Fatalf("repositoryPath %s is not a git repository", cfg.ActiveProfile.RepositoryPath)
 	}
-	if svc.CanonicalPath(repoRoot) != svc.CanonicalPath(cfg.ActiveProfile.RepositoryPath) {
+	if fspath.Canonical(repoRoot) != fspath.Canonical(cfg.ActiveProfile.RepositoryPath) {
 		t.Fatalf("repo root = %q, want %q", repoRoot, cfg.ActiveProfile.RepositoryPath)
 	}
 
@@ -126,16 +128,16 @@ func loadLiveProfileConfig(t *testing.T, svc *services.Service) core.Config {
 	if err := json.Unmarshal(raw, &appConfig); err != nil {
 		t.Fatalf("decode %s: %v", configPath, err)
 	}
-	appConfig, _, err = svc.NormalizeAppConfig(appConfig)
+	appConfig, _, err = core.NormalizeAppConfig(appConfig)
 	if err != nil {
 		t.Fatalf("NormalizeAppConfig() error = %v", err)
 	}
 
-	profile := svc.FindProfile(appConfig.Profiles, profileName)
+	profile := core.FindProfile(appConfig.Profiles, profileName)
 	if profile == nil {
 		t.Fatalf("profile %q missing from %s", profileName, configPath)
 	}
-	resolved := svc.ResolveProfilePaths(*profile, homeDir)
+	resolved := core.ResolveProfilePaths(*profile, homeDir)
 	repoSlug := resolved.GitHubRepo
 	if repoSlug == "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

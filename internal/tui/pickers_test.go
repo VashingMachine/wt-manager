@@ -7,7 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/VashingMachine/wt-manager/internal/app"
+	"github.com/VashingMachine/wt-manager/internal/fspath"
 	"github.com/VashingMachine/wt-manager/internal/services"
+	"github.com/VashingMachine/wt-manager/internal/testkit"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -24,21 +27,21 @@ func mkdirs(t *testing.T, paths ...string) {
 func gitInit(t *testing.T, path string) string {
 	t.Helper()
 	mkdirs(t, path)
-	runGit(t, path, "init", "-q")
+	testkit.RunGit(t, path, "init", "-q")
 	return path
 }
 
 func labels(svc *services.Service, home string, paths []string) string {
 	var out []string
 	for _, path := range paths {
-		out = append(out, svc.CompactPath(path, home))
+		out = append(out, fspath.Compact(path, home))
 	}
 	return strings.Join(out, ",")
 }
 
 // Assures that the repository picker lists only git repositories: no plain folders, nothing inside a repository, no linked worktrees, and no excluded repositories, even when the home folder itself is kept in git.
 func TestRepositoryPickerListsOnlyRepositories(t *testing.T) {
-	svc := services.NewService()
+	svc := app.NewServices(nil)
 	home := t.TempDir()
 	gitInit(t, home)
 	api := gitInit(t, filepath.Join(home, "projects", "api"))
@@ -65,7 +68,7 @@ func TestRepositoryPickerListsOnlyRepositories(t *testing.T) {
 
 // Assures that a typed repository the search did not reach is offered first, while typed plain folders and excluded repositories are not.
 func TestRepositoryPickerOffersTypedRepository(t *testing.T) {
-	svc := services.NewService()
+	svc := app.NewServices(nil)
 	home := t.TempDir()
 	deep := gitInit(t, filepath.Join(home, "a", "b", "c", "d", "e", "deep"))
 	excluded := gitInit(t, filepath.Join(home, "projects", "api"))
@@ -76,7 +79,7 @@ func TestRepositoryPickerOffersTypedRepository(t *testing.T) {
 		typed string
 		want  string
 	}{
-		{"~/a/b/c/d/e/deep", svc.CanonicalPath(deep)},
+		{"~/a/b/c/d/e/deep", fspath.Canonical(deep)},
 		{"~/projects/notes", ""},
 		{"~/projects/api", ""},
 	} {
@@ -101,22 +104,22 @@ func TestRepositoryPickerOffersTypedRepository(t *testing.T) {
 
 // Assures that enter takes the highlighted row even when the typed text names an existing folder.
 func TestDirectoryPickerEnterUsesHighlightedRow(t *testing.T) {
-	svc := services.NewService()
+	svc := app.NewServices(nil)
 	home := t.TempDir()
 	mkdirs(t, filepath.Join(home, "projects", "api"), filepath.Join(home, "projects", "web"))
-	picker := newDirectoryPicker(svc, home, setupDirectorySeeds(svc, home), filepath.Join(home, "projects"))
-	if svc.CanonicalPath(picker.SelectedPath()) != svc.CanonicalPath(filepath.Join(home, "projects")) {
+	picker := newDirectoryPicker(svc, home, setupDirectorySeeds(home), filepath.Join(home, "projects"))
+	if fspath.Canonical(picker.SelectedPath()) != fspath.Canonical(filepath.Join(home, "projects")) {
 		t.Fatalf("initial selection = %q, want the typed folder", picker.SelectedPath())
 	}
 	picker, _ = picker.Update(teaKeyType("down"))
-	if selected := picker.SelectedPath(); selected != picker.filtered[1] || svc.CanonicalPath(selected) == svc.CanonicalPath(filepath.Join(home, "projects")) {
+	if selected := picker.SelectedPath(); selected != picker.filtered[1] || fspath.Canonical(selected) == fspath.Canonical(filepath.Join(home, "projects")) {
 		t.Fatalf("after moving down, selection = %q, want the highlighted %q", selected, picker.filtered[1])
 	}
 }
 
 // Assures that long lists scroll with the highlight and say how many rows there are.
 func TestPickerListScrollsWithCursor(t *testing.T) {
-	svc := services.NewService()
+	svc := app.NewServices(nil)
 	home := t.TempDir()
 	for i := 1; i <= 12; i++ {
 		gitInit(t, filepath.Join(home, "projects", fmt.Sprintf("repo-%02d", i)))
@@ -133,12 +136,12 @@ func TestPickerListScrollsWithCursor(t *testing.T) {
 
 // Assures that worktrees folder suggestions leave out checkouts and their contents, and offer a planned folder before it exists.
 func TestWorktreesPickerSkipsCheckoutsAndOffersPlannedFolder(t *testing.T) {
-	svc := services.NewService()
+	svc := app.NewServices(nil)
 	home := t.TempDir()
 	gitInit(t, filepath.Join(home, "projects", "api"))
 	mkdirs(t, filepath.Join(home, "projects", "api", "src"), filepath.Join(home, "projects", "shared"))
 	planned := filepath.Join(home, "worktrees", "api")
-	picker := newWorktreesPicker(svc, home, setupDirectorySeeds(svc, home, planned), planned)
+	picker := newWorktreesPicker(svc, home, setupDirectorySeeds(home, planned), planned)
 	picker.plan(planned)
 	if got := labels(svc, home, picker.filtered); got != "~/worktrees/api" {
 		t.Fatalf("filtered = %q, want the planned folder first", got)

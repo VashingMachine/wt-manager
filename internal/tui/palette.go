@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	"github.com/VashingMachine/wt-manager/internal/core"
+	"github.com/VashingMachine/wt-manager/internal/fspath"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -61,7 +62,7 @@ func (m model) paletteEntries() []paletteEntry {
 	entry := func(id, title, description, category string) paletteEntry {
 		return paletteEntry{ID: id, Title: title, Description: description, Category: category, Shortcut: km.shortcut(id)}
 	}
-	configPath := m.services.CompactPath(m.cfg.ConfigPath, m.cfg.HomeDir)
+	configPath := fspath.Compact(m.cfg.ConfigPath, m.cfg.HomeDir)
 	editorHint := "Choose the IDE the editor commands open: VS Code, IntelliJ IDEA, or a custom command"
 	if label := km.label("open-editor"); label != "" {
 		editorHint = "Choose the IDE opened by " + label + ": VS Code, IntelliJ IDEA, or a custom command"

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VashingMachine/wt-manager/internal/core"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -186,7 +187,7 @@ func TestNewWorktreeAppearsBeforeCreateCompletes(t *testing.T) {
 	creating.newInput.SetValue("feature/optimistic")
 	next, cmd := creating.Update(teaKey("enter"))
 	got := next.(model)
-	path := m.services.CreateWorktreePath(m.cfg, "feature/optimistic")
+	path := core.CreateWorktreePath(m.cfg, "feature/optimistic")
 
 	if cmd == nil {
 		t.Fatal("creation did not return a command")
@@ -207,7 +208,7 @@ func TestFailedWorktreeCreationRollsBackOptimisticRow(t *testing.T) {
 	m.rebuildRows()
 	m.table.SetCursor(0)
 	m.rememberSelection()
-	path := m.services.CreateWorktreePath(m.cfg, "feature/fails")
+	path := core.CreateWorktreePath(m.cfg, "feature/fails")
 	m.beginWorktreeCreation(Worktree{Name: "feature/fails", Branch: "feature/fails", Path: path, Managed: true}, "")
 
 	next, _ := m.Update(createResult{Name: "feature/fails", Path: path, Err: errors.New("branch is locked")})
@@ -227,7 +228,7 @@ func TestFailedWorktreeCreationRollsBackOptimisticRow(t *testing.T) {
 // Assures that refreshes retain an in-flight candidate and confirm it once Git reports the worktree.
 func TestWorktreeRefreshReconcilesOptimisticCreation(t *testing.T) {
 	m := layoutTestModel(120, 30)
-	path := m.services.CreateWorktreePath(m.cfg, "feature/reconcile")
+	path := core.CreateWorktreePath(m.cfg, "feature/reconcile")
 	candidate := Worktree{Name: "feature/reconcile", Branch: "feature/reconcile", Path: path, Managed: true}
 	m.beginWorktreeCreation(candidate, "")
 
@@ -261,7 +262,7 @@ func TestPRWorktreeCreationAppearsBeforeCreateCompletes(t *testing.T) {
 
 	next, cmd := m.Update(teaKey("n"))
 	got := next.(model)
-	path := m.services.CreateWorktreePath(m.cfg, "feature/from-pr")
+	path := core.CreateWorktreePath(m.cfg, "feature/from-pr")
 
 	if cmd == nil {
 		t.Fatal("PR creation did not return a command")

@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VashingMachine/wt-manager/internal/app"
 	"github.com/VashingMachine/wt-manager/internal/core"
-	"github.com/VashingMachine/wt-manager/internal/services"
+	"github.com/VashingMachine/wt-manager/internal/testkit"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -30,7 +31,7 @@ type progressiveSpy struct {
 }
 
 func newProgressiveSpy() *progressiveSpy {
-	return &progressiveSpy{Services: services.NewService()}
+	return &progressiveSpy{Services: app.NewServices(nil)}
 }
 
 func (s *progressiveSpy) record(call string) {
@@ -265,7 +266,7 @@ func TestPRModeUsesPrefetchedPRs(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := progressiveTestModel(newProgressiveSpy())
-			m.remotePRs = []RemotePullRequest{remotePRFixture(5, "OPEN", "alice", "Prefetched", "feature")}
+			m.remotePRs = []RemotePullRequest{testkit.RemotePR(5, "OPEN", "alice", "Prefetched", "feature")}
 			m.prListSlug, m.prListFetchedAt = "owner/app", tc.fetchedAt
 
 			next, _ := m.Update(teaKey("P"))
@@ -283,7 +284,7 @@ func TestPRModeUsesPrefetchedPRs(t *testing.T) {
 // Assures that PR Radar falls back to the persistent cache when nothing was prefetched in this session.
 func TestPRModePaintsCachedPRs(t *testing.T) {
 	spy := newProgressiveSpy()
-	spy.peekPRs = []RemotePullRequest{remotePRFixture(9, "OPEN", "bob", "Cached", "cached")}
+	spy.peekPRs = []RemotePullRequest{testkit.RemotePR(9, "OPEN", "bob", "Cached", "cached")}
 	spy.peekPRsAt = time.Now().Add(-time.Hour)
 	m := progressiveTestModel(spy)
 	m.remotePRs = nil
@@ -301,7 +302,7 @@ func TestBackgroundPRPrefetchKeepsWorktreeView(t *testing.T) {
 	m.applyFilter()
 	m.statusMessage = "Loaded 1 worktrees"
 
-	next, _ := m.Update(remotePRListResult{RepoSlug: "owner/app", PullRequests: []RemotePullRequest{remotePRFixture(5, "OPEN", "alice", "Later", "later")}, FetchedAt: time.Now(), Background: true})
+	next, _ := m.Update(remotePRListResult{RepoSlug: "owner/app", PullRequests: []RemotePullRequest{testkit.RemotePR(5, "OPEN", "alice", "Later", "later")}, FetchedAt: time.Now(), Background: true})
 	got := next.(model)
 	if len(got.remotePRs) != 1 || got.prListFetchedAt.IsZero() {
 		t.Fatal("prefetched PRs were not kept")
@@ -367,7 +368,7 @@ func TestPRChecksStreamIntoRows(t *testing.T) {
 	m := progressiveTestModel(newProgressiveSpy())
 	m.mode = modePRs
 	m.table.SetColumns(m.activeColumns())
-	pr := remotePRFixture(5, "OPEN", "alice", "Checks", "checks")
+	pr := testkit.RemotePR(5, "OPEN", "alice", "Checks", "checks")
 	pr.HeadSHA = "sha5"
 
 	next, cmd := m.Update(remotePRListResult{RepoSlug: "owner/app", PullRequests: []RemotePullRequest{pr}, FetchedAt: time.Now()})
@@ -389,7 +390,7 @@ func TestPRChecksStreamIntoRows(t *testing.T) {
 // Assures that a cached PR detail is shown at once and is not refetched while the PR is unchanged.
 func TestCachedPRDetailSkipsRefetchWhenUnchanged(t *testing.T) {
 	spy := newProgressiveSpy()
-	listed := remotePRFixture(5, "OPEN", "alice", "Detail", "detail")
+	listed := testkit.RemotePR(5, "OPEN", "alice", "Detail", "detail")
 	cached := listed
 	cached.Body = "cached body"
 	spy.peekDetail, spy.peekDetailAt = &cached, time.Now()
@@ -499,7 +500,7 @@ func TestPRApprovalIsOptimisticAndRollsBack(t *testing.T) {
 	spy.mutationErr = errors.New("cannot approve your own PR")
 	m := progressiveTestModel(spy)
 	m.mode = modePRs
-	m.remotePRs = []RemotePullRequest{remotePRFixture(5, "OPEN", "alice", "Approve", "approve")}
+	m.remotePRs = []RemotePullRequest{testkit.RemotePR(5, "OPEN", "alice", "Approve", "approve")}
 	m.table.SetColumns(m.activeColumns())
 	m.applyPRFilter()
 
@@ -608,7 +609,7 @@ func (s *deleteQueueSpy) RemoveWorktree(_ context.Context, _ Config, wt Worktree
 func TestProfileSwitchDropsPreviousProfileData(t *testing.T) {
 	m := progressiveTestModel(newProgressiveSpy())
 	m.cfg.App.Profiles = []RepositoryProfile{m.cfg.ActiveProfile, {Name: "other", RepositoryPath: "/repo/other", WorktreesDir: "/repo", GitHubRepo: "owner/other"}}
-	m.remotePRs = []RemotePullRequest{remotePRFixture(5, "OPEN", "alice", "Old", "old")}
+	m.remotePRs = []RemotePullRequest{testkit.RemotePR(5, "OPEN", "alice", "Old", "old")}
 	m.prListSlug = "owner/app"
 	m.selectingProfile = true
 	m.profileCursor = 1

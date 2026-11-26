@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/VashingMachine/wt-manager/internal/app"
 	"github.com/VashingMachine/wt-manager/internal/core"
-	"github.com/VashingMachine/wt-manager/internal/services"
 )
 
 type notifySpyServices struct {
@@ -21,7 +21,7 @@ func (s *notifySpyServices) Notify(ctx context.Context, title string, body strin
 // Approving a PR raises a terminal-host (cmux) notification so the result is
 // visible even when another workspace is focused.
 func TestPRApprovalResultSendsNotification(t *testing.T) {
-	spy := &notifySpyServices{Services: services.NewService()}
+	spy := &notifySpyServices{Services: app.NewServices(nil)}
 
 	msg := notifyCmd(spy, "PR approved", "Approved PR #5")()
 	if msg != nil {

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/VashingMachine/wt-manager/internal/services"
+	"github.com/VashingMachine/wt-manager/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -525,7 +525,7 @@ func layoutTestModel(width, height int) model {
 			DefaultAgent: "opencode",
 			Agents:       []AgentTool{{Name: "opencode", Command: "opencode"}},
 		},
-	}, services.NewService())
+	}, app.NewServices(nil))
 	m.ready = true
 	m.loading = false
 	m.width = width

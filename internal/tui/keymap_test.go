@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/VashingMachine/wt-manager/internal/core"
+	"github.com/VashingMachine/wt-manager/internal/testkit"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -62,7 +63,7 @@ func keybindingModeModel(mode viewMode) (model, *enterActionSpyServices) {
 	m.mode = mode
 	switch mode {
 	case modePRs:
-		m.remotePRs = []RemotePullRequest{remotePRFixture(7, "OPEN", "dev", "Fix checkout", "fix/checkout")}
+		m.remotePRs = []RemotePullRequest{testkit.RemotePR(7, "OPEN", "dev", "Fix checkout", "fix/checkout")}
 		m.visiblePRs = m.remotePRs
 		m.prDetail = &m.visiblePRs[0]
 	case modeTickets:

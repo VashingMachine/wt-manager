@@ -297,7 +297,7 @@ func (m model) stackedWorktree(cfg Config, branch string, parent Worktree) Workt
 	return Worktree{
 		Name:       branch,
 		Branch:     branch,
-		Path:       m.services.CreateWorktreePath(cfg, branch),
+		Path:       core.CreateWorktreePath(cfg, branch),
 		Managed:    true,
 		Repository: cfg.RepositoryName(),
 		Stack:      core.StackLink{Parent: parent.Branch},

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/VashingMachine/wt-manager/internal/core"
+	"github.com/VashingMachine/wt-manager/internal/fspath"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -82,10 +83,10 @@ func (m model) openTicketWorktreeInput(ticket Ticket, repository string) (tea.Mo
 // -3, ... until neither its branch nor its path is used by a worktree of the
 // repository cfg is scoped to.
 func (m model) freeTicketBranchName(ticket Ticket, cfg Config) string {
-	base := m.services.TicketBranchName(ticket)
+	base := core.TicketBranchName(ticket)
 	repository := cfg.RepositoryName()
 	taken := func(name string) bool {
-		path := m.services.CreateWorktreePath(cfg, name)
+		path := core.CreateWorktreePath(cfg, name)
 		for _, wt := range m.allWorktrees {
 			if wt.Path == path || (wt.Branch == name && m.worktreeRepository(wt) == repository) {
 				return true
@@ -106,7 +107,7 @@ func (m model) createNamedTicketWorktree(key string, cfg Config, branch string) 
 	worktree := Worktree{
 		Name:       branch,
 		Branch:     branch,
-		Path:       m.services.CreateWorktreePath(cfg, branch),
+		Path:       core.CreateWorktreePath(cfg, branch),
 		Managed:    true,
 		Repository: cfg.RepositoryName(),
 	}
@@ -132,7 +133,7 @@ func createTicketWorktreeCmd(services core.WorktreeService, cfg Config, key stri
 
 func renderTicketWorktreeChoiceModal(m model) string {
 	choice := m.ticketWorktreeChoice
-	location := m.services.CompactPath(choice.Existing.Path, m.cfg.HomeDir)
+	location := fspath.Compact(choice.Existing.Path, m.cfg.HomeDir)
 	if m.cfg.MultiRepository() {
 		location = icons.Repo + " " + m.worktreeRepository(choice.Existing) + "  " + location
 	}
