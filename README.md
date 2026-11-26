@@ -26,6 +26,7 @@ Profiles can optionally enable a third JIRA Tickets view backed by Atlassian CLI
 - Open the selected PR in your browser.
 - Open the selected worktree in a new Ghostty tab with a configured AI coding agent.
 - Detect when it runs inside [cmux](https://cmux.com) and open worktrees as cmux workspaces, with PR and JIRA pages in cmux browser splits.
+- Detect when it runs inside [Rex](https://www.superlogical.com/rex) and give each worktree its own Rex session.
 - Browse remote repository PRs without creating local worktrees first.
 - Filter remote PRs by state, text, and involved GitHub users.
 - Inspect selected PR diffs in a full-terminal view with coloured Go and Python code.
@@ -45,7 +46,7 @@ Profiles can optionally enable a third JIRA Tickets view backed by Atlassian CLI
 - GitHub CLI (`gh`) for pull request lookup
 - Atlassian CLI (`acli`) for optional JIRA support
 - Your editor's launcher (`code`, `idea`, `cursor`, `zed`, etc.) if you want the `v` shortcut
-- A supported terminal on macOS (cmux, Ghostty, Warp, or Terminal) if you want the `i` shortcut to open an agent in a new tab
+- A supported terminal (Rex on any platform it runs on; cmux, Ghostty, Warp, or Terminal on macOS) if you want the `i` shortcut to open an agent in a new tab
 
 `gh` is optional for core worktree management. If it is missing, unauthenticated, or cannot access the configured repository, `wt-manager` still runs and simply disables PR lookup.
 
@@ -272,7 +273,7 @@ These are the default keys. Every one of them can be changed, and commands witho
 | `o` | Open selected PR in browser |
 | `c` | Ask configured agent about the selected remote PR |
 | `v` | Open selected worktree in the configured editor, or create/reuse selected PR worktree in PR Radar first |
-| `i` | Open selected worktree in a new terminal tab (or cmux workspace) with the configured agent, or create/reuse selected PR worktree in PR Radar first |
+| `i` | Open selected worktree in a new terminal tab (or its cmux workspace or Rex session) with the configured agent, or create/reuse selected PR worktree in PR Radar first |
 | `m` | Choose the default agent |
 | `d d` | Delete selected worktree |
 | `q`, `ctrl+c` | Quit |
@@ -402,6 +403,18 @@ When `wt-manager` runs inside a cmux terminal (detected from `CMUX_WORKSPACE_ID`
 - Approving a PR posts a cmux notification.
 
 If the `cmux` CLI is not on `PATH`, the bundled `/Applications/cmux.app/Contents/Resources/bin/cmux` is used. cmux's socket must allow the process (default "cmux processes only" mode works because `wt-manager` runs inside cmux).
+
+### Rex
+
+When `wt-manager` runs inside a Rex terminal (detected from the per-pane `REX_BLOCK`, which survives tmux, or from `TERM_PROGRAM=rex`), it drives Rex through its `rex` CLI instead of UI automation, so no Accessibility permission is needed and it also works when Rex runs on Linux:
+
+- `i`, and `enter` when `defaultEnterAction` is `agent` or `terminal`, switch the Rex app to the worktree's own session. If the worktree has no session yet, one is created, named after the worktree, with its shell started in the worktree. A same-named session whose terminals run in another directory belongs to another repository and is left alone.
+- In a new session, the `agent` action opens a window named after the agent and types the agent command into its shell, so quitting the agent leaves a prompt in the worktree. The `terminal` action opens a single `shell` window. An existing session is switched to as it is.
+- PR and JIRA pages still open in the system browser, because Rex has no browser panes.
+
+With several Rex apps connected (say, a Mac and an iPad), only the one you last viewed `wt-manager` in switches. Switching the app to a session needs **Remote Control**, which is off by default: turn it on in Rex's Settings under General. While it is off, the worktree's session is still created and reused, and `wt-manager` shows Rex's message instead of switching. You can open the session from Rex's session list.
+
+If `rex` is not on `PATH`, the copy in `$REX_BIN_DIR`, which Rex sets in its terminals, is used.
 
 On macOS, opening a new terminal tab in other terminals uses UI automation. If macOS blocks the tab automation, grant Accessibility permission to your terminal or `wt-manager`.
 

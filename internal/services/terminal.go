@@ -17,10 +17,16 @@ const (
 	terminalCmux
 	terminalWarp
 	terminalAppleTerminal
+	terminalRex
 )
 
 func detectTerminalApp(getenv func(string) string) terminalApp {
-	// cmux reports TERM_PROGRAM=ghostty, so it has to be recognised first.
+	// REX_BLOCK is set per pane, so it wins over cmux variables that a Rex server
+	// started from a cmux terminal may pass on to its panes.
+	if inRex(getenv) {
+		return terminalRex
+	}
+	// cmux reports TERM_PROGRAM=ghostty, so it has to be recognised before Ghostty.
 	if inCmux(getenv) {
 		return terminalCmux
 	}
@@ -44,6 +50,10 @@ var currentTerminalApp = sync.OnceValue(func() terminalApp {
 })
 
 func openWorktreeAgent(ctx context.Context, wt Worktree, agent AgentTool) error {
+	// Rex opens tabs through its own CLI, so it works wherever Rex runs, not only on macOS.
+	if currentTerminalApp() == terminalRex {
+		return openAgentInRex(ctx, wt, agent)
+	}
 	if runtime.GOOS != "darwin" {
 		return errors.New("opening terminal tabs is only supported on macOS")
 	}
@@ -60,6 +70,9 @@ func openWorktreeAgent(ctx context.Context, wt Worktree, agent AgentTool) error 
 }
 
 func openWorktreeTerminal(ctx context.Context, wt Worktree) error {
+	if currentTerminalApp() == terminalRex {
+		return openTerminalInRex(ctx, wt)
+	}
 	if runtime.GOOS != "darwin" {
 		return errors.New("opening terminal tabs is only supported on macOS")
 	}
